@@ -1,0 +1,5 @@
+.build/
+build/
+*.app
+.DS_Store
+.forgejo-test-token

@@ -1,0 +1,237 @@
+import Foundation
+import Observation
+
+@MainActor @Observable
+final class PullListModel {
+    var state = "open"
+    var mine = UserDefaults.standard.bool(forKey: "pullsMine") { didSet { UserDefaults.standard.set(mine, forKey: "pullsMine") } }
+    var pulls: [PullRequest] = []
+    var loading = false
+    var error: String?
+    var lastUpdated: Date?
+    var loadingMore = false
+    private var page = 1
+    private var exhausted = false
+    var selected: Int?                         // PR number
+    var details: [Int: PullRequestModel] = [:]
+
+    /// Reloads from page 1. The open list is small, so it is fetched completely; closed/all keep just the first page.
+    func load(_ client: ForgejoClient, _ repo: RemoteRepo) async {
+        loading = true; defer { loading = false }
+        let st = state
+        do {
+            var all = try await client.pulls(repo, state: st, page: 1)
+            var p = 1
+            if st == "open" {
+                while all.count == p * ForgejoClient.pullPage { p += 1; all += try await client.pulls(repo, state: st, page: p) }
+            }
+            guard st == state else { return }   // state switched mid-flight
+            pulls = all; page = p; exhausted = all.count < p * ForgejoClient.pullPage
+            error = nil; lastUpdated = Date()
+            if st == "open" { saveCache(repo) }
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func loadMore(_ client: ForgejoClient, _ repo: RemoteRepo) async {
+        guard !loading, !loadingMore, !exhausted else { return }
+        loadingMore = true; defer { loadingMore = false }
+        do {
+            let next = try await client.pulls(repo, state: state, page: page + 1)
+            let seen = Set(pulls.map(\.id))
+            pulls += next.filter { !seen.contains($0.id) }
+            page += 1; exhausted = next.count < ForgejoClient.pullPage
+        } catch { self.error = error.localizedDescription }
+    }
+
+    // MARK: Disk cache (open list only) — the window shows the last known list instantly at launch.
+
+    private func cacheURL(_ r: RemoteRepo) -> URL {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("dev.extypen.loupe", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("pulls-\(r.host)-\(r.owner)-\(r.name).json".replacingOccurrences(of: ":", with: "_"))
+    }
+
+    func restoreCache(_ r: RemoteRepo) {
+        guard state == "open", pulls.isEmpty, let d = try? Data(contentsOf: cacheURL(r)),
+              let cached = try? JSONDecoder().decode([PullRequest].self, from: d) else { return }
+        pulls = cached
+    }
+
+    private func saveCache(_ r: RemoteRepo) {
+        if let d = try? JSONEncoder().encode(pulls) { try? d.write(to: cacheURL(r), options: .atomic) }
+    }
+
+    func detail(for pr: PullRequest, client: ForgejoClient, repo: RemoteRepo, local: LocalCheckout) -> PullRequestModel {
+        if let d = details[pr.number] { return d }
+        let d = PullRequestModel(pr: pr, client: client, repo: repo, local: local)
+        details[pr.number] = d
+        return d
+    }
+}
+
+struct LocalCheckout { var dir: String; var remote: String }
+
+@MainActor @Observable
+final class PullRequestModel {
+    var pr: PullRequest
+    let client: ForgejoClient
+    let repo: RemoteRepo
+    let local: LocalCheckout            // where to fetch and diff when the server won't send the diff
+    var files: [FileDiff] = []          // tree order (dirs first), so next/prev follows the sidebar
+    var collapsed: Set<String> = []
+    private var index: [String: Int] = [:]
+    @ObservationIgnored private var lastDiff: Data?
+    @ObservationIgnored private var localDiffSHA: String?   // head the local fallback diff was made at
+    private var fingerprints: [String: UInt64] = [:]
+    var selectedPath: String?
+    var reviews: [Review] = []
+    var comments: [ReviewComment] = []
+    var conversation: [IssueComment] = []
+    var loading = false
+    var error: String?
+    var filter = ""
+    @ObservationIgnored lazy var checks = ChecksModel(client: client, repo: repo, sha: pr.head.sha)
+    var drafts: [DraftComment] = [] { didSet { persistDrafts() } }
+    var viewed: [String: UInt64] = [:] { didSet { UserDefaults.standard.set(viewed.mapValues { String($0) }, forKey: viewedKey) } }
+
+    private var viewedKey: String { "viewed:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
+    private var draftsKey: String { "drafts:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
+
+    init(pr: PullRequest, client: ForgejoClient, repo: RemoteRepo, local: LocalCheckout) {
+        self.pr = pr; self.client = client; self.repo = repo; self.local = local
+        let v = UserDefaults.standard.dictionary(forKey: "viewed:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)") as? [String: String] ?? [:]
+        viewed = v.compactMapValues(UInt64.init)
+        drafts = (try? JSONDecoder().decode([DraftComment].self, from: UserDefaults.standard.data(forKey: "drafts:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)") ?? Data())) ?? []
+    }
+
+    private func persistDrafts() { UserDefaults.standard.set(try? JSONEncoder().encode(drafts), forKey: draftsKey) }
+
+    var selectedFile: FileDiff? { selectedPath.flatMap(file) }
+    func file(_ path: String) -> FileDiff? { index[path].map { files[$0] } }
+    func files(under dir: String) -> [FileDiff] { filteredFiles.filter { $0.path.hasPrefix(dir + "/") } }
+
+    /// Directory checkbox: mark everything under it viewed, or clear it if it all already is.
+    func toggleViewed(dir: String) {
+        let fs = files(under: dir)
+        let allViewed = fs.allSatisfy(isViewed)
+        for f in fs { viewed[f.path] = allViewed ? nil : fingerprints[f.path] }
+    }
+    var filteredFiles: [FileDiff] { filter.isEmpty ? files : files.filter { $0.path.localizedCaseInsensitiveContains(filter) } }
+    var viewedCount: Int { files.filter(isViewed).count }
+
+    func load() async {
+        loading = true; defer { loading = false }
+        do {
+            async let prReq = client.pull(repo, pr.number)
+            async let reviewsReq = client.reviews(repo, pr.number)
+            async let convReq = client.issueComments(repo, pr.number)
+            pr = try await prReq
+            if checks.sha != pr.head.sha { checks.sha = pr.head.sha; Task { await checks.refresh() } }   // new push
+            let data = try await diffData()
+            // Polling: an unchanged diff must not rebuild the table (scroll, selection and highlighting would reset).
+            if data != lastDiff { lastDiff = data
+            (files, fingerprints) = await Task.detached(priority: .userInitiated) {
+                let fs = DiffParser.parse(data).sorted { FileTree.treeOrder($0.path, $1.path) }
+                return (fs, Dictionary(fs.map { ($0.path, Self.fingerprint($0)) }, uniquingKeysWith: { a, _ in a }))
+            }.value
+            index = Dictionary(files.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { a, _ in a })
+            }
+            if selectedPath == nil || !files.contains(where: { $0.path == selectedPath }) {
+                selectedPath = files.first { !isViewed($0) }?.path ?? files.first?.path
+            }
+            reviews = try await reviewsReq
+            conversation = try await convReq
+            comments = try await client.reviewComments(repo, pr.number, reviews: reviews)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// The server's diff, or for a PR too big for GitHub to serve, the same three-dot diff computed by local git.
+    private func diffData() async throws -> Data {
+        if localDiffSHA == pr.head.sha, let lastDiff { return lastDiff }   // polling: no new push, skip the fetch
+        do { return try await client.diff(repo, pr.number) } catch is ForgejoClient.DiffTooLarge {}
+        let (dir, remote) = (local.dir, local.remote)
+        let head = "refs/remotes/\(remote)/pr/\(pr.number)", base = "refs/remotes/\(remote)/\(pr.base.ref)"
+        // Fetching the base branch brings in pr.base.sha. Diff from that sha, not the branch tip: once the PR is
+        // merged the tip contains it and `tip...head` is empty. Byte-identical to GitHub's own diff.
+        try await Git.run(["fetch", "--no-tags", remote, "+refs/pull/\(pr.number)/head:\(head)", "+refs/heads/\(pr.base.ref):\(base)"], in: dir)
+        let data = try await Git.run(["diff", "--no-color", "--no-ext-diff", "-M", "\(pr.base.sha)...\(head)"], in: dir)
+        localDiffSHA = pr.head.sha
+        return data
+    }
+
+    // MARK: Viewed — keyed by a fingerprint of the file's diff, so a file changed by a new push turns unviewed.
+
+    nonisolated static func fingerprint(_ f: FileDiff) -> UInt64 {
+        var h: UInt64 = 0xcbf29ce484222325   // FNV-1a: stable across launches, unlike Hasher
+        for l in f.lines { for b in l.text.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }; h = (h ^ UInt64(l.kind.rawValue)) &* 0x100000001b3 }
+        return h
+    }
+
+    func isViewed(_ f: FileDiff) -> Bool { viewed[f.path] != nil && viewed[f.path] == fingerprints[f.path] }
+
+    func toggleViewed(_ f: FileDiff) {
+        if isViewed(f) { viewed[f.path] = nil } else { viewed[f.path] = fingerprints[f.path] }
+    }
+
+    /// Mark current viewed and jump to the next unviewed file — the core big-PR loop.
+    func markViewedAndAdvance() {
+        guard let f = selectedFile else { return }
+        if !isViewed(f) { toggleViewed(f) }
+        let list = filteredFiles
+        guard let idx = list.firstIndex(where: { $0.path == f.path }) else { return }
+        let after = list[(idx + 1)...] + list[..<idx]
+        selectedPath = after.first { !isViewed($0) }?.path ?? selectedPath
+    }
+
+    func move(_ delta: Int) {
+        let list = filteredFiles
+        guard let idx = list.firstIndex(where: { $0.path == selectedPath }) else { selectedPath = list.first?.path; return }
+        selectedPath = list[max(0, min(list.count - 1, idx + delta))].path
+    }
+
+    // MARK: Comments
+
+    enum ReviewerState { case approved, changesRequested, pending }
+
+    /// One state per reviewer, as the web sidebar shows it: a push dismisses earlier approvals and re-requested
+    /// reviewers appear as REQUEST_REVIEW / requested_reviewers — those are pending, not approved.
+    var reviewerStates: [(login: String, state: ReviewerState)] {
+        var latest: [String: Review] = [:]
+        for r in reviews where r.dismissed != true && r.stale != true && ["APPROVED", "REQUEST_CHANGES", "REQUEST_REVIEW"].contains(r.state) {
+            if let u = r.user?.login, (latest[u]?.id ?? -1) < r.id { latest[u] = r }
+        }
+        var out: [String: ReviewerState] = latest.mapValues { $0.state == "APPROVED" ? .approved : $0.state == "REQUEST_CHANGES" ? .changesRequested : .pending }
+        for u in pr.requested_reviewers ?? [] where out[u.login] == nil || out[u.login] == .approved { out[u.login] = .pending }
+        return out.map { ($0.key, $0.value) }.sorted { $0.login < $1.login }
+    }
+
+    func inlineComments(for path: String) -> [InlineComment] {
+        comments.filter { $0.path == path }.map {
+            InlineComment(author: $0.user?.login ?? "?", body: $0.body, newLine: $0.position > 0 ? $0.position : nil, oldLine: $0.original_position > 0 ? $0.original_position : nil)
+        } + drafts.filter { $0.path == path }.map {
+            InlineComment(author: "You", body: $0.body, newLine: $0.newLine, oldLine: $0.oldLine, draftID: $0.id)
+        }
+    }
+
+    func commentCount(for path: String) -> Int { comments.lazy.filter { $0.path == path }.count + drafts.lazy.filter { $0.path == path }.count }
+
+    func submit(event: ForgejoClient.ReviewEvent, body: String) async -> Bool {
+        do {
+            try await client.submitReview(repo, pr.number, event: event, body: body, commit: pr.head.sha, comments: drafts)
+            drafts = []
+            await load()
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+
+    func postComment(_ body: String) async {
+        do { try await client.addIssueComment(repo, pr.number, body: body); conversation = try await client.issueComments(repo, pr.number) }
+        catch { self.error = error.localizedDescription }
+    }
+
+    func merge(_ style: ForgejoClient.MergeStyle) async {
+        do { try await client.merge(repo, pr.number, style: style); await load() }
+        catch { self.error = error.localizedDescription }
+    }
+}
