@@ -83,6 +83,49 @@ import AppKit
     #expect(try await Git.status(in: dir).files.filter(\.staged).isEmpty)
 }
 
+@Test func stagesAndDiscardsSingleLinesAgainstRealRepo() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-\(UUID().uuidString)").path
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let file = dir + "/f.txt"
+    let original = (1...10).map { "line \($0)" }
+    try original.joined(separator: "\n").appending("\n").write(toFile: file, atomically: true, encoding: .utf8)
+    try await Git.run(["init", "-q"], in: dir)
+    try await Git.run(["-c", "user.name=t", "-c", "user.email=t@t", "add", "."], in: dir)
+    try await Git.run(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], in: dir)
+    // One hunk, four changes: line 4 and 5 replaced, two lines added after line 7.
+    var edited = original
+    edited[3] = "FOUR"; edited[4] = "FIVE"; edited.insert(contentsOf: ["NEW A", "NEW B"], at: 7)
+    try edited.joined(separator: "\n").appending("\n").write(toFile: file, atomically: true, encoding: .utf8)
+    let diffOf = { (staged: Bool) async throws -> FileDiff in
+        let f = try #require(try await Git.status(in: dir).files.first { $0.staged == staged })
+        return try #require(try await Git.diff(for: f, in: dir))
+    }
+    let index = { (d: FileDiff, kind: DiffLine.Kind, text: String) in d.lines.firstIndex { $0.kind == kind && $0.text == text }! }
+
+    // Stage only "+NEW A": the index gets that line and nothing else.
+    var d = try await diffOf(false)
+    #expect(d.hunks.count == 1)
+    try await Git.run(["apply", "--cached", "-"], in: dir, stdin: Data(try #require(d.patch(selecting: [index(d, .added, "NEW A")], reverse: false)).utf8))
+    let indexed = try await Git.string(["show", ":f.txt"], in: dir)
+    var expected = original; expected.insert("NEW A", at: 7)
+    #expect(indexed == expected.joined(separator: "\n") + "\n")
+
+    // Discard only "-line 4" / "+FOUR" from the working tree: line 4 comes back, the other edits stay.
+    d = try await diffOf(false)
+    let pair: Set<Int> = [index(d, .removed, "line 4"), index(d, .added, "FOUR")]
+    try await Git.run(["apply", "--reverse", "-"], in: dir, stdin: Data(try #require(d.patch(selecting: pair, reverse: true)).utf8))
+    var onDisk = edited; onDisk[3] = "line 4"
+    #expect(try String(contentsOfFile: file, encoding: .utf8) == onDisk.joined(separator: "\n") + "\n")
+
+    // Unstage "+NEW A" again.
+    d = try await diffOf(true)
+    try await Git.run(["apply", "--cached", "--reverse", "-"], in: dir, stdin: Data(try #require(d.patch(selecting: [index(d, .added, "NEW A")], reverse: true)).utf8))
+    #expect(try await Git.status(in: dir).files.filter(\.staged).isEmpty)
+    // Nothing selected that is a change → no patch.
+    #expect(d.patch(selecting: [], reverse: false) == nil)
+}
+
 @Test func parsesLargeDiffQuickly() {
     // 500 files × 400 changed lines ≈ 400k diff lines, roughly a 20 MB PR.
     var s = ""

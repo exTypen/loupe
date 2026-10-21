@@ -203,7 +203,15 @@ struct FileListView: View {
     @Binding var confirmDiscard: [FileChange]?
 
     var body: some View {
-        let selection = Binding(get: { model.selectedFileID }, set: { model.select($0) })
+        // The diff follows the row just added to the selection (plain click, ⌘-click), else stays put.
+        let selection = Binding(get: { model.selectedFileIDs }, set: { ids in
+            let order = model.staged + model.unstaged
+            let added = ids.subtracting(model.selectedFileIDs)
+            let shown = order.first { added.contains($0.id) }?.id
+                ?? (ids.contains(model.selectedFileID ?? "") ? model.selectedFileID : order.first { ids.contains($0.id) }?.id)
+            model.select(shown)
+            model.selectedFileIDs = ids
+        })
         List(selection: selection) {
             if !model.staged.isEmpty {
                 Section {
@@ -225,10 +233,18 @@ struct FileListView: View {
                 ContentUnavailableView("Working Tree Clean", systemImage: "checkmark.circle", description: Text(model.branch.map { "Nothing to commit on \($0)." } ?? ""))
             }
         }
+        .contextMenu(forSelectionType: String.self) { ids in menu(model.files.filter { ids.contains($0.id) }) }
         .onKeyPress(.space) {
-            guard let f = model.selectedFile else { return .ignored }
-            Task { await f.staged ? model.unstage([f]) : model.stage([f]) }
+            // Mixed selection: stage what isn't staged yet; all staged: unstage.
+            let fs = model.selectedFiles
+            guard !fs.isEmpty else { return .ignored }
+            let unstaged = fs.filter { !$0.staged }
+            Task { await unstaged.isEmpty ? model.unstage(fs) : model.stage(unstaged) }
             return .handled
+        }
+        .onDeleteCommand {
+            let fs = model.selectedFiles.filter { !$0.staged }
+            if !fs.isEmpty { confirmDiscard = fs }
         }
     }
 
@@ -242,17 +258,25 @@ struct FileListView: View {
     }
 
     private func row(_ f: FileChange) -> some View {
-        FileRow(path: f.path, badge: f.kind)
-            .tag(f.id)
-            .contextMenu {
-                if f.staged { Button("Unstage") { Task { await model.unstage([f]) } } }
-                else { Button("Stage") { Task { await model.stage([f]) } } }
-                if !f.staged { Button("Discard Changes…", role: .destructive) { confirmDiscard = [f] } }
-                Divider()
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.path).appendingPathComponent(f.path)]) }
-                Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: model.path).appendingPathComponent(f.path)) }
-                Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(f.path, forType: .string) }
+        FileRow(path: f.path, badge: f.kind).tag(f.id)
+    }
+
+    /// Right-click menu for the selection (or the clicked row when it's outside the selection).
+    @ViewBuilder private func menu(_ fs: [FileChange]) -> some View {
+        let unstaged = fs.filter { !$0.staged }, staged = fs.filter(\.staged)
+        let n = { (c: [FileChange]) in c.count == 1 ? "" : " \(c.count) Files" }
+        let urls = fs.map { URL(fileURLWithPath: model.path).appendingPathComponent($0.path) }
+        if !unstaged.isEmpty { Button("Stage\(n(unstaged))") { Task { await model.stage(unstaged) } } }
+        if !staged.isEmpty { Button("Unstage\(n(staged))") { Task { await model.unstage(staged) } } }
+        if !unstaged.isEmpty { Button("Discard Changes\(n(unstaged))…", role: .destructive) { confirmDiscard = unstaged } }
+        if !fs.isEmpty {
+            Divider()
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+            Button("Open") { urls.forEach { NSWorkspace.shared.open($0) } }
+            Button("Copy Path\(fs.count == 1 ? "" : "s")") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(fs.map(\.path).joined(separator: "\n"), forType: .string)
             }
+        }
     }
 }
 
@@ -318,16 +342,16 @@ struct DiffPane: View {
                 else {
                     DiffTableView(file: d, layout: layout,
                                   hunkActions: f.staged ? [.unstage] : f.kind == .untracked ? [] : [.discard, .stage],
-                                  onHunkAction: { i, a in
+                                  onHunkAction: { a, lines in
                                       if a == .discard {
                                           let alert = NSAlert()
-                                          alert.messageText = "Discard this hunk?"
+                                          alert.messageText = "Discard these changes?"
                                           alert.informativeText = "The change is removed from the working tree. This can't be undone."
                                           alert.addButton(withTitle: "Discard").hasDestructiveAction = true
                                           alert.addButton(withTitle: "Cancel")
                                           guard alert.runModal() == .alertFirstButtonReturn else { return }
                                       }
-                                      Task { await model.hunk(i, a) }
+                                      Task { await model.apply(a, lines: lines) }
                                   })
                 }
             }

@@ -121,7 +121,8 @@ final class WorktreeModel {
     var ahead = 0
     var behind = 0
     var files: [FileChange] = []
-    var selectedFileID: String?
+    var selectedFileID: String?            // the file whose diff is shown
+    var selectedFileIDs: Set<String> = []   // the file list's selection (⌘/⇧-click, ⌘A); bulk actions use it
     var diff: FileDiff?
     var commitMessage = ""
     var amend = false
@@ -161,6 +162,8 @@ final class WorktreeModel {
                 let p = selectedFileID.map { String($0.dropFirst(2)) }
                 selectedFileID = files.first { $0.path == p }?.id ?? files.first?.id
             }
+            selectedFileIDs.formIntersection(files.map(\.id))
+            if selectedFileIDs.isEmpty, let id = selectedFileID { selectedFileIDs = [id] }
             loadDiff()
         } catch { self.error = error.localizedDescription }
     }
@@ -177,7 +180,8 @@ final class WorktreeModel {
         }
     }
 
-    func select(_ id: String?) { selectedFileID = id; loadDiff() }
+    func select(_ id: String?) { selectedFileID = id; selectedFileIDs = Set([id].compactMap { $0 }); loadDiff() }
+    var selectedFiles: [FileChange] { files.filter { selectedFileIDs.contains($0.id) } }
 
     // MARK: Index operations
 
@@ -211,18 +215,20 @@ final class WorktreeModel {
         }
     }
 
-    func hunk(_ index: Int, _ action: HunkAction) async {
+    /// Stage, unstage or discard just these diff lines (indices into the shown diff's `lines`): a hunk or a selection.
+    func apply(_ action: HunkAction, lines: Set<Int>) async {
         // The pane may briefly show the previous file's diff while the next loads; never act on a stale one.
         guard let d = diff, let f = selectedFile, d.path == f.path || d.oldPath == f.path else { return }
         if f.kind == .untracked { return await (action == .stage ? stage([f]) : discard([f])) }
-        let patch = Data(d.patch(forHunk: index).utf8)
+        guard let text = d.patch(selecting: lines, reverse: action != .stage) else { return }
+        let patch = Data(text.utf8)
         let args: [String]
         switch action {
         case .stage: args = ["apply", "--cached", "--whitespace=nowarn", "-"]
         case .unstage: args = ["apply", "--cached", "--reverse", "--whitespace=nowarn", "-"]
         case .discard: args = ["apply", "--reverse", "--whitespace=nowarn", "-"]
         }
-        await perform("Applying hunk") { try await Git.run(args, in: path, stdin: patch) }
+        await perform(action == .stage ? "Staging" : action == .unstage ? "Unstaging" : "Discarding") { try await Git.run(args, in: path, stdin: patch) }
     }
 
     func commit() async {

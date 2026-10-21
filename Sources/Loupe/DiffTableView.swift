@@ -21,7 +21,7 @@ struct DiffTableView: NSViewRepresentable {
     var layout: DiffLayout = .unified
     var comments: [InlineComment] = []
     var hunkActions: [HunkAction] = []                       // empty → no hunk buttons (review mode)
-    var onHunkAction: ((Int, HunkAction) -> Void)?
+    var onHunkAction: ((HunkAction, _ lines: Set<Int>) -> Void)?   // lines: indices into file.lines (a hunk or a selection)
     var onAddComment: ((_ newLine: Int?, _ oldLine: Int?, _ body: String) -> Void)?   // nil → commenting disabled
     var onDeleteDraft: ((UUID) -> Void)?
 
@@ -201,7 +201,10 @@ struct DiffTableView: NSViewRepresentable {
                 return v
             case .hunk(let li, let hi):
                 let v = tableView.makeView(withIdentifier: HunkRowView.id, owner: nil) as? HunkRowView ?? HunkRowView()
-                v.configure(header: file.lines[li].text, actions: hunkActions) { [weak self] a in self?.parent.onHunkAction?(hi, a) }
+                v.configure(header: file.lines[li].text, actions: hunkActions) { [weak self] a in
+                    guard let self else { return }
+                    self.parent.onHunkAction?(a, Set(self.file.hunks[hi].lines))
+                }
                 return v
             default:
                 let v = tableView.makeView(withIdentifier: LineRowView.id, owner: nil) as? LineRowView ?? LineRowView()
@@ -347,14 +350,31 @@ struct DiffTableView: NSViewRepresentable {
                 if parent.onAddComment != nil {
                     menu.addItem(ClosureMenuItem("Add Comment…") { [weak self] in self?.beginComment(lineIndex: i, row: row) })
                 }
-                let hi = file.lines[i].hunkIndex
+                // Lines: the selection if the click is inside it, else the clicked line if it's a change.
+                let changed = { (j: Int) in self.file.lines[j].kind == .added || self.file.lines[j].kind == .removed }
+                let selected = selectedLines()
+                let lines: Set<Int> = selected.contains(i) ? selected.filter(changed) : changed(i) ? [i] : []
+                for a in hunkActions where !lines.isEmpty {
+                    let what = lines.count == 1 ? "Line" : "\(lines.count) Lines"
+                    let title = a == .stage ? "Stage \(what)" : a == .unstage ? "Unstage \(what)" : "Discard \(what)…"
+                    menu.addItem(ClosureMenuItem(title) { [weak self] in self?.parent.onHunkAction?(a, lines) })
+                }
+                let hunk = Set(file.hunks[file.lines[i].hunkIndex].lines)
                 for a in hunkActions {
                     let title = a == .stage ? "Stage Hunk" : a == .unstage ? "Unstage Hunk" : "Discard Hunk…"
-                    menu.addItem(ClosureMenuItem(title) { [weak self] in self?.parent.onHunkAction?(hi, a) })
+                    menu.addItem(ClosureMenuItem(title) { [weak self] in self?.parent.onHunkAction?(a, hunk) })
                 }
                 if menu.items.count > 0 { menu.addItem(.separator()) }
             }
             menu.addItem(ClosureMenuItem("Copy") { [weak self] in self?.table.copy(nil) })
+        }
+
+        /// Diff lines on the selected rows; in split view both halves of a row count.
+        func selectedLines() -> Set<Int> {
+            guard let (s, e) = selection else { return [] }
+            var out = Set<Int>()
+            for r in s.row...e.row { for side in [0, 1] { if let l = line(row: r, side: side) { out.insert(l) } } }
+            return out
         }
 
         func copySelection() {

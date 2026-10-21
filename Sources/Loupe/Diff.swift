@@ -31,20 +31,40 @@ struct FileDiff: Identifiable, Hashable {
     func hash(into h: inout Hasher) { h.combine(uid) }
 
     /// A standalone patch containing only hunk `i`, suitable for `git apply`.
-    func patch(forHunk i: Int) -> String {
-        var s = headerLines.joined(separator: "\n") + "\n"
-        let h = hunks[i]
-        s += h.header + "\n"
-        for line in lines[h.lines] {
-            switch line.kind {
-            case .added: s += "+" + line.text + "\n"
-            case .removed: s += "-" + line.text + "\n"
-            case .context: s += " " + line.text + "\n"
-            case .meta: s += line.text + "\n"   // "\ No newline at end of file"
-            case .hunk: break
+    func patch(forHunk i: Int) -> String { patch(selecting: Set(hunks[i].lines), reverse: false) ?? "" }
+
+    /// A patch with only the `selected` changed lines (indices into `lines`), the way `git add -p` edits lines.
+    /// An unselected change becomes context on the side the patch is applied to and disappears from the other:
+    /// forward (stage) applies to the old side, `reverse` (discard, unstage) to the new side, which must match disk.
+    /// nil when no selected line is a change.
+    func patch(selecting selected: Set<Int>, reverse: Bool) -> String? {
+        var out = headerLines.joined(separator: "\n") + "\n"
+        var any = false
+        for h in hunks where h.lines.contains(where: { selected.contains($0) && (lines[$0].kind == .added || lines[$0].kind == .removed) }) {
+            var body = "", oldCount = 0, newCount = 0, keptPrevious = true
+            for i in h.lines {
+                let l = lines[i]
+                let mark: Character?
+                switch l.kind {
+                case .context: mark = " "
+                case .added: mark = selected.contains(i) ? "+" : reverse ? " " : nil
+                case .removed: mark = selected.contains(i) ? "-" : reverse ? nil : " "
+                case .meta: if keptPrevious { body += l.text + "\n" }; continue   // "\ No newline" belongs to the line before
+                case .hunk: continue
+                }
+                keptPrevious = mark != nil
+                guard let mark else { continue }
+                body += String(mark) + l.text + "\n"
+                if mark != "+" { oldCount += 1 }
+                if mark != "-" { newCount += 1 }
             }
+            let (o, n) = DiffParser.parseHunkHeader(Substring(h.header))
+            // Keep the function context git prints after the second "@@".
+            let tail = h.header.dropFirst(2).range(of: "@@").map { String(h.header[$0.upperBound...]) } ?? ""
+            out += "@@ -\(o),\(oldCount) +\(n),\(newCount) @@\(tail)\n" + body
+            any = true
         }
-        return s
+        return any ? out : nil
     }
 }
 
