@@ -8,9 +8,9 @@ so worktrees, hooks, commit signing and credential helpers behave exactly as the
 
 ![Reviewing a pull request in Loupe](docs/pr.png)
 
-| History | Go to worktree (⌘K) |
-|---|---|
-| ![Commit history](docs/history.png) | ![Quick switcher](docs/switcher.png) |
+![Commit history of the checked-out branch](docs/history.png)
+
+![CI checks for a pull request](docs/checks.png)
 
 ## Features
 

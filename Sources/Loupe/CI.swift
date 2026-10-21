@@ -68,7 +68,9 @@ final class ChecksModel {
         do {
             async let statusesReq = client.combinedStatus(repo, sha: sha)
             async let runsReq = client.actionRuns(repo, headSHA: sha)
-            let (statuses, runList) = try await (statusesReq, runsReq)
+            // Actions may be disabled on the server (404): commit statuses still stand on their own.
+            let statuses = try await statusesReq
+            let runList = (try? await runsReq) ?? []
             runs = Dictionary(runList.map { ($0.index_in_repo, $0) }, uniquingKeysWith: { a, _ in a })
 
             // Only re-fetch jobs for runs that can still change; finished runs are immutable.
