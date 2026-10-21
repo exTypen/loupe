@@ -52,9 +52,12 @@ so worktrees, hooks, commit signing and credential helpers behave exactly as the
 - GitHub refuses to serve diffs over 300 files or 20,000 lines. Loupe fetches the pull request and computes
   the same diff locally instead.
 
-## Requirements
+## Install
 
-macOS 15 or later, and git (the Xcode Command Line Tools or Homebrew git).
+Download `Loupe-<version>.dmg` from the [latest release](https://github.com/exTypen/loupe/releases/latest), open it
+and drag Loupe to Applications. The app is signed with a Developer ID and notarized by Apple.
+
+Loupe needs macOS 15 or later, and git (the Xcode Command Line Tools or Homebrew git).
 
 ## Building from source
 
