@@ -84,6 +84,7 @@ struct BranchPicker: View {
     @State private var query = ""
     @State private var locals: [String] = []
     @State private var remotes: [String] = []
+    @State private var checkedOut: [String: String] = [:]   // local branch → path of the worktree that has it
     @State private var error: String?
     @State private var working = false
 
@@ -105,12 +106,18 @@ struct BranchPicker: View {
         }
         .frame(width: 340, height: 420)
         .task {
-            func refs(_ ns: String) async -> [String] {
-                let out = (try? await Git.string(["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", ns], in: model.path)) ?? ""
-                return out.split(separator: "\n").map(String.init)
+            // lstrip=2, not refname:short: short names refs/remotes/origin/HEAD plain "origin".
+            func refs(_ ns: String) async -> [(name: String, worktree: String)] {
+                let out = (try? await Git.string(["for-each-ref", "--format=%(refname:lstrip=2)%09%(worktreepath)", "--sort=-committerdate", ns], in: model.path)) ?? ""
+                return out.split(separator: "\n").map { l in
+                    let f = l.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+                    return (String(f[0]), f.count > 1 ? String(f[1]) : "")
+                }
             }
-            locals = await refs("refs/heads")
-            remotes = await refs("refs/remotes").filter { b in
+            let heads = await refs("refs/heads")
+            locals = heads.map(\.name)
+            checkedOut = Dictionary(heads.filter { !$0.worktree.isEmpty }.map { ($0.name, $0.worktree) }, uniquingKeysWith: { a, _ in a })
+            remotes = await refs("refs/remotes").map(\.name).filter { b in
                 !b.hasSuffix("/HEAD") && !locals.contains(String(b.split(separator: "/", maxSplits: 1).last ?? ""))
             }
         }
@@ -123,6 +130,10 @@ struct BranchPicker: View {
                 Text(b).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if b == model.branch { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                else if let wt = checkedOut[b] {
+                    Text((wt as NSString).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .help("Checked out in \(wt): selecting it opens that worktree")
+                }
             }
             .contentShape(Rectangle())
         }
@@ -134,12 +145,20 @@ struct BranchPicker: View {
         working = true
         Task {
             defer { working = false }
+            let app = model.app, repo = app.repo(containing: model.path) ?? model.path
+            // git allows a branch in one worktree at a time: go to the worktree that has it instead.
+            if let wt = checkedOut[b] {
+                if app.worktrees[repo]?.contains(where: { $0.path == wt }) != true { await app.refreshWorktrees(repo: repo) }
+                app.selection = wt
+                dismiss()
+                return
+            }
             do {
                 // "origin/x" with no local x (those are hidden) → new local x tracking it.
                 let args = remotes.contains(b) ? ["switch", "-c", String(b.split(separator: "/", maxSplits: 1)[1]), "--track", b] : ["switch", b]
                 // Conflicting uncommitted changes, or a branch checked out in another worktree: git refuses and says why.
                 try await Git.run(args, in: model.path)
-                await model.app.refreshWorktrees(repo: model.app.repo(containing: model.path) ?? model.path)
+                await app.refreshWorktrees(repo: repo)
                 dismiss()
             } catch { self.error = error.localizedDescription }
         }
