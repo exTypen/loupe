@@ -234,7 +234,6 @@ struct FileListView: View {
                 Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: model.path).appendingPathComponent(f.path)) }
                 Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(f.path, forType: .string) }
             }
-            .onTapGesture(count: 2) { Task { await f.staged ? model.unstage([f]) : model.stage([f]) } }
     }
 }
 
