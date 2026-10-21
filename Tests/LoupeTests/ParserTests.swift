@@ -207,7 +207,7 @@ import AppKit
 
 @MainActor @Test func dismissedApprovalsBecomePendingAfterPush() throws {
     // A PR after a new push: earlier approvals dismissed, alice re-requested.
-    let prJSON = #"{"id":1,"number":7347,"title":"t","state":"open","user":{"login":"yasir"},"head":{"ref":"h","sha":"79eb"},"base":{"ref":"main","sha":"b"},"html_url":"x","updated_at":"x","requested_reviewers":[{"login":"alice"}]}"#
+    let prJSON = #"{"id":1,"number":7347,"title":"t","state":"open","user":{"login":"yasir"},"head":{"ref":"h","sha":"79eb"},"base":{"ref":"main","sha":"b"},"html_url":"x","updated_at":"x","requested_reviewers":[{"login":"alice"},{"login":"carol"}]}"#
     let reviewsJSON = #"[{"id":86195,"user":{"login":"alice"},"state":"APPROVED","body":"","stale":true,"dismissed":true},{"id":86199,"user":{"login":"bob"},"state":"APPROVED","body":"","stale":true,"dismissed":true},{"id":86202,"user":{"login":"alice"},"state":"REQUEST_REVIEW","body":"","stale":false,"dismissed":false},{"id":90000,"user":{"login":"carol"},"state":"APPROVED","body":"","stale":false,"dismissed":false}]"#
     let pr = try JSONDecoder().decode(PullRequest.self, from: Data(prJSON.utf8))
     let m = PullRequestModel(pr: pr, client: ForgejoClient(baseURL: "http://x", token: ""), repo: RemoteRepo(remoteURL: "git@x:o/r.git")!, local: LocalCheckout(dir: "/tmp", remote: "origin"))
@@ -215,7 +215,7 @@ import AppKit
     let states = Dictionary(uniqueKeysWithValues: m.reviewerStates.map { ($0.login, $0.state) })
     #expect(states["alice"] == .pending)
     #expect(states["bob"] == nil)          // dismissed and not re-requested: not shown
-    #expect(states["carol"] == .approved)      // a fresh approval still counts
+    #expect(states["carol"] == .approved)      // a fresh approval still counts, though Forgejo lists carol as requested
 }
 
 @Test func switcherFiltersByTokensAndOrdersByRecency() {

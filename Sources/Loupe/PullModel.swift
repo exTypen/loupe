@@ -202,7 +202,10 @@ final class PullRequestModel {
             if let u = r.user?.login, (latest[u]?.id ?? -1) < r.id { latest[u] = r }
         }
         var out: [String: ReviewerState] = latest.mapValues { $0.state == "APPROVED" ? .approved : $0.state == "REQUEST_CHANGES" ? .changesRequested : .pending }
-        for u in pr.requested_reviewers ?? [] where out[u.login] == nil || out[u.login] == .approved { out[u.login] = .pending }
+        // Forgejo records a re-request as a newer REQUEST_REVIEW review (handled above) and also lists past reviewers in
+        // requested_reviewers. GitHub keeps the old approval and lists only open requests, so there an approver in
+        // requested_reviewers was re-requested.
+        for u in pr.requested_reviewers ?? [] where out[u.login] == nil || (client.github && out[u.login] == .approved) { out[u.login] = .pending }
         return out.map { ($0.key, $0.value) }.sorted { $0.login < $1.login }
     }
 

@@ -150,8 +150,6 @@ struct Sidebar: View {
         @Bindable var app = app
         List(selection: $app.selection) {
             ForEach(app.repoPaths, id: \.self) { repo in
-                // Plain Section, own chevron: Section(isExpanded:) and a tap gesture on the header both drew the header
-                // inside the first row's selection highlight.
                 Section {
                     ForEach(app.collapsed.contains(repo) ? [] : app.worktrees[repo] ?? []) { wt in
                         WorktreeRow(wt: wt, isMain: wt.path == repo, model: app.model(for: wt.path))
@@ -181,6 +179,7 @@ struct Sidebar: View {
                                 .background(.quaternary, in: Capsule())
                         }
                     }
+                    .selectionDisabled()   // otherwise the first row's selection highlight also wraps the header
                     .contextMenu {
                         Button("New Worktree…") { addingWorktreeFor = repo }
                         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo)]) }

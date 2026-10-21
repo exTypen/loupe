@@ -6,6 +6,12 @@ GitHub, Forgejo and Gitea, and many worktrees across many repositories at once.
 Loupe is a SwiftUI app with an AppKit diff renderer. Every git operation runs through the `git` command line,
 so worktrees, hooks, commit signing and credential helpers behave exactly as they do in your terminal.
 
+![Reviewing a pull request in Loupe](docs/pr.png)
+
+| History | Go to worktree (⌘K) |
+|---|---|
+| ![Commit history](docs/history.png) | ![Quick switcher](docs/switcher.png) |
+
 ## Features
 
 **Repositories and worktrees**
