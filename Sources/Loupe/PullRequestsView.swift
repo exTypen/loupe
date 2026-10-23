@@ -248,7 +248,24 @@ struct PullDetailView: View {
                 Text(pull.pr.title).font(.title3.weight(.semibold)).lineLimit(1).textSelection(.enabled)
                 Text(verbatim: "#\(pull.pr.number)").font(.title3).foregroundStyle(.secondary)
                 Spacer()
-                if pull.loading { ProgressView().controlSize(.small) }
+                HStack(spacing: 8) {
+                    if pull.loading { ProgressView() }
+                    Button { Task { await worktree.checkoutInWorktree(pull.pr) } } label: { Label("Check Out", systemImage: "arrow.triangle.branch") }
+                        .help("Check Out in New Worktree")
+                    Button { if let u = URL(string: pull.pr.html_url) { NSWorkspace.shared.open(u) } } label: { Label("Open in Browser", systemImage: "safari") }
+                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(pull.pr.html_url, forType: .string) } label: { Label("Copy Link", systemImage: "link") }
+                    if pull.pr.state == "open" {
+                        Menu {
+                            ForEach(ForgejoClient.MergeStyle.allCases, id: \.self) { s in
+                                Button(s.rawValue.capitalized) { confirmMerge(s) }
+                            }
+                        } label: { Label("Merge", systemImage: "arrow.triangle.merge") }
+                        .fixedSize()
+                        .disabled(pull.pr.mergeable == false)
+                    }
+                }
+                .controlSize(.small)
+                .fixedSize()
             }
             HStack(spacing: 10) {
                 Avatar(user: pull.pr.user, size: 18)
@@ -268,21 +285,6 @@ struct PullDetailView: View {
                     Text("Conversation").tag("conversation")
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Menu {
-                    Button("Check Out in New Worktree") { Task { await worktree.checkoutInWorktree(pull.pr) } }
-                    Button("Open in Browser") { if let u = URL(string: pull.pr.html_url) { NSWorkspace.shared.open(u) } }
-                    Button("Copy Link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(pull.pr.html_url, forType: .string) }
-                    if pull.pr.state == "open" {
-                        Divider()
-                        Menu("Merge") {
-                            ForEach(ForgejoClient.MergeStyle.allCases, id: \.self) { s in
-                                Button(s.rawValue.capitalized) { confirmMerge(s) }
-                            }
-                        }
-                        .disabled(pull.pr.mergeable == false)
-                    }
-                } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).fixedSize()
                 Button { showSubmit = true } label: {
                     Text(pull.drafts.isEmpty ? "Review" : "Review (\(pull.drafts.count))")
                 }
