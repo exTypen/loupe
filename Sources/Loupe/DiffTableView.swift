@@ -166,7 +166,9 @@ struct DiffTableView: NSViewRepresentable {
             syntaxFileUID = file.uid
             guard let lang = Language.forPath(file.path) else { return }
             let uid = file.uid
-            syntaxTask = Task { [weak self] in
+            // On the main actor: the Coordinator isn't isolated, so a bare Task would land the result on a background
+            // thread, racing `draw` for `syntax` and touching the table off-main (memory corruption, crashes far away).
+            syntaxTask = Task { @MainActor [weak self] in
                 let spans = await Task.detached(priority: .userInitiated) { Syntax.highlight(file, language: lang) }.value
                 guard let self, !Task.isCancelled, self.fileUID == uid, let table = self.table else { return }
                 self.syntax = spans
