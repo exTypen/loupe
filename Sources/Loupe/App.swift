@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         // Avatars come through AsyncImage → URLSession.shared; the default cache is too small to keep a PR list's worth.
         URLCache.shared = URLCache(memoryCapacity: 32 << 20, diskCapacity: 128 << 20)
+        Appearance.saved.apply()
         // Launched as a bare SwiftPM binary there's no bundle telling macOS we're a GUI app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()

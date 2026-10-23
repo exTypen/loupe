@@ -7,7 +7,7 @@ import Foundation
 struct GitHubLive {
     let vscode = RemoteRepo(remoteURL: "https://github.com/microsoft/vscode")!
     func client() async throws -> ForgejoClient {
-        ForgejoClient(baseURL: "https://github.com", token: try #require(await SettingsView.ghToken(host: "github.com")), github: true)
+        ForgejoClient(baseURL: "https://github.com", token: try #require(await AddAccountSheet.ghToken(host: "github.com")), github: true)
     }
 
     @Test func pullsReviewsAndComments() async throws {
