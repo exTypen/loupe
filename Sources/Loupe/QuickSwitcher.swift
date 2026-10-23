@@ -41,7 +41,7 @@ struct QuickSwitcher: View {
                         HStack(spacing: 10) {
                             Text((item.repo as NSString).lastPathComponent).foregroundStyle(.secondary)
                                 .lineLimit(1).frame(width: 130, alignment: .leading)
-                            WorktreeRow(wt: item.wt, isMain: item.wt.path == item.repo, model: app.model(for: item.wt.path))
+                            WorktreeRow(wt: item.wt, repo: item.repo, model: app.model(for: item.wt.path))
                         }
                         .contentShape(Rectangle())
                         .listRowBackground(i == index ? Color.accentColor.opacity(0.25) : Color.clear)

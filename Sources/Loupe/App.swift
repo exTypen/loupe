@@ -152,7 +152,7 @@ struct Sidebar: View {
             ForEach(app.repoPaths, id: \.self) { repo in
                 Section {
                     ForEach(app.collapsed.contains(repo) ? [] : app.worktrees[repo] ?? []) { wt in
-                        WorktreeRow(wt: wt, isMain: wt.path == repo, model: app.model(for: wt.path))
+                        WorktreeRow(wt: wt, repo: repo, model: app.model(for: wt.path))
                             .tag(wt.path)
                             .contextMenu { worktreeMenu(repo: repo, wt: wt) }
                     }
@@ -167,7 +167,9 @@ struct Sidebar: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
                                     .rotationEffect(.degrees(expanded ? 90 : 0))
+                                    .foregroundStyle(.secondary)
                                 Text((repo as NSString).lastPathComponent)
+                                    .font(.body.weight(.semibold)).foregroundStyle(.primary)   // the repo leads, not its rows
                             }
                         }
                         .buttonStyle(.plain)
@@ -178,7 +180,11 @@ struct Sidebar: View {
                             Text("\(changes)").font(.caption.monospacedDigit()).padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(.quaternary, in: Capsule())
                         }
+                        Button { addingWorktreeFor = repo } label: { Image(systemName: "plus") }
+                            .buttonStyle(.borderless)
+                            .help("New Worktree in \((repo as NSString).lastPathComponent)…")
                     }
+                    .padding(.trailing, 10)   // headers run to the list edge; line the count up with the rows' badges
                     .selectionDisabled()   // otherwise the first row's selection highlight also wraps the header
                     .contextMenu {
                         Button("New Worktree…") { addingWorktreeFor = repo }
@@ -196,14 +202,10 @@ struct Sidebar: View {
                 Button { openRepository(app) } label: { Label("Open Repository", systemImage: "plus.rectangle.on.folder") }
                     .buttonStyle(.borderless)
                 Spacer()
-                // New worktree for the repo of the selected worktree (or the only repo).
-                if let repo = app.selection.flatMap(app.repo(containing:)) ?? app.repoPaths.first {
-                    Button { addingWorktreeFor = repo } label: { Image(systemName: "plus") }
-                        .buttonStyle(.borderless)
-                        .help("New Worktree in \((repo as NSString).lastPathComponent)…")
-                }
             }
             .padding(10)
+            .background(.bar)   // rows scroll under the inset; without a background they show through the button
+            .overlay(alignment: .top) { Divider() }
         }
         .sheet(item: Binding(get: { addingWorktreeFor.map(IdentifiedString.init) }, set: { addingWorktreeFor = $0?.value })) { r in
             AddWorktreeSheet(repo: r.value)
@@ -241,16 +243,27 @@ func openIn(bundleID: String, _ path: String) {
 
 struct WorktreeRow: View {
     var wt: Worktree
-    var isMain: Bool
+    var repo: String
     var model: WorktreeModel
+    private var isMain: Bool { wt.path == repo }
+
+    /// A row is a worktree: its folder leads, minus the repo-name prefix the header already shows
+    /// ("web-qa" under "web" reads "qa"); the branch checked out in it comes second. The main worktree is the
+    /// repo's own folder, so its name would only repeat the header.
+    private var title: String {
+        let r = (repo as NSString).lastPathComponent
+        if isMain { return "Root" }
+        for sep in ["-", "_", "."] where wt.name.hasPrefix(r + sep) && wt.name.count > r.count + 1 { return String(wt.name.dropFirst(r.count + 1)) }
+        return wt.name
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: isMain ? "folder" : "arrow.triangle.branch")
                 .foregroundStyle(isMain ? Color.secondary : Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
-                Text(wt.branch ?? "detached @ \(wt.head.prefix(7))").lineLimit(1)
-                if !isMain { Text(wt.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                Text(title).lineLimit(1)
+                Text(wt.branch ?? "detached @ \(wt.head.prefix(7))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             if model.ahead > 0 { Text(verbatim: "↑\(String(model.ahead))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
