@@ -177,6 +177,14 @@ final class AppModel {
     }
 }
 
+enum GitOperation: Equatable {
+    case merge, cherryPick, revert, rebase
+    var command: String { switch self { case .merge: "merge"; case .cherryPick: "cherry-pick"; case .revert: "revert"; case .rebase: "rebase" } }
+    var verb: String { switch self { case .merge: "Merging"; case .cherryPick: "Cherry-picking"; case .revert: "Reverting"; case .rebase: "Rebasing" } }
+}
+
+enum ConflictSide { case current, incoming }
+
 struct Space: Codable, Hashable, Identifiable {
     static let defaultID = "default"
     var id: String
@@ -196,6 +204,10 @@ final class WorktreeModel {
     var ahead = 0
     var behind = 0
     var files: [FileChange] = []
+    var stashCount = 0
+    var operation: GitOperation?       // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
+    var operationSubject = ""          // the commit it's applying
+    @ObservationIgnored private var gitDir: String?
     var selectedFileID: String?            // the file whose diff is shown
     var selectedFileIDs: Set<String> = []   // the file list's selection (⌘/⇧-click, ⌘A); bulk actions use it
     var diff: FileDiff?
@@ -221,7 +233,9 @@ final class WorktreeModel {
     }
 
     var staged: [FileChange] { files.filter(\.staged) }
-    var unstaged: [FileChange] { files.filter { !$0.staged } }
+    var unstaged: [FileChange] { files.filter { !$0.staged && $0.kind != .conflicted } }
+    var conflicted: [FileChange] { files.filter { $0.kind == .conflicted } }
+    var listed: [FileChange] { conflicted + staged + unstaged }   // file list order
     var changeCount: Int { Set(files.map(\.path)).count }
     var selectedFile: FileChange? { files.first { $0.id == selectedFileID } }
 
@@ -231,6 +245,9 @@ final class WorktreeModel {
         do {
             let s = try await Git.status(in: path)
             branch = s.branch; headOID = s.oid; ahead = s.ahead; behind = s.behind
+            let stashes = (try? await Git.string(["stash", "list", "--format=%H"], in: path)) ?? ""
+            stashCount = stashes.split(separator: "\n").count
+            await detectOperation()
             if s.files != files { files = s.files }
             if selectedFileID == nil || !files.contains(where: { $0.id == selectedFileID }) {
                 // Keep the same path selected when it moves between staged/unstaged.
@@ -241,6 +258,51 @@ final class WorktreeModel {
             if selectedFileIDs.isEmpty, let id = selectedFileID { selectedFileIDs = [id] }
             loadDiff()
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func detectOperation() async {
+        if gitDir == nil {
+            gitDir = (try? await Git.string(["rev-parse", "--path-format=absolute", "--git-dir"], in: path))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let dir = gitDir else { return }
+        let fm = FileManager.default
+        func has(_ name: String) -> Bool { fm.fileExists(atPath: (dir as NSString).appendingPathComponent(name)) }
+        let op: GitOperation? = has("rebase-merge") || has("rebase-apply") ? .rebase
+            : has("CHERRY_PICK_HEAD") ? .cherryPick : has("REVERT_HEAD") ? .revert : has("MERGE_HEAD") ? .merge : nil
+        if op != operation { operation = op }
+        let head = op.flatMap { o -> String? in
+            switch o {
+            case .cherryPick: "CHERRY_PICK_HEAD"
+            case .revert: "REVERT_HEAD"
+            case .merge: "MERGE_HEAD"
+            case .rebase: has("rebase-merge/stopped-sha") ? "rebase-merge/stopped-sha" : nil
+            }
+        }
+        if let head, let sha = try? String(contentsOfFile: (dir as NSString).appendingPathComponent(head), encoding: .utf8) {
+            let s = (try? await Git.string(["log", "-1", "--format=%h %s", sha.trimmingCharacters(in: .whitespacesAndNewlines)], in: path)) ?? ""
+            operationSubject = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else { operationSubject = "" }
+    }
+
+    /// `git <op> --continue` with the prepared message, or `--abort`.
+    func finishOperation(abort: Bool) async {
+        guard let op = operation else { return }
+        await perform(abort ? "Aborting" : "Continuing") {
+            try await Git.run(["-c", "core.editor=true", op.command, abort ? "--abort" : "--continue"], in: path, env: ["GIT_EDITOR": "true"])
+        }
+        await history.reload()
+    }
+
+    /// Resolves a conflicted file wholesale: one side, or "it's fixed as it is on disk".
+    func resolve(_ path: String, take side: ConflictSide?) async {
+        await perform("Resolving") {
+            if let side {
+                // The side may have deleted the file: then resolving means deleting it.
+                do { try await Git.run(["checkout", side == .current ? "--ours" : "--theirs", "--", path], in: self.path) }
+                catch { try await Git.run(["rm", "-q", "--", path], in: self.path); return }
+            }
+            try await Git.run(["add", "--", path], in: self.path)
+        }
     }
 
     func loadDiff() {
@@ -313,6 +375,24 @@ final class WorktreeModel {
             try await Git.run(["commit", "-F", "-"] + (amend ? ["--amend"] : []), in: path, stdin: Data(msg.utf8))
             commitMessage = ""; amend = false
         }
+    }
+
+    /// `git stash push`: everything, or just `paths`. Untracked files only go in with `untracked`.
+    func stash(message: String, untracked: Bool, paths: [String] = []) async {
+        let msg = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        await perform("Stashing") {
+            try await Git.run(["stash", "push"] + (untracked ? ["--include-untracked"] : []) + (msg.isEmpty ? [] : ["-m", msg])
+                              + (paths.isEmpty ? [] : ["--"] + paths), in: path)
+        }
+        await history.reload()
+    }
+
+    var generatingMessage = false
+
+    func generateMessage() async {
+        generatingMessage = true; defer { generatingMessage = false }
+        do { commitMessage = try await CommitAI.message(in: path, amend: amend, hasStaged: !staged.isEmpty) }
+        catch { self.error = error.localizedDescription }
     }
 
     func loadLastCommitMessage() async {

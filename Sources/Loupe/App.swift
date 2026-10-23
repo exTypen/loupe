@@ -20,7 +20,10 @@ struct LoupeApp: App {
         }
     }
 
+    @State private var shortcuts = Shortcuts.shared
+
     var body: some Scene {
+        let _ = shortcuts.revision   // a changed shortcut rebuilds the menus below
         // WindowGroup, not Window: a single `Window` scene was intermittently not presented at launch.
         WindowGroup("Loupe", id: "main") {
             ContentView()
@@ -33,19 +36,35 @@ struct LoupeApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open Repository…") { openRepository(app) }.keyboardShortcut("o")
+                Button("Open Repository…") { openRepository(app) }.shortcut(.openRepository)
             }
             CommandGroup(after: .sidebar) {
-                Button("Go to Worktree…") { app.showSwitcher = true }.keyboardShortcut("k")
+                // NavigationSplitView's own sidebar button goes through the split view controller; so does this.
+                Button("Toggle Sidebar") { NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil) }
+                    .shortcut(.toggleSidebar)
+                Divider()
+                // The tab is @AppStorage("tab") in WorktreeView, which follows UserDefaults.
+                Button("Changes") { UserDefaults.standard.set("changes", forKey: "tab") }.shortcut(.changesTab)
+                Button("History") { UserDefaults.standard.set("history", forKey: "tab") }.shortcut(.historyTab)
+                Button("Pull Requests") { UserDefaults.standard.set("pulls", forKey: "tab") }.shortcut(.pullsTab)
+                Divider()
+                Button("Go to Worktree…") { app.showSwitcher = true }.shortcut(.goToWorktree)
             }
             CommandMenu("Review") {
-                Button("Next File") { NotificationCenter.default.post(name: .moveFile, object: 1) }.keyboardShortcut(.downArrow, modifiers: .option)
-                Button("Previous File") { NotificationCenter.default.post(name: .moveFile, object: -1) }.keyboardShortcut(.upArrow, modifiers: .option)
-                Button("Mark Viewed & Next") { NotificationCenter.default.post(name: .markViewed, object: nil) }.keyboardShortcut("v", modifiers: [.command, .shift])
+                Button("Next File") { NotificationCenter.default.post(name: .moveFile, object: 1) }.shortcut(.nextFile)
+                Button("Previous File") { NotificationCenter.default.post(name: .moveFile, object: -1) }.shortcut(.previousFile)
+                Button("Mark Viewed & Next") { NotificationCenter.default.post(name: .markViewed, object: nil) }.shortcut(.markViewed)
                 Divider()
-                Button("Refresh") { NotificationCenter.default.post(name: .refresh, object: nil) }.keyboardShortcut("r")
+                Button("Refresh") { NotificationCenter.default.post(name: .refresh, object: nil) }.shortcut(.refresh)
             }
         }
+
+        // Blame and history of one file, beside the main window rather than inside it.
+        WindowGroup("File", id: "file", for: FileTarget.self) { $target in
+            if let t = target { FileInspector(target: t).environment(app) }
+        }
+        .defaultSize(width: 1100, height: 760)
+        .restorationBehavior(.disabled)
 
         Settings {
             SettingsView().environment(app)
@@ -110,17 +129,7 @@ struct ContentView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 360)
         } detail: {
-            if let sel = app.selection {
-                WorktreeView(model: app.model(for: sel)).id(sel)
-            } else {
-                ContentUnavailableView {
-                    Label("No Worktree Selected", systemImage: "arrow.triangle.branch")
-                } description: {
-                    Text("Open a repository to review its changes and pull requests.")
-                } actions: {
-                    Button("Open Repository…") { openRepository(app) }.buttonStyle(.borderedProminent)
-                }
-            }
+            detail
         }
         .overlay {
             if let o = app.checksOverlay {
@@ -138,6 +147,20 @@ struct ContentView: View {
             return true
         }
     }
+
+    @ViewBuilder private var detail: some View {
+            if let sel = app.selection {
+                WorktreeView(model: app.model(for: sel)).id(sel)
+            } else {
+                ContentUnavailableView {
+                    Label("No Worktree Selected", systemImage: "arrow.triangle.branch")
+                } description: {
+                    Text("Open a repository to review its changes and pull requests.")
+                } actions: {
+                    Button("Open Repository…") { openRepository(app) }.buttonStyle(.borderedProminent)
+                }
+            }
+    }
 }
 
 // MARK: - Sidebar
@@ -154,17 +177,15 @@ struct Sidebar: View {
     var body: some View {
         SpacePager(index: app.spaces.firstIndex { $0.id == app.currentSpace } ?? 0, count: app.spaces.count) { step in
             app.switchSpace(by: step)   // bounds-checked: the space list can change under a swipe
-        } pages: { width in
-            ForEach(app.spaces) { sp in
-                VStack(spacing: 0) {
-                    if app.spaces.count > 1 {
-                        Text(sp.name).font(.title3.weight(.bold)).frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 18).padding(.vertical, 6)
-                            .contextMenu { spaceMenu(sp) }
-                    }
-                    repoList(sp)
+        } page: { i in
+            let sp = app.spaces[i]
+            VStack(spacing: 0) {
+                if app.spaces.count > 1 {
+                    Text(sp.name).font(.title3.weight(.bold)).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18).padding(.vertical, 6)
+                        .contextMenu { spaceMenu(sp) }
                 }
-                .frame(width: width)
+                repoList(sp)
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -315,32 +336,52 @@ struct Sidebar: View {
     }
 }
 
-/// Spaces side by side, one sidebar wide each, paged like a photo gallery: while two fingers are on the trackpad the
-/// spaces follow them both ways, and on release they spring to the nearest space (or the next one, for a flick).
-/// Touching again mid-spring catches the pages where they are. Clicks on the space dots animate the same offset.
-struct SpacePager<Pages: View>: View {
+/// Spaces paged like a photo gallery: while two fingers are on the trackpad the spaces follow them both ways, and
+/// on release they spring to the nearest space (or the next one, for a flick). Touching again mid-spring catches the
+/// pages where they are. Only the shown space is in the view tree at rest; its neighbours join just for a swipe or
+/// the slide after a click on a space dot. Laying out every space's list on every frame made the window's own
+/// animations (showing and hiding the sidebar) stutter.
+struct SpacePager<Page: View>: View {
     var index: Int
     var count: Int
     var move: (Int) -> Void   // by this many spaces, once the pages come to rest on another one
-    @ViewBuilder var pages: (CGFloat) -> Pages
-    @State private var position: CGFloat?   // in pages, while a swipe or its spring drives the pager; nil → at `index`
+    @ViewBuilder var page: (Int) -> Page
+    @State private var position: CGFloat?   // in pages, while a swipe, its spring or a dot-click slide moves them
+    @State private var width: CGFloat = 0
+    @State private var settling = false      // the index change came from a swipe: don't slide again
+    @State private var slideFrom: Int?       // a dot-click slide's old space, kept until the slide ends
 
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            HStack(spacing: 0) { pages(w) }
-                .offset(x: -(position ?? CGFloat(index)) * w)
-                .frame(width: w, alignment: .leading)
-                .overlay(SwipePager(index: index, count: count,
-                    position: { position = $0 },
-                    // Switch once the pages are at rest, not on release: building the new detail view stalls the
-                    // main thread, and mid-slide that freezes the animation.
-                    rest: { page in
-                        var t = Transaction(); t.disablesAnimations = true
-                        withTransaction(t) { position = nil; if page != index { move(page - index) } }
-                    }))
+        let p = position ?? CGFloat(index)
+        let shown = position == nil ? [index] : Array(Set([Int(p.rounded(.down)), Int(p.rounded(.up)), index] + (slideFrom.map { [$0] } ?? []))).filter { (0..<count).contains($0) }.sorted()
+        ZStack {
+            ForEach(shown, id: \.self) { i in
+                page(i)
+                    .frame(width: width > 0 ? width : nil)
+                    .frame(maxHeight: .infinity)
+                    .offset(x: (CGFloat(i) - p) * width)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .overlay(SwipePager(index: index, count: count,
+            position: { position = $0 },
+            rest: { page in
+                // The pages already sit at `page`: swap the index in with no animation.
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) {
+                    position = nil
+                    if page != index { settling = true; move(page - index) }
+                }
+            }))
+        .onChange(of: index) { old, new in
+            // A click on a space dot: slide from the old space to the new one, then drop the old one.
+            if settling { settling = false; return }
+            guard position == nil, old != new else { return }
+            position = CGFloat(old); slideFrom = old
+            withAnimation(.snappy(duration: 0.28)) { position = CGFloat(new) } completion: { position = nil; slideFrom = nil }
+        }
     }
 }
 

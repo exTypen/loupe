@@ -173,25 +173,36 @@ struct ChangesView: View {
     @State private var confirmDiscard: [FileChange]?
 
     var body: some View {
-        HSplitView {
+        VStack(spacing: 0) {
+        if model.operation != nil || !model.conflicted.isEmpty {
+            OperationBanner(model: model)
+            Divider()
+        }
+        ResizableSplit(key: "changesListWidth", minWidth: 220, maxWidth: 380, defaultFraction: 300/380) {
             VStack(spacing: 0) {
                 FileListView(model: model, confirmDiscard: $confirmDiscard)
+                if model.stashCount > 0 { StashesLink(model: model) }
                 Divider()
                 CommitBox(model: model)
             }
-            .frame(minWidth: 220, idealWidth: 300, maxWidth: 380, maxHeight: .infinity)
+            .frame(maxHeight: .infinity)
+        } trailing: {
 
-            DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard)
-                .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if let f = model.selectedFile, f.kind == .conflicted { ConflictPane(model: model, path: f.path).id(f.path) }
+                else { DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard) }
+            }
+            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
         .confirmationDialog("Discard changes?", isPresented: Binding(get: { confirmDiscard != nil }, set: { if !$0 { confirmDiscard = nil } })) {
             Button("Discard \(confirmDiscard?.count ?? 0) file(s)", role: .destructive) {
                 if let fs = confirmDiscard { Task { await model.discard(fs) } }
             }
         } message: { Text("Tracked changes are reverted; untracked files are moved to the Trash.") }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in
-            let list = model.staged + model.unstaged
+            let list = model.listed
             guard let d = n.object as? Int, let i = list.firstIndex(where: { $0.id == model.selectedFileID }) else { return }
             model.select(list[max(0, min(list.count - 1, i + d))].id)
         }
@@ -201,11 +212,12 @@ struct ChangesView: View {
 struct FileListView: View {
     var model: WorktreeModel
     @Binding var confirmDiscard: [FileChange]?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         // The diff follows the row just added to the selection (plain click, ⌘-click), else stays put.
         let selection = Binding(get: { model.selectedFileIDs }, set: { ids in
-            let order = model.staged + model.unstaged
+            let order = model.listed
             let added = ids.subtracting(model.selectedFileIDs)
             let shown = order.first { added.contains($0.id) }?.id
                 ?? (ids.contains(model.selectedFileID ?? "") ? model.selectedFileID : order.first { ids.contains($0.id) }?.id)
@@ -213,6 +225,13 @@ struct FileListView: View {
             model.selectedFileIDs = ids
         })
         List(selection: selection) {
+            if !model.conflicted.isEmpty {
+                Section {
+                    ForEach(model.conflicted) { f in row(f) }
+                } header: {
+                    sectionHeader("Conflicts", count: model.conflicted.count, action: nil) {}
+                }
+            }
             if !model.staged.isEmpty {
                 Section {
                     ForEach(model.staged) { f in row(f) }
@@ -269,6 +288,17 @@ struct FileListView: View {
         if !unstaged.isEmpty { Button("Stage\(n(unstaged))") { Task { await model.stage(unstaged) } } }
         if !staged.isEmpty { Button("Unstage\(n(staged))") { Task { await model.unstage(staged) } } }
         if !unstaged.isEmpty { Button("Discard Changes\(n(unstaged))…", role: .destructive) { confirmDiscard = unstaged } }
+        if !fs.isEmpty {
+            let paths = Array(Set(fs.map(\.path))).sorted()
+            Button("Stash\(paths.count == 1 ? "" : " \(paths.count) Files")") {
+                Task { await model.stash(message: "", untracked: fs.contains { $0.kind == .untracked }, paths: paths) }
+            }
+        }
+        if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added {
+            Divider()
+            Button("Blame") { openWindow(id: "file", value: FileTarget(worktree: model.path, path: f.path)) }
+            Button("File History") { openWindow(id: "file", value: FileTarget(worktree: model.path, path: f.path, mode: "history")) }
+        }
         if !fs.isEmpty {
             Divider()
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
@@ -330,7 +360,8 @@ struct DiffPane: View {
         // Keep showing the previous diff until the next one is parsed: swapping in a spinner for ~50 ms reads as a flash.
         if let f = model.selectedFile, let d = model.diff {
             VStack(spacing: 0) {
-                DiffHeader(path: d.path, oldPath: d.oldPath != d.newPath ? d.oldPath : nil, additions: d.additions, deletions: d.deletions) {
+                DiffHeader(path: d.path, oldPath: d.oldPath != d.newPath ? d.oldPath : nil, additions: d.additions, deletions: d.deletions,
+                           file: f.kind == .untracked || f.kind == .added ? nil : FileTarget(worktree: model.path, path: f.path)) {
                     if f.staged { Button("Unstage File") { Task { await model.unstage([f]) } } }
                     else {
                         Button("Discard…") { confirmDiscard = [f] }
@@ -370,7 +401,9 @@ struct DiffHeader<Actions: View>: View {
     var oldPath: String?
     var additions: Int
     var deletions: Int
+    var file: FileTarget? = nil   // offers Blame and History for it
     @ViewBuilder var actions: Actions
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 8) {
@@ -380,6 +413,16 @@ struct DiffHeader<Actions: View>: View {
             Text(verbatim: "+\(String(additions))").foregroundStyle(.green).monospacedDigit()
             Text(verbatim: "−\(String(deletions))").foregroundStyle(.red).monospacedDigit()
             Spacer()
+            if let file {
+                Group {
+                    Button { openWindow(id: "file", value: file) } label: { Image(systemName: "person.text.rectangle") }
+                        .help("Blame: who last changed each line")
+                    Button { var f = file; f.mode = "history"; openWindow(id: "file", value: f) } label: { Image(systemName: "clock.arrow.circlepath") }
+                        .help("File History")
+                }
+                .buttonStyle(.borderless)
+                if !(Actions.self == EmptyView.self) { Divider().frame(height: 14) }
+            }
             actions.controlSize(.small)
         }
         .padding(.horizontal, 12)
@@ -388,18 +431,62 @@ struct DiffHeader<Actions: View>: View {
     }
 }
 
+/// Under the file list: stashes are set-aside changes, so Changes points at them; History shows and applies them.
+struct StashesLink: View {
+    var model: WorktreeModel
+    @AppStorage("tab") private var tab = "changes"
+
+    var body: some View {
+        Button {
+            model.history.setScope(.stashes)
+            tab = "history"
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full").foregroundStyle(.secondary)
+                Text(model.stashCount == 1 ? "1 stash" : "\(model.stashCount) stashes")
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show stashes in History")
+    }
+}
+
 struct CommitBox: View {
     @Bindable var model: WorktreeModel
+    @State private var stashing = false
+    @State private var stashMessage = ""
+    @State private var stashUntracked = true
+    @AppStorage("aiHarness") private var aiHarness = CommitAI.defaultHarness   // re-render when Settings changes it
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextEditor(text: $model.commitMessage)
+            HStack(spacing: 6) {
+                TextField("Summary", text: title).textFieldStyle(.roundedBorder)
+                    .onSubmit { if canCommit { Task { await model.commit() } } }
+                if let h = CommitAI.selected {
+                    if model.generatingMessage { ProgressView().controlSize(.small).frame(width: 20) }
+                    else {
+                        let usable = !model.files.isEmpty || model.amend
+                        Button { Task { await model.generateMessage() } } label: {
+                            Image(systemName: "sparkles").foregroundStyle(usable ? Color.accentColor : Color.secondary)
+                        }
+                            .buttonStyle(.borderless)
+                            .disabled(!usable)
+                            .help("\(model.commitMessage.isEmpty ? "Write" : "Rewrite") the message with \(h.name), from the staged changes (or all of them when nothing is staged)")
+                    }
+                }
+            }
+            TextEditor(text: description)
                 .font(.body)
                 .scrollContentBackground(.hidden)
-                .frame(height: 76)
+                .frame(height: 56)
                 .overlay(alignment: .topLeading) {
-                    if model.commitMessage.isEmpty {
-                        Text("Commit message").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                    if description.wrappedValue.isEmpty {
+                        Text("Description").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
                     }
                 }
             HStack {
@@ -407,6 +494,18 @@ struct CommitBox: View {
                     .toggleStyle(.checkbox)
                     .onChange(of: model.amend) { _, on in if on && model.commitMessage.isEmpty { Task { await model.loadLastCommitMessage() } } }
                 Spacer()
+                Button("Stash…") { stashing = true }
+                    .disabled(model.files.isEmpty)
+                    .help("Set all changes aside without committing them")
+                    .popover(isPresented: $stashing, arrowEdge: .top) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Message (optional)", text: $stashMessage).textFieldStyle(.roundedBorder).frame(width: 260)
+                                .onSubmit { stash() }
+                            Toggle("Include untracked files", isOn: $stashUntracked).toggleStyle(.checkbox)
+                            HStack { Spacer(); Button("Stash") { stash() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
+                        }
+                        .padding(14)
+                    }
                 Button {
                     Task { await model.commit() }
                 } label: {
@@ -414,11 +513,32 @@ struct CommitBox: View {
                         .frame(minWidth: 70)
                 }
                 .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(model.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (model.staged.isEmpty && !model.amend))
+                .shortcut(.commit)
+                .disabled(!canCommit)
             }
         }
         .padding(10)
         .background(.background.secondary)
+    }
+
+    private var canCommit: Bool { !title.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty && (!model.staged.isEmpty || model.amend) }
+
+    /// The message is one string (what git takes, what the AI writes); the fields edit its first line and the rest.
+    private var title: Binding<String> {
+        Binding(get: { String(model.commitMessage.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "") },
+                set: { t in model.commitMessage = Self.join(t.replacingOccurrences(of: "\n", with: " "), description.wrappedValue) })
+    }
+    private var description: Binding<String> {
+        Binding(get: {
+            let parts = model.commitMessage.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            return parts.count > 1 ? String(parts[1].trimmingPrefix(while: \.isNewline)) : ""
+        }, set: { d in model.commitMessage = Self.join(title.wrappedValue, d) })
+    }
+    private static func join(_ t: String, _ d: String) -> String { d.isEmpty ? t : t + "\n\n" + d }
+
+    private func stash() {
+        let (m, u) = (stashMessage, stashUntracked)
+        stashing = false; stashMessage = ""
+        Task { await model.stash(message: m, untracked: u) }
     }
 }

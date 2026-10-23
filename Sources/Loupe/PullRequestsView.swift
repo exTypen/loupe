@@ -181,20 +181,25 @@ struct PullRow: View {
 struct Avatar: View {
     var user: FUser
     var size: CGFloat = 20
-    @State private var image: NSImage?
+    @State private var loaded: (url: URL, image: NSImage)?   // keyed by URL: a reused view (a detail header) changes users
 
     private var url: URL? { user.avatar_url.flatMap(URL.init(string:)) }
 
     var body: some View {
         Group {
-            if let img = image ?? url.flatMap(AvatarCache.shared.cached) { Image(nsImage: img).resizable().scaledToFill() }
+            if let img = loaded.flatMap({ $0.url == url ? $0.image : nil }) ?? url.flatMap(AvatarCache.shared.cached) {
+                Image(nsImage: img).resizable().scaledToFill()
+            }
             else { initials }
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(.separator, lineWidth: 0.5))
         .help(user.login)
-        .task(id: url) { if let url, image == nil { image = await AvatarCache.shared.load(url) } }
+        .task(id: url) {
+            guard let url, loaded?.url != url else { return }
+            if let img = await AvatarCache.shared.load(url) { loaded = (url, img) }
+        }
     }
 
     private var initials: some View {
@@ -244,7 +249,7 @@ struct PullDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Button(action: back) { Label("Pull Requests", systemImage: "chevron.left") }
-                    .buttonStyle(.borderless).keyboardShortcut("[", modifiers: .command)
+                    .buttonStyle(.borderless).shortcut(.back)
                 Text(pull.pr.title).font(.title3.weight(.semibold)).lineLimit(1).textSelection(.enabled)
                 Text(verbatim: "#\(pull.pr.number)").font(.title3).foregroundStyle(.secondary)
                 Spacer()

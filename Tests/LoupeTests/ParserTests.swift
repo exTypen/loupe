@@ -269,3 +269,77 @@ import AppKit
     #expect(switcherMatches([a, b, c], query: "shop main", recent: []) == [a])
     #expect(switcherMatches([a, b, c], query: "CHECK", recent: []) == [b])
 }
+
+@Test func parsesAndResolvesConflictMarkers() {
+    let file = "a\n<<<<<<< HEAD\nmine\n||||||| base\nold\n=======\ntheirs\n>>>>>>> abc123 (fix)\nb\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> abc123 (fix)\n"
+    let t = ConflictText(file)
+    #expect(t.conflictCount == 2)
+    guard case .conflict(let c) = t.segments[1] else { Issue.record("no conflict"); return }
+    #expect(c.current == ["mine"] && c.base == ["old"] && c.incoming == ["theirs"])
+    #expect(c.currentLabel == "HEAD" && c.incomingLabel == "abc123 (fix)")
+    let once = t.resolving(0, with: c.incoming)
+    #expect(once == "a\ntheirs\nb\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> abc123 (fix)\n")   // the other conflict survives verbatim
+    #expect(ConflictText(once).resolving(0, with: ["x", "y"]) == "a\ntheirs\nb\nx\ny\n")
+    #expect(ConflictText("no markers\n").conflictCount == 0)
+}
+
+@Test func laysOutGraphLanes() {
+    func c(_ s: String, _ p: [String]) -> Commit { Commit(sha: s, parents: p, author: "", email: "", date: .now, refs: [], subject: "") }
+    // M merges F into A; F branches off B.   M─┬─A─B─R
+    //                                           └─F─┘
+    let rows = Graph.layout([c("M", ["A", "F"]), c("A", ["B"]), c("F", ["B"]), c("B", ["R"]), c("R", [])], main: "M")
+    #expect(rows[0] == GraphRow(col: 0, through: [], into: [], out: [0, 1]))
+    #expect(rows[1] == GraphRow(col: 0, through: [1], into: [0], out: [0]))
+    #expect(rows[2] == GraphRow(col: 1, through: [0], into: [1], out: [0]))   // F joins the lane already waiting for B
+    #expect(rows[3] == GraphRow(col: 0, through: [], into: [0], out: [0]))
+    #expect(rows[4].out.isEmpty)
+    // The newest commit is on a side branch X off B: the main line still gets lane 0, X takes lane 1.
+    let side = Graph.layout([c("X", ["B"]), c("M", ["B"]), c("B", [])], main: "M")
+    #expect(side.map(\.col) == [1, 0, 0])
+    #expect(side[0].out == [1] && side[1].through == [1] && side[2].into == [0, 1])
+    // origin/main two commits ahead of main (M): they run in lane 1 and end in M, which stays in lane 0.
+    let ahead = Graph.layout([c("O2", ["O1"]), c("O1", ["M"]), c("M", ["B"]), c("B", [])], main: "M")
+    #expect(ahead.map(\.col) == [1, 1, 0, 0])
+    #expect(ahead[2].into == [1] && ahead[2].out == [0])
+}
+
+@Test func blamesAndFollowsFileHistoryAgainstRealRepo() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-\(UUID().uuidString)").path
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let id = ["-c", "user.name=alice", "-c", "user.email=a@x"]
+    try "one\ntwo\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+    try await Git.run(["init", "-q"], in: dir)
+    try await Git.run(["add", "."], in: dir)
+    try await Git.run(id + ["commit", "-qm", "first"], in: dir)
+    try await Git.run(["mv", "a.txt", "b.txt"], in: dir)
+    try "one\nTWO\n".write(toFile: dir + "/b.txt", atomically: true, encoding: .utf8)
+    try await Git.run(id + ["commit", "-qam", "rename and change"], in: dir)
+    let b = try await Git.blame("b.txt", rev: nil, in: dir)
+    #expect(b.lines.map(\.text) == ["one", "TWO"])
+    #expect(b.commits[b.lines[0].sha]?.summary == "first" && b.commits[b.lines[1].sha]?.summary == "rename and change")
+    #expect(b.commits[b.lines[0].sha]?.author == "alice")
+    let log = try await Git.fileLog("b.txt", in: dir)
+    #expect(log.map(\.commit.subject) == ["rename and change", "first"])
+    #expect(log.map(\.path) == ["b.txt", "a.txt"])   // followed across the rename
+}
+
+@Test func cleansAIOutput() {
+    #expect(CommitAI.clean("\u{1B}[1mFix the parser\u{1B}[0m\n") == "Fix the parser")
+    #expect(CommitAI.clean("```\nAdd login\n\nWith tests\n```") == "Add login\n\nWith tests")
+    #expect(CommitAI.clean("\"Bump version\"") == "Bump version")
+}
+
+@MainActor @Test func reassignsShortcutsAndResolvesClashes() {
+    let s = Shortcuts.shared
+    s.reset(); defer { s.reset() }
+    #expect(s.shortcut(.toggleSidebar)?.display == "⇧⌘S")
+    #expect(s.shortcut(.nextFile)?.display == "⌥↓")
+    // Giving History the Changes shortcut takes it from Changes.
+    let taken = s.set(Shortcut("1"), for: .historyTab)
+    #expect(taken == .changesTab && s.shortcut(.changesTab) == nil && s.shortcut(.historyTab) == Shortcut("1"))
+    s.set(nil, for: .refresh)
+    #expect(s.shortcut(.refresh) == nil && s.isCustom(.refresh))
+    s.set(ShortcutAction.refresh.standard, for: .refresh)   // back to the default: no longer custom
+    #expect(!s.isCustom(.refresh) && s.shortcut(.refresh) == Shortcut("r"))
+}

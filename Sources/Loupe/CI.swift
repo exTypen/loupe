@@ -440,7 +440,7 @@ struct CheckDetail: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Button(action: back) { Label("Checks", systemImage: "chevron.left") }
-                        .buttonStyle(.borderless).keyboardShortcut("[", modifiers: .command)
+                        .buttonStyle(.borderless).shortcut(.back)
                     StateIcon(state: log.map { CheckState(jobStatus: $0.job.status) } ?? check.state)
                     Text(check.status.context).font(.headline).lineLimit(2).textSelection(.enabled)
                     Spacer()

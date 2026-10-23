@@ -28,6 +28,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }.tag("general")
             SpacesSettings()
                 .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }.tag("spaces")
+            ShortcutSettings()
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
         }
         .frame(width: 720, height: 500)
     }
@@ -43,9 +45,86 @@ struct GeneralSettings: View {
             }
             .pickerStyle(.segmented)
             .onChange(of: appearance) { (Appearance(rawValue: appearance) ?? .system).apply() }
+            CommitAISettings()
         }
         .formStyle(.grouped)
     }
+}
+
+// MARK: - Commit messages
+
+struct CommitAISettings: View {
+    @State private var tools = AIHarnesses.shared
+    @AppStorage("aiHarness") private var harness = CommitAI.defaultHarness
+    @AppStorage("aiStyle") private var style = CommitStyle.repository.rawValue
+    @AppStorage("aiInstructions") private var instructions = ""
+    @State private var model = ""
+    @State private var models: [ModelOption] = []
+
+    private var detected: [Harness] { Harness.all.filter { tools.paths[$0.id] != nil } }
+    private var current: Harness? { CommitAI.selected }
+
+    var body: some View {
+        Section {
+            if !tools.scanned { HStack { ProgressView().controlSize(.small); Text("Looking for AI tools…").foregroundStyle(.secondary) } }
+            else if detected.isEmpty {
+                Text("No AI coding tool found. Install one of: \(Harness.all.map(\.name).joined(separator: ", ")).").foregroundStyle(.secondary)
+            } else {
+                LabeledContent("Found on this Mac") {
+                    Text(detected.map(\.name).joined(separator: ", ")).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                }
+                Picker("Write with", selection: $harness) {
+                    Text("Automatic (\(detected.first?.name ?? "none"))").tag(CommitAI.defaultHarness)
+                    ForEach(detected) { Text($0.name).tag($0.id) }
+                    Divider()
+                    Text("Off").tag("off")
+                }
+                if let h = current {
+                    LabeledContent("Model") {
+                        HStack(spacing: 4) {
+                            TextField("", text: $model, prompt: Text("\(h.name) default")).frame(maxWidth: 220)
+                                .onSubmit { save(h) }
+                                .onChange(of: model) { save(h) }
+                            if !models.isEmpty {
+                                Menu {
+                                    Button("\(h.name) default") { model = "" }
+                                    Divider()
+                                    ForEach(models, id: \.self) { m in Button(m.label == m.id ? m.id : "\(m.label)   \(m.id)") { model = m.id } }
+                                } label: { Image(systemName: "chevron.up.chevron.down") }
+                                .menuStyle(.borderlessButton).fixedSize()
+                            }
+                        }
+                    }
+                    Picker("Style", selection: $style) {
+                        ForEach(CommitStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    TextField("Extra instructions", text: $instructions, prompt: Text("e.g. Write in Turkish. Mention ticket numbers."), axis: .vertical)
+                        .lineLimit(1...3)
+                }
+            }
+        } header: {
+            HStack {
+                Text("Commit Messages")
+                Spacer()
+                Button("Look Again") { Task { await tools.scan() } }.buttonStyle(.borderless).font(.caption).disabled(!tools.scanned)
+            }
+        } footer: {
+            Group {
+                if let h = current {
+                    Text("\((CommitStyle(rawValue: style) ?? .repository).summary) The ✨ button next to the summary sends the change and recent commit subjects to \(h.name) in its read-only mode, on your own subscription.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .task(id: [current?.id ?? "", tools.scanned ? "1" : "0"]) {
+            guard let h = current, let path = tools.paths[h.id] else { models = []; return }
+            model = CommitAI.model(for: h)
+            models = h.models
+            models = await CommitAI.availableModels(h, path: path)
+        }
+    }
+
+    private func save(_ h: Harness) { UserDefaults.standard.set(model.trimmingCharacters(in: .whitespaces), forKey: "aiModel.\(h.id)") }
 }
 
 // MARK: - Spaces
