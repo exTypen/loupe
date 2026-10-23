@@ -16,7 +16,7 @@ enum Git {
     }()
 
     @discardableResult
-    static func run(_ args: [String], in dir: String, stdin: Data? = nil, allowFailure: Bool = false) async throws -> Data {
+    static func run(_ args: [String], in dir: String, stdin: Data? = nil, allowFailure: Bool = false, env extra: [String: String] = [:]) async throws -> Data {
         let enqueued = Date()
         return try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -28,6 +28,7 @@ enum Git {
                 env["GIT_OPTIONAL_LOCKS"] = "0"   // status must not fight other git processes for index.lock
                 env["GIT_TERMINAL_PROMPT"] = "0"
                 env["LC_ALL"] = "C"
+                env.merge(extra) { _, new in new }
                 p.environment = env
                 let out = Pipe(), err = Pipe(), inp = Pipe()
                 p.standardOutput = out

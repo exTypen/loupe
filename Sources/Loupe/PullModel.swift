@@ -69,7 +69,7 @@ final class PullListModel {
     }
 }
 
-struct LocalCheckout { var dir: String; var remote: String }
+struct LocalCheckout { var dir: String; var remote: String; var gitAuth: [String: String] = [:] }
 
 @MainActor @Observable
 final class PullRequestModel {
@@ -154,7 +154,7 @@ final class PullRequestModel {
         let head = "refs/remotes/\(remote)/pr/\(pr.number)", base = "refs/remotes/\(remote)/\(pr.base.ref)"
         // Fetching the base branch brings in pr.base.sha. Diff from that sha, not the branch tip: once the PR is
         // merged the tip contains it and `tip...head` is empty. Byte-identical to GitHub's own diff.
-        try await Git.run(["fetch", "--no-tags", remote, "+refs/pull/\(pr.number)/head:\(head)", "+refs/heads/\(pr.base.ref):\(base)"], in: dir)
+        try await Git.run(["fetch", "--no-tags", remote, "+refs/pull/\(pr.number)/head:\(head)", "+refs/heads/\(pr.base.ref):\(base)"], in: dir, env: local.gitAuth)
         let data = try await Git.run(["diff", "--no-color", "--no-ext-diff", "-M", "\(pr.base.sha)...\(head)"], in: dir)
         localDiffSHA = pr.head.sha
         return data

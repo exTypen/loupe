@@ -7,7 +7,7 @@ struct PullRequestsView: View {
 
     var body: some View {
         if let remote = model.remote, let client = model.client {
-            PullBrowser(model: model, list: model.pulls, client: client, remote: remote, me: app.account(for: remote)?.username, layout: layout)
+            PullBrowser(model: model, list: model.pulls, client: client, remote: remote, me: model.account?.username, layout: layout)
         } else if !model.remoteDetected || !app.tokensLoaded {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let remote = model.remote {
@@ -50,7 +50,7 @@ struct PullBrowser: View {
         Group {
             // A big PR needs every pixel: the detail replaces the list instead of sitting beside it.
             if let n = list.selected, let pr = list.pulls.first(where: { $0.number == n }) ?? list.details[n]?.pr {
-                PullDetailView(pull: list.detail(for: pr, client: client, repo: remote, local: LocalCheckout(dir: model.path, remote: model.remoteName)), worktree: model, layout: layout) { list.selected = nil }
+                PullDetailView(pull: list.detail(for: pr, client: client, repo: remote, local: LocalCheckout(dir: model.path, remote: model.remoteName, gitAuth: model.gitAuth)), worktree: model, layout: layout) { list.selected = nil }
                     .id(n)
             } else {
                 VStack(spacing: 0) {
@@ -497,9 +497,9 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Accounts") {
-                if app.accounts.isEmpty { Text("No accounts yet.").foregroundStyle(.secondary) }
-                ForEach(app.accounts) { a in
+            Section(app.spaces.count > 1 ? "Accounts in “\(app.space.name)”" : "Accounts") {
+                if app.accounts(in: app.currentSpace).isEmpty { Text("No accounts yet.").foregroundStyle(.secondary) }
+                ForEach(app.accounts(in: app.currentSpace)) { a in
                     HStack {
                         Image(systemName: a.isGitHub ? "cat" : "server.rack")
                         VStack(alignment: .leading) {
@@ -546,7 +546,8 @@ struct SettingsView: View {
             defer { checking = false }
             do {
                 let me = try await ForgejoClient(baseURL: base, token: token, github: github).me()
-                let acct = ForgejoAccount(baseURL: base, username: me.login, github: github ? true : nil)
+                let acct = ForgejoAccount(baseURL: base, username: me.login, github: github ? true : nil,
+                                          space: app.currentSpace == Space.defaultID ? nil : app.currentSpace)
                 app.setToken(token, for: acct)
                 app.accounts.removeAll { $0.id == acct.id }
                 app.accounts.append(acct)

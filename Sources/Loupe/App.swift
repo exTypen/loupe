@@ -145,11 +145,89 @@ struct Sidebar: View {
     @Environment(AppModel.self) private var app
     @State private var addingWorktreeFor: String?
     @State private var removing: (repo: String, wt: Worktree)?
+    @State private var dropTarget: String?   // repo header a dragged repo would land before
+    @State private var renaming: Space?
+    @State private var newName = ""
+    @State private var deleting: Space?
 
     var body: some View {
+        SpacePager(index: app.spaces.firstIndex { $0.id == app.currentSpace } ?? 0, count: app.spaces.count) { step in
+            app.switchSpace(by: step)   // bounds-checked: the space list can change under a swipe
+        } pages: { width in
+            ForEach(app.spaces) { sp in
+                VStack(spacing: 0) {
+                    if app.spaces.count > 1 {
+                        Text(sp.name).font(.title3.weight(.bold)).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18).padding(.vertical, 6)
+                            .contextMenu { spaceMenu(sp) }
+                    }
+                    repoList(sp)
+                }
+                .frame(width: width)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            HStack(spacing: 8) {
+                Button { openRepository(app) } label: { Image(systemName: "plus.rectangle.on.folder") }
+                    .help("Open Repository…")
+                Spacer()
+                ForEach(app.spaces) { sp in
+                    let current = sp.id == app.currentSpace
+                    Button { go(to: sp.id) } label: {
+                        Image(systemName: current ? "circle.fill" : "circle").font(.system(size: 8)).padding(2).contentShape(Rectangle())
+                    }
+                    .foregroundStyle(current ? .primary : .secondary)
+                    .help(sp.name)
+                    .contextMenu { spaceMenu(sp) }
+                    // Drop a repo header here to move the repo to that space.
+                    .dropDestination(for: String.self) { items, _ in
+                        let repos = items.filter(app.repoPaths.contains)
+                        if !repos.isEmpty { app.moveRepos(repos, to: sp.id) }
+                        return !repos.isEmpty
+                    }
+                }
+                Spacer()
+                Button { withAnimation(.snappy) { app.addSpace() } } label: { Image(systemName: "plus") }
+                    .help("New Space")
+            }
+            .buttonStyle(.borderless)
+            .padding(10)
+            .background(.bar)   // rows scroll under the inset; without a background they show through the buttons
+            .overlay(alignment: .top) { Divider() }
+        }
+        .sheet(item: Binding(get: { addingWorktreeFor.map(IdentifiedString.init) }, set: { addingWorktreeFor = $0?.value })) { r in
+            AddWorktreeSheet(repo: r.value)
+        }
+        .confirmationDialog("Remove worktree “\(removing?.wt.name ?? "")”?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button("Remove", role: .destructive) { remove(force: false) }
+            Button("Force Remove (discard changes)", role: .destructive) { remove(force: true) }
+        } message: { Text("The directory is deleted. The branch is kept.") }
+        .alert("Rename Space", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $newName)
+            Button("Rename") {
+                let name = newName.trimmingCharacters(in: .whitespaces)
+                if let r = renaming, !name.isEmpty, let i = app.spaces.firstIndex(where: { $0.id == r.id }) { app.spaces[i].name = name }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete space “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) { if let d = deleting { withAnimation(.snappy) { app.deleteSpace(d.id) } } }
+        } message: { Text("Its repositories move to the neighbouring space. Its accounts are signed out and their tokens removed from the Keychain.") }
+    }
+
+    @ViewBuilder private func spaceMenu(_ sp: Space) -> some View {
+        Button("Rename…") { newName = sp.name; renaming = sp }
+        Button("Delete…", role: .destructive) { deleting = sp }.disabled(app.spaces.count < 2)
+    }
+
+    private func go(to id: String) {
+        withAnimation(.snappy) { app.switchSpace(to: id) }
+    }
+
+    private func repoList(_ sp: Space) -> some View {
         @Bindable var app = app
-        List(selection: $app.selection) {
-            ForEach(app.repoPaths, id: \.self) { repo in
+        return List(selection: $app.selection) {
+            ForEach(sp.repos, id: \.self) { repo in
                 Section {
                     ForEach(app.collapsed.contains(repo) ? [] : app.worktrees[repo] ?? []) { wt in
                         WorktreeRow(wt: wt, repo: repo, model: app.model(for: wt.path))
@@ -186,10 +264,29 @@ struct Sidebar: View {
                     }
                     .padding(.trailing, 10)   // headers run to the list edge; line the count up with the rows' badges
                     .selectionDisabled()   // otherwise the first row's selection highlight also wraps the header
+                    // Drag a header onto another to reorder, or onto a space dot to move the repo there.
+                    .draggable(repo) { Text((repo as NSString).lastPathComponent).padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6)) }
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let r = items.first, sp.repos.contains(r) else { return false }
+                        withAnimation(.snappy) { app.moveRepo(r, before: repo) }
+                        return true
+                    } isTargeted: { on in
+                        if on { dropTarget = repo } else if dropTarget == repo { dropTarget = nil }
+                    }
+                    .overlay(alignment: .top) {
+                        if dropTarget == repo { Capsule().fill(Color.accentColor).frame(height: 2).offset(y: -4) }
+                    }
                     .contextMenu {
                         Button("New Worktree…") { addingWorktreeFor = repo }
                         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo)]) }
                         Button("Prune Stale Worktrees") { Task { try? await Git.run(["worktree", "prune"], in: repo); await app.refreshWorktrees(repo: repo) } }
+                        if app.spaces.count > 1 {
+                            Menu("Move to Space") {
+                                ForEach(app.spaces.filter { $0.id != sp.id }) { other in
+                                    Button(other.name) { app.moveRepos([repo], to: other.id) }
+                                }
+                            }
+                        }
                         Divider()
                         Button("Remove from Loupe") { app.removeRepo(repo) }
                     }
@@ -197,23 +294,6 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button { openRepository(app) } label: { Label("Open Repository", systemImage: "plus.rectangle.on.folder") }
-                    .buttonStyle(.borderless)
-                Spacer()
-            }
-            .padding(10)
-            .background(.bar)   // rows scroll under the inset; without a background they show through the button
-            .overlay(alignment: .top) { Divider() }
-        }
-        .sheet(item: Binding(get: { addingWorktreeFor.map(IdentifiedString.init) }, set: { addingWorktreeFor = $0?.value })) { r in
-            AddWorktreeSheet(repo: r.value)
-        }
-        .confirmationDialog("Remove worktree “\(removing?.wt.name ?? "")”?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
-            Button("Remove", role: .destructive) { remove(force: false) }
-            Button("Force Remove (discard changes)", role: .destructive) { remove(force: true) }
-        } message: { Text("The directory is deleted. The branch is kept.") }
     }
 
     private func remove(force: Bool) {
@@ -231,6 +311,165 @@ struct Sidebar: View {
             Divider()
             Button("Remove Worktree…", role: .destructive) { removing = (repo, wt) }
         }
+    }
+}
+
+/// Spaces side by side, one sidebar wide each, paged like a photo gallery: while two fingers are on the trackpad the
+/// spaces follow them both ways, and on release they spring to the nearest space (or the next one, for a flick).
+/// Touching again mid-spring catches the pages where they are. Clicks on the space dots animate the same offset.
+struct SpacePager<Pages: View>: View {
+    var index: Int
+    var count: Int
+    var move: (Int) -> Void   // by this many spaces, once the pages come to rest on another one
+    @ViewBuilder var pages: (CGFloat) -> Pages
+    @State private var position: CGFloat?   // in pages, while a swipe or its spring drives the pager; nil → at `index`
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            HStack(spacing: 0) { pages(w) }
+                .offset(x: -(position ?? CGFloat(index)) * w)
+                .frame(width: w, alignment: .leading)
+                .overlay(SwipePager(index: index, count: count,
+                    position: { position = $0 },
+                    // Switch once the pages are at rest, not on release: building the new detail view stalls the
+                    // main thread, and mid-slide that freezes the animation.
+                    rest: { page in
+                        var t = Transaction(); t.disablesAnimations = true
+                        withTransaction(t) { position = nil; if page != index { move(page - index) } }
+                    }))
+        }
+        .clipped()
+    }
+}
+
+/// The trackpad half of SpacePager. A transparent view over the pages that takes scroll events only (clicks, drags
+/// and menus hit-test straight through). Each gesture is held back for its first few points to see which way it
+/// goes: horizontal ones drive the pages, vertical ones (and mouse wheels) are replayed to the list underneath.
+/// The release spring runs on a display link rather than a SwiftUI animation so a new touch can catch it mid-flight.
+struct SwipePager: NSViewRepresentable {
+    var index: Int
+    var count: Int
+    var position: (CGFloat) -> Void
+    var rest: (Int) -> Void   // the pages came to rest on this space
+    func makeNSView(context: Context) -> PagerView { PagerView() }
+    func updateNSView(_ v: PagerView, context: Context) { v.config = self }
+
+    final class PagerView: NSView {
+        var config: SwipePager?
+        private enum Axis { case none, undecided, horizontal, vertical }
+        private var axis = Axis.none
+        private var held: [NSEvent] = []          // the undecided start of a gesture
+        private weak var below: NSView?           // where vertical gestures go
+        private var passthrough = false
+        private var sx: CGFloat = 0, sy: CGFloat = 0
+        private var p: CGFloat = 0, v: CGFloat = 0   // position (pages) and velocity (pages/s)
+        private var moving = false                   // p is live: a swipe or its spring is in progress
+        private var target: CGFloat = 0
+        private var samples: [(t: TimeInterval, p: CGFloat)] = []
+        private var link: CADisplayLink?
+        private var lastFrame: CFTimeInterval = 0
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard !passthrough, NSApp.currentEvent?.type == .scrollWheel else { return nil }
+            return super.hitTest(point)
+        }
+
+        override func scrollWheel(with e: NSEvent) {
+            guard e.hasPreciseScrollingDeltas else { replay(e); return }   // mouse wheel
+            if !e.momentumPhase.isEmpty {   // a flick's coast: our spring has its velocity; the list's is the list's
+                if axis != .horizontal { replay(e) }
+                return
+            }
+            if e.phase.contains(.mayBegin) || (e.phase.contains(.began) && axis != .undecided) { start(e) }
+            switch axis {
+            case .none, .vertical: replay(e)
+            case .undecided:
+                held.append(e)
+                sx += e.scrollingDeltaX; sy += e.scrollingDeltaY
+                if e.phase.contains(.ended) || e.phase.contains(.cancelled) {   // lifted without moving
+                    flush(); axis = .none
+                    if moving { release(velocity: 0) }
+                } else if hypot(sx, sy) > 4 {
+                    if abs(sx) > abs(sy) {
+                        axis = .horizontal; held = []
+                        if !moving { p = CGFloat(config?.index ?? 0); moving = true }
+                        samples = []; drag(sx, e)
+                    } else {
+                        axis = .vertical; flush()
+                        if moving { release(velocity: 0) }
+                    }
+                }
+            case .horizontal:
+                if e.phase.contains(.ended) || e.phase.contains(.cancelled) { release(velocity: velocity()) }
+                else { drag(e.scrollingDeltaX, e) }
+            }
+        }
+
+        private func start(_ e: NSEvent) {
+            stopLink()   // a touch catches the pages mid-spring
+            axis = .undecided; held = []; sx = 0; sy = 0
+            passthrough = true
+            below = window?.contentView?.hitTest(e.locationInWindow)
+            passthrough = false
+        }
+
+        private func replay(_ e: NSEvent) { below?.scrollWheel(with: e) }
+        private func flush() { held.forEach(replay); held = [] }
+
+        /// `dx` is the event's delta: with natural scrolling it already follows the finger.
+        private func drag(_ dx: CGFloat, _ e: NSEvent) {
+            guard let c = config, bounds.width > 0 else { return }
+            let finger = e.isDirectionInvertedFromDevice ? dx : -dx
+            var dp = -finger / bounds.width
+            if p + dp < 0 || p + dp > CGFloat(c.count - 1) { dp *= 0.35 }   // rubber band past the ends
+            p += dp
+            samples.append((e.timestamp, p))
+            samples.removeAll { e.timestamp - $0.t > 0.08 }
+            c.position(p)
+        }
+
+        private func velocity() -> CGFloat {
+            guard let f = samples.first, let l = samples.last, l.t > f.t else { return 0 }
+            return (l.p - f.p) / CGFloat(l.t - f.t)
+        }
+
+        /// Picks the resting space: the nearest one, or the next one in the flick's direction.
+        private func release(velocity: CGFloat) {
+            guard let c = config else { return }
+            axis = .none
+            var t = p.rounded()
+            if velocity > 0.6 { t = p.rounded(.down) + 1 } else if velocity < -0.6 { t = p.rounded(.up) - 1 }
+            target = max(0, min(CGFloat(c.count - 1), t))
+            v = velocity
+            if link == nil {
+                let l = displayLink(target: self, selector: #selector(frame(_:)))
+                l.add(to: .main, forMode: .common)
+                link = l
+                lastFrame = 0
+            }
+        }
+
+        /// A critically damped spring toward `target`, carrying the finger's velocity.
+        @objc private func frame(_ l: CADisplayLink) {
+            let dt = lastFrame == 0 ? 1.0 / 120 : min(1.0 / 30, l.timestamp - lastFrame)
+            lastFrame = l.timestamp
+            let k: CGFloat = 500, damping = 2 * k.squareRoot()   // stiff: at rest in ~0.3 s
+            v += (-k * (p - target) - damping * v) * CGFloat(dt)
+            p += v * CGFloat(dt)
+            // At rest once the rest of the motion is under half a point: the spring's long tail is invisible.
+            let w = max(bounds.width, 1)
+            if abs(p - target) * w < 0.5 && abs(v) * w < 30 {
+                stopLink(); moving = false; p = target
+                config?.position(p)
+                config?.rest(Int(target))
+            } else {
+                config?.position(p)
+            }
+        }
+
+        private func stopLink() { link?.invalidate(); link = nil }
+        override func viewDidMoveToWindow() { if window == nil { stopLink() } }
     }
 }
 

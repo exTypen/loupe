@@ -139,7 +139,7 @@ struct HistoryView: View {
             }
             .frame(minWidth: 260, idealWidth: 340, maxWidth: 420, maxHeight: .infinity)
 
-            CommitDetailView(model: model, remote: worktree.remote, account: worktree.remote.flatMap { app.account(for: $0) }, layout: layout)
+            CommitDetailView(model: model, remote: worktree.remote, account: worktree.account, layout: layout)
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -159,7 +159,7 @@ struct HistoryView: View {
         Button("Copy SHA") { copy(c.sha) }
         Button("Copy Subject") { copy(c.subject) }
         Button("New Worktree from Here…") { worktreeBase = c.sha }
-        if let r = worktree.remote, let a = app.account(for: r) {
+        if let r = worktree.remote, let a = worktree.account {
             Button("Open in Browser") { if let u = URL(string: "\(a.baseURL)/\(r.owner)/\(r.name)/commit/\(c.sha)") { NSWorkspace.shared.open(u) } }
         }
     }

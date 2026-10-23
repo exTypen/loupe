@@ -141,14 +141,16 @@ struct ForgejoAccount: Codable, Hashable, Identifiable {
     var baseURL: String   // "https://git.example.com", "https://github.com"
     var username: String
     var github: Bool? = nil   // nil in accounts saved before GitHub support → Forgejo
+    var space: String? = nil  // nil → the default space (accounts saved before spaces)
     var isGitHub: Bool { github == true }
-    var id: String { baseURL }
+    var spaceID: String { space ?? Space.defaultID }
+    var id: String { space.map { "\($0) \(baseURL)" } ?? baseURL }   // also the Keychain account name
     var hostKey: String { URL(string: baseURL).map { u in u.host.map { $0 + (u.port.map { ":\($0)" } ?? "") } ?? "" } ?? "" }
 
     // Keychain reads can block for seconds (securityd decrypt, ACL checks); never call these from a view body.
     // AppModel loads tokens once, off the main thread, and serves them from memory.
-    nonisolated func readToken() -> String? { Keychain.get(account: baseURL) }
-    func saveToken(_ v: String?) { if let v { Keychain.set(v, account: baseURL) } else { Keychain.delete(account: baseURL) } }
+    nonisolated func readToken() -> String? { Keychain.get(account: id) }
+    func saveToken(_ v: String?) { if let v { Keychain.set(v, account: id) } else { Keychain.delete(account: id) } }
 }
 
 enum Keychain {

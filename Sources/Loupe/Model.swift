@@ -5,14 +5,31 @@ import AppKit
 
 @MainActor @Observable
 final class AppModel {
-    var repoPaths: [String] = UserDefaults.standard.stringArray(forKey: "repos") ?? [] {
-        didSet { UserDefaults.standard.set(repoPaths, forKey: "repos") }
+    /// Arc-style spaces: each has its own repos and accounts. Before spaces existed there was one flat list; it
+    /// becomes the "default" space, whose accounts keep their old Keychain items (`ForgejoAccount.space == nil`).
+    var spaces: [Space] = (try? JSONDecoder().decode([Space].self, from: UserDefaults.standard.data(forKey: "spaces") ?? Data()))
+        ?? [Space(id: Space.defaultID, name: "Default", repos: UserDefaults.standard.stringArray(forKey: "repos") ?? [],
+                  selection: UserDefaults.standard.string(forKey: "selection"))] {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(spaces), forKey: "spaces") }
     }
-    var worktrees: [String: [Worktree]] = [:]          // repo path → worktrees (main first)
-    var selection: String? = UserDefaults.standard.string(forKey: "selection") {   // selected worktree path
+    var currentSpace: String = UserDefaults.standard.string(forKey: "currentSpace") ?? Space.defaultID {
+        didSet { UserDefaults.standard.set(currentSpace, forKey: "currentSpace") }
+    }
+    private var spaceIndex: Int { spaces.firstIndex { $0.id == currentSpace } ?? 0 }
+    var space: Space { spaces[spaceIndex] }
+    var repoPaths: [String] {   // the current space's repos, in sidebar order
+        get { space.repos }
+        set { spaces[spaceIndex].repos = newValue }
+    }
+    var worktrees: [String: [Worktree]] = [:]          // repo path → worktrees (main first), across all spaces
+    var selection: String? {   // selected worktree path
         didSet {
-            UserDefaults.standard.set(selection, forKey: "selection")
-            if let s = selection { recent = [s] + recent.filter { $0 != s }.prefix(29) }
+            guard let s = selection else { spaces[spaceIndex].selection = nil; return }
+            // Jumping to a worktree in another space (⌘K, PR checkout) takes the sidebar there too.
+            let repo = repo(containing: s) ?? s
+            if !space.repos.contains(repo), let i = spaces.firstIndex(where: { $0.repos.contains(repo) }) { currentSpace = spaces[i].id }
+            spaces[spaceIndex].selection = s
+            recent = [s] + recent.filter { $0 != s }.prefix(29)
         }
     }
     var recent: [String] = UserDefaults.standard.stringArray(forKey: "recent") ?? [] {   // worktree paths, most recent first
@@ -27,11 +44,12 @@ final class AppModel {
     }
     var error: String?
     var checksOverlay: (model: ChecksModel, baseURL: String)?   // window-wide CI modal
-    var tokens: [String: String] = [:]                          // baseURL → token, read from the Keychain once at launch
+    var tokens: [String: String] = [:]                          // account id → token, read from the Keychain once at launch
     var tokensLoaded = false
     private var models: [String: WorktreeModel] = [:]
 
     init() {
+        selection = space.selection
         Task { await refreshAllWorktrees() }
         Task { await loadTokens() }
     }
@@ -39,7 +57,7 @@ final class AppModel {
     func loadTokens() async {
         let accts = accounts
         let found = await Task.detached(priority: .userInitiated) {
-            Dictionary(accts.compactMap { a in a.readToken().map { (a.baseURL, $0) } }, uniquingKeysWith: { a, _ in a })
+            Dictionary(accts.compactMap { a in a.readToken().map { (a.id, $0) } }, uniquingKeysWith: { a, _ in a })
         }.value
         tokens.merge(found) { _, new in new }
         tokensLoaded = true
@@ -47,7 +65,52 @@ final class AppModel {
 
     func setToken(_ token: String?, for account: ForgejoAccount) {
         account.saveToken(token)
-        tokens[account.baseURL] = token
+        tokens[account.id] = token
+    }
+
+    func accounts(in space: String) -> [ForgejoAccount] { accounts.filter { $0.spaceID == space } }
+
+    func switchSpace(to id: String) {
+        guard id != currentSpace, let s = spaces.first(where: { $0.id == id }) else { return }
+        currentSpace = id
+        selection = s.selection
+    }
+
+    func switchSpace(by offset: Int) {
+        let i = spaceIndex + offset
+        if spaces.indices.contains(i) { switchSpace(to: spaces[i].id) }
+    }
+
+    func addSpace() {
+        let s = Space(id: UUID().uuidString, name: "Space \(spaces.count + 1)", repos: [])
+        spaces.append(s)
+        switchSpace(to: s.id)
+    }
+
+    /// Repos go to the neighbouring space; the space's accounts and their tokens are deleted.
+    func deleteSpace(_ id: String) {
+        guard spaces.count > 1, let i = spaces.firstIndex(where: { $0.id == id }) else { return }
+        let target = spaces[i == 0 ? 1 : i - 1].id
+        moveRepos(spaces[i].repos, to: target)
+        for a in accounts where a.spaceID == id { setToken(nil, for: a) }
+        accounts.removeAll { $0.spaceID == id }
+        if currentSpace == id { switchSpace(to: target) }
+        spaces.removeAll { $0.id == id }
+    }
+
+    func moveRepos(_ repos: [String], to id: String) {
+        for i in spaces.indices { spaces[i].repos.removeAll(where: repos.contains) }
+        if let i = spaces.firstIndex(where: { $0.id == id }) { spaces[i].repos += repos }
+        if let s = selection, repos.contains(repo(containing: s) ?? s), id != currentSpace { selection = space.repos.first }
+    }
+
+    /// Sidebar drag and drop: puts `repo` just before `target` in the current space.
+    func moveRepo(_ repo: String, before target: String) {
+        guard repo != target, repoPaths.contains(repo) else { return }
+        var r = repoPaths
+        r.removeAll { $0 == repo }
+        r.insert(repo, at: r.firstIndex(of: target) ?? r.endIndex)
+        repoPaths = r
     }
 
     func model(for path: String) -> WorktreeModel {
@@ -67,20 +130,21 @@ final class AppModel {
             let common = try await Git.string(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: url.path)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let main = common.hasSuffix("/.git") ? String(common.dropLast(5)) : url.path
-            if !repoPaths.contains(main) { repoPaths.append(main) }
+            // A repo lives in one space: opening it again here moves it.
+            if !repoPaths.contains(main) { moveRepos([main], to: currentSpace) }
             await refreshWorktrees(repo: main)
             selection = url.path
         } catch { self.error = "\(url.path) is not a git repository." }
     }
 
     func removeRepo(_ path: String) {
-        repoPaths.removeAll { $0 == path }
+        for i in spaces.indices { spaces[i].repos.removeAll { $0 == path } }
         for wt in worktrees[path] ?? [] { models[wt.path]?.stopWatching(); models[wt.path] = nil }
         worktrees[path] = nil
     }
 
     func refreshAllWorktrees() async {
-        await withTaskGroup(of: Void.self) { g in for r in repoPaths { g.addTask { await self.refreshWorktrees(repo: r) } } }
+        await withTaskGroup(of: Void.self) { g in for r in spaces.flatMap(\.repos) { g.addTask { await self.refreshWorktrees(repo: r) } } }
     }
 
     func refreshWorktrees(repo: String) async {
@@ -104,10 +168,21 @@ final class AppModel {
         await refreshWorktrees(repo: repo)
     }
 
-    func account(for remote: RemoteRepo) -> ForgejoAccount? {
+    /// The account for `remote` in the space that holds `worktree`'s repo.
+    func account(for remote: RemoteRepo, worktree: String) -> ForgejoAccount? {
+        let repo = repo(containing: worktree) ?? worktree
+        let space = spaces.first { $0.repos.contains(repo) }?.id ?? currentSpace
         let host = remote.host.split(separator: ":").first.map(String.init)
-        return accounts.first { $0.hostKey.split(separator: ":").first.map(String.init) == host }
+        return accounts.first { $0.spaceID == space && $0.hostKey.split(separator: ":").first.map(String.init) == host }
     }
+}
+
+struct Space: Codable, Hashable, Identifiable {
+    static let defaultID = "default"
+    var id: String
+    var name: String
+    var repos: [String]
+    var selection: String? = nil
 }
 
 // MARK: - Per-worktree state
@@ -245,7 +320,7 @@ final class WorktreeModel {
     }
 
     func remoteOp(_ label: String, _ args: [String]) async {
-        await perform(label) { try await Git.run(args, in: path) }
+        await perform(label) { try await Git.run(args, in: path, env: gitAuth) }
         await app.refreshWorktrees(repo: app.repo(containing: path) ?? path)
     }
 
@@ -260,14 +335,28 @@ final class WorktreeModel {
             if parts.count >= 2, let r = RemoteRepo(remoteURL: String(parts[1])) { candidates.append((String(parts[0]), r)) }
         }
         // Prefer a remote we have an account for, then "origin".
-        let pick = candidates.first { app.account(for: $0.1) != nil } ?? candidates.first { $0.0 == "origin" } ?? candidates.first
+        let pick = candidates.first { app.account(for: $0.1, worktree: path) != nil } ?? candidates.first { $0.0 == "origin" } ?? candidates.first
         remote = pick?.1
         remoteName = pick?.0 ?? "origin"
     }
 
+    var account: ForgejoAccount? { remote.flatMap { app.account(for: $0, worktree: path) } }
+
     var client: ForgejoClient? {
-        guard let r = remote, let a = app.account(for: r), let t = app.tokens[a.baseURL] else { return nil }
+        guard let a = account, let t = app.tokens[a.id] else { return nil }
         return ForgejoClient(a, token: t)
+    }
+
+    /// Makes git authenticate to this space's server with the space's token instead of whatever credential helper
+    /// the user has (osxkeychain holds one login per host, which is what spaces are meant to get around).
+    /// Only HTTPS remotes ask for credentials; SSH remotes keep using the user's keys.
+    var gitAuth: [String: String] {
+        guard let a = account, let t = app.tokens[a.id] else { return [:] }
+        let key = "credential.\(a.baseURL).helper"
+        return ["GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": key, "GIT_CONFIG_VALUE_0": "",   // empty resets the helper list for this URL
+                "GIT_CONFIG_KEY_1": key, "GIT_CONFIG_VALUE_1": "!f() { test \"$1\" = get && echo username=\"$LOUPE_GIT_USER\" && echo password=\"$LOUPE_GIT_TOKEN\"; }; f",
+                "LOUPE_GIT_USER": a.username, "LOUPE_GIT_TOKEN": t]
     }
 
     /// Fetches refs/pull/N/head and checks it out in a sibling worktree (or selects the existing one).
@@ -278,7 +367,7 @@ final class WorktreeModel {
         let base = (repo as NSString).deletingLastPathComponent
         let dest = (base as NSString).appendingPathComponent("\((repo as NSString).lastPathComponent)-pr-\(pr.number)")
         await perform("Checking out PR #\(pr.number)") {
-            try await Git.run(["fetch", remoteName, "+refs/pull/\(pr.number)/head:refs/remotes/\(remoteName)/pr/\(pr.number)"], in: repo)
+            try await Git.run(["fetch", remoteName, "+refs/pull/\(pr.number)/head:refs/remotes/\(remoteName)/pr/\(pr.number)"], in: repo, env: gitAuth)
             try await Git.run(["worktree", "add", "-B", branch, dest, "\(remoteName)/pr/\(pr.number)"], in: repo)
         }
         await app.refreshWorktrees(repo: repo)
