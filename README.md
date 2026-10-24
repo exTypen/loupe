@@ -3,11 +3,10 @@
 A native macOS git client built for reviewing code: your own uncommitted changes, large pull requests on
 GitHub, Forgejo and Gitea, and many worktrees across many repositories, organised into spaces.
 
+**[Download Loupe for macOS](https://github.com/exTypen/loupe/releases/latest)**: free and open source, signed and
+notarized, for macOS 15 or later.
+
 ![Reviewing a pull request in Loupe](docs/pr.png)
-
-![Commit history of the checked-out branch](docs/history.png)
-
-![CI checks for a pull request](docs/checks.png)
 
 ## Highlights
 
@@ -17,10 +16,14 @@ GitHub, Forgejo or Gitea accounts, so the same server can have a different login
 push and pull request checkout over HTTPS use that space's token instead of whatever the system credential
 helper holds.
 
+![Two spaces, each with its own repositories and accounts](docs/spaces.png)
+
 **Review big pull requests on the desktop.** Viewed files that become unviewed again when a new push changes
 them, inline comments, drafts that survive restarts, Approve and Request Changes, merge, and CI checks with
 live Forgejo Actions logs. It works the same on GitHub, Forgejo and Gitea, and pull requests GitHub's web UI
 won't show (over 300 files or 20,000 lines) are diffed locally.
+
+![CI checks for a pull request](docs/checks.png)
 
 **Built for many worktrees.** Every repository lists all its worktrees with their branch, ahead/behind counts
 and uncommitted changes. ⌘K jumps between them, and a pull request checks out into its own worktree in one
@@ -32,6 +35,8 @@ and scrolls smoothly.
 **AI commit messages from the tool you already have.** ✨ in the commit box writes the message with Claude Code,
 Codex, Gemini CLI, GitHub Copilot CLI, Cursor CLI, opencode, Qwen Code, Amp or Factory Droid, whichever is
 installed, on your own subscription and in the tool's read-only mode. Pick the tool, the model and a style.
+
+![A commit message written from the staged change](docs/changes.png)
 
 Every git operation runs through the `git` command line, so hooks, commit signing and credential helpers behave
 exactly as they do in your terminal.
@@ -59,12 +64,19 @@ exactly as they do in your terminal.
 - When a merge, cherry-pick, revert or rebase stops on conflicts, a banner offers Abort and Continue, and each
   conflict shows its two sides with Use Current, Use Incoming and Use Both.
 
+![Resolving a cherry-pick conflict](docs/conflicts.png)
+
 **History**
+
+![All branches with the commit graph](docs/history.png)
+
 - The current branch, all branches, any single branch, or your stashes, with a commit graph and each commit's
   full diff. Search by message or author.
 - Cherry-pick a commit onto your branch, or revert one. Apply, pop or drop a stash.
 - Blame and file history for any file in their own window. Blame can step back to before a commit; file
   history follows renames.
+
+![Blame](docs/blame.png)
 - Start a new worktree from any commit.
 
 **Pull requests**
