@@ -129,6 +129,7 @@ struct ConflictPane: View {
     var path: String
     @State private var text: ConflictText?
     @State private var unreadable = false
+    @State private var colors: [Int: [[AttributedString]]] = [:]   // segment → highlighted lines (text) or [current, incoming]
 
     private var url: URL { URL(fileURLWithPath: model.path).appendingPathComponent(path) }
 
@@ -139,12 +140,12 @@ struct ConflictPane: View {
             if let text, text.conflictCount > 0 {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(text.numbered.enumerated()), id: \.offset) { _, item in
+                        ForEach(Array(text.numbered.enumerated()), id: \.offset) { i, item in
                             switch item.segment {
-                            case .text(let lines): ContextLines(lines: lines)
+                            case .text(let lines): ContextLines(lines: lines, colored: colors[i]?.first)
                             case .conflict(let c):
                                 let k = item.conflict
-                                ConflictCard(conflict: c, index: k, total: text.conflictCount) { lines in write(text.resolving(k, with: lines)) }
+                                ConflictCard(conflict: c, index: k, total: text.conflictCount, colored: colors[i]) { lines in write(text.resolving(k, with: lines)) }
                                     .padding(.vertical, 6)
                             }
                         }
@@ -191,7 +192,27 @@ struct ConflictPane: View {
     private func load() {
         guard let data = try? Data(contentsOf: url), let s = String(data: data, encoding: .utf8) else { unreadable = true; text = nil; return }
         unreadable = false
-        text = ConflictText(s)
+        let t = ConflictText(s)
+        text = t
+        highlight(t)
+    }
+
+    /// Colours arrive a beat after the text, off the main thread, like the diff's.
+    private func highlight(_ t: ConflictText) {
+        let path = path
+        let chunks: [[[String]]] = t.segments.map { seg in
+            switch seg {
+            case .text(let l): [l.map(String.init)]
+            case .conflict(let c): [c.current.map(String.init), c.incoming.map(String.init)]
+            }
+        }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                chunks.map { $0.map { BlameView.highlight($0, path: path) } }
+            }.value
+            guard text?.segments.count == result.count else { return }
+            colors = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.offset, $0.element) })
+        }
     }
 
     private func write(_ s: String) {
@@ -199,6 +220,8 @@ struct ConflictPane: View {
             try Data(s.utf8).write(to: url, options: .atomic)
             let t = ConflictText(s)
             text = t
+            colors = [:]
+            highlight(t)
             if t.conflictCount == 0 { Task { await model.resolve(path, take: nil) } }
         } catch { model.error = error.localizedDescription }
     }
@@ -207,35 +230,47 @@ struct ConflictPane: View {
 /// Unchanged text between conflicts; long runs fold to their first and last lines.
 private struct ContextLines: View {
     var lines: [Substring]
+    var colored: [AttributedString]?
     @State private var expanded = false
 
     var body: some View {
         let fold = lines.count > 10 && !expanded
+        let shown = fold ? Array(lines.indices.prefix(3)) : Array(lines.indices)
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array((fold ? Array(lines.prefix(3)) : lines).enumerated()), id: \.offset) { _, l in CodeLine(text: l) }
+            ForEach(shown, id: \.self) { i in CodeLine(text: lines[i], colored: colored?[safe: i]) }
             if fold {
                 Button { expanded = true } label: {
                     Label("\(lines.count - 6) unchanged lines", systemImage: "ellipsis").font(.caption).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain).padding(.vertical, 4)
-                ForEach(Array(lines.suffix(3).enumerated()), id: \.offset) { _, l in CodeLine(text: l) }
+                ForEach(Array(lines.indices.suffix(3)), id: \.self) { i in CodeLine(text: lines[i], colored: colored?[safe: i]) }
             }
         }
         .foregroundStyle(.secondary)
+        .opacity(0.75)   // the file around the conflicts: there for orientation, quieter than the sides
     }
 }
 
 private struct CodeLine: View {
     var text: Substring
+    var colored: AttributedString? = nil
     var body: some View {
-        Text(text.isEmpty ? " " : String(text)).font(.system(.body, design: .monospaced)).lineLimit(1).textSelection(.enabled)
+        Group {
+            if text.isEmpty { Text(" ") } else if let colored { Text(colored) } else { Text(String(text)) }
+        }
+        .font(.system(.body, design: .monospaced)).lineLimit(1).textSelection(.enabled)
     }
+}
+
+extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }
 
 private struct ConflictCard: View {
     var conflict: ConflictText.Conflict
     var index: Int
     var total: Int
+    var colored: [[AttributedString]]?   // [current, incoming]
     var resolve: ([Substring]) -> Void
 
     var body: some View {
@@ -249,14 +284,14 @@ private struct ConflictCard: View {
             }
             .controlSize(.small)
             .padding(8)
-            side("Current", conflict.currentLabel, conflict.current, .blue)
-            side("Incoming", conflict.incomingLabel, conflict.incoming, .purple)
+            side("Current", conflict.currentLabel, conflict.current, colored?[safe: 0], .blue)
+            side("Incoming", conflict.incomingLabel, conflict.incoming, colored?[safe: 1], .purple)
         }
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.4)))
     }
 
-    private func side(_ title: String, _ label: String, _ lines: [Substring], _ tint: Color) -> some View {
+    private func side(_ title: String, _ label: String, _ lines: [Substring], _ colored: [AttributedString]?, _ tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
                 Text(title).font(.caption.weight(.semibold)).foregroundStyle(tint)
@@ -265,7 +300,7 @@ private struct ConflictCard: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
             VStack(alignment: .leading, spacing: 0) {
                 if lines.isEmpty { Text("(nothing)").font(.caption).foregroundStyle(.tertiary).padding(.vertical, 2) }
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, l in CodeLine(text: l) }
+                ForEach(lines.indices, id: \.self) { i in CodeLine(text: lines[i], colored: colored?[safe: i]) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
