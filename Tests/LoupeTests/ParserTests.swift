@@ -343,3 +343,8 @@ import AppKit
     s.set(ShortcutAction.refresh.standard, for: .refresh)   // back to the default: no longer custom
     #expect(!s.isCustom(.refresh) && s.shortcut(.refresh) == Shortcut("r"))
 }
+
+@Test func numbersConflictsFromZero() {
+    let t = ConflictText("a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nc\n<<<<<<< HEAD\np\n=======\nq\n>>>>>>> b\n")
+    #expect(t.numbered.compactMap { if case .conflict = $0.segment { $0.conflict } else { nil } } == [0, 1])
+}

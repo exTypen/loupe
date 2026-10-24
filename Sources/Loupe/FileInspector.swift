@@ -97,11 +97,15 @@ struct BlameView: View {
             } else if loading && lines.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(lines.indices, id: \.self) { i in row(i) }
+                // A two-axis ScrollView centres content smaller than itself; pin it to the top left instead.
+                GeometryReader { geo in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(lines.indices, id: \.self) { i in row(i) }
+                        }
+                        .padding(.vertical, 4)
+                        .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .topLeading)
                     }
-                    .padding(.vertical, 4)
                 }
                 .background(Color(nsColor: .textBackgroundColor))
             }

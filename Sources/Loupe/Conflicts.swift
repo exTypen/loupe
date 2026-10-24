@@ -20,6 +20,15 @@ struct ConflictText {
     var segments: [Segment] = []
     var conflictCount: Int { segments.reduce(0) { if case .conflict = $1 { $0 + 1 } else { $0 } } }
 
+    /// Each segment with the index of the conflict it is (counting conflicts only), for numbering and resolving.
+    var numbered: [(segment: Segment, conflict: Int)] {
+        var k = -1
+        return segments.map { seg in
+            if case .conflict = seg { k += 1 }
+            return (seg, k)
+        }
+    }
+
     init(_ text: String) {
         var plain: [Substring] = []
         var cur: Conflict?
@@ -130,12 +139,11 @@ struct ConflictPane: View {
             if let text, text.conflictCount > 0 {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        var k = -1
-                        ForEach(Array(text.segments.enumerated()), id: \.offset) { _, seg in
-                            switch seg {
+                        ForEach(Array(text.numbered.enumerated()), id: \.offset) { _, item in
+                            switch item.segment {
                             case .text(let lines): ContextLines(lines: lines)
                             case .conflict(let c):
-                                let _ = (k += 1)
+                                let k = item.conflict
                                 ConflictCard(conflict: c, index: k, total: text.conflictCount) { lines in write(text.resolving(k, with: lines)) }
                                     .padding(.vertical, 6)
                             }
