@@ -375,3 +375,81 @@ import AppKit
     let refs = await CodeNavigator.references(of: "fit", at: head, in: dir)
     #expect(refs.count == 4 && refs.contains { $0.path == "src/main.rs" && $0.line == 3 })
 }
+
+@Test func replaysMigrationsIntoASchemaDiff() {
+    let m1 = """
+    CREATE TABLE public.users (id uuid PRIMARY KEY, email text NOT NULL, name text);
+    CREATE TABLE "lanes" (id bigint, state text DEFAULT 'open', CONSTRAINT lanes_pkey PRIMARY KEY (id));
+    CREATE UNIQUE INDEX users_email_idx ON users (lower(email));
+    CREATE TYPE role AS ENUM ('admin', 'member');
+    -- a comment; with a semicolon
+    CREATE FUNCTION touch() RETURNS trigger AS $$ BEGIN NEW.updated_at = now(); RETURN NEW; END; $$ LANGUAGE plpgsql;
+    """
+    let m2 = """
+    ALTER TABLE ONLY users ADD COLUMN IF NOT EXISTS role role NOT NULL DEFAULT 'member', DROP COLUMN name;
+    ALTER TABLE users ALTER COLUMN email TYPE varchar(320);
+    ALTER TYPE role ADD VALUE 'owner';
+    DROP TABLE IF EXISTS lanes CASCADE;
+    CREATE TABLE audit (id bigint, user_id uuid REFERENCES users(id));
+    ALTER TABLE audit RENAME TO audit_events;
+    DO $$ BEGIN RAISE NOTICE 'x'; END $$;
+    """
+    let a = SQL.replay([("m/001/up.sql", m1)])
+    let b = SQL.replay([("m/001/up.sql", m1), ("m/002/up.sql", m2)])
+    #expect(a.tables.keys.sorted() == ["lanes", "users"] && a.functions["touch"] != nil)
+    #expect(a.tables["lanes"]?.primaryKey == ["id"] && a.tables["users"]?.columns.first?.notNull == true)
+    let facts = SQLLens.diff(a, b)
+    func has(_ kind: LensFact.Kind, _ title: String, _ detail: String) -> Bool { facts.contains { $0.kind == kind && $0.title == title && ($0.detail ?? "").contains(detail) } }
+    #expect(has(.added, "audit_events", "table added"))
+    #expect(has(.removed, "lanes", "table dropped"))
+    #expect(has(.added, "users.role", "role NOT NULL DEFAULT 'member'"))
+    #expect(has(.removed, "users.name", "column dropped"))
+    #expect(has(.changed, "users.email", "type text → varchar(320)"))
+    #expect(has(.changed, "role", "+ owner"))
+    #expect(b.skipped.map(\.kind) == ["DO block"])
+    #expect(facts.first { $0.title == "users.role" }?.line == 1)   // points at the ALTER in m/002
+}
+
+@Test func reportsSeedDataChangesPerTable() {
+    let a = ["seed.sql": "INSERT INTO lanes (id) VALUES (1);\nINSERT INTO public.users (id) VALUES (1);\nUPDATE users SET x = 1;"]
+    let b = ["seed.sql": "INSERT INTO public.users (id) VALUES (2);\nUPDATE users SET x = 1;\nDELETE FROM jobs;"]
+    let f = SQLLens.dataChanges(["seed.sql"], a: a, b: b)
+    #expect(f.contains { $0.kind == .removed && $0.title == "INSERT into lanes" })
+    #expect(f.contains { $0.kind == .changed && $0.title == "INSERT into users" })
+    #expect(f.contains { $0.kind == .added && $0.title == "DELETE from jobs" })
+    #expect(!f.contains { $0.title.hasPrefix("UPDATE") })   // unchanged
+}
+
+@Test func readsDependencyFilesAndBumps() {
+    let lock = "[[package]]\nname = \"serde\"\nversion = \"1.0.200\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.40.0\"\n"
+    #expect(DependencyLens.parse("Cargo.lock", lock) == ["serde": "1.0.200", "tokio": "1.40.0"])
+    let toml = "[package]\nname = \"x\"\n[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\nanyhow = \"1\"\n[dev-dependencies]\ninsta = \"1.3\"\n"
+    #expect(DependencyLens.parse("Cargo.toml", toml) == ["serde": "1.0", "anyhow": "1", "insta (dev)": "1.3"])
+    #expect(DependencyLens.parse("package.json", #"{"dependencies":{"react":"^19.1.0"},"devDependencies":{"vite":"^6.0.3"}}"#) == ["react": "^19.1.0", "vite (dev)": "^6.0.3"])
+    #expect(DependencyLens.parse("go.mod", "module m\nrequire (\n\tgolang.org/x/net v0.30.0 // indirect\n)\nrequire github.com/a/b v1.2.3\n") == ["golang.org/x/net": "v0.30.0", "github.com/a/b": "v1.2.3"])
+    #expect(DependencyLens.bump("4.17.0", "4.18.1") == "minor" && DependencyLens.bump("^1.2.3", "^2.0.0") == "major" && DependencyLens.bump("1.2.3", "1.2.0") == "downgrade")
+}
+
+@Test func flattensYAMLAndHidesSecrets() {
+    let y = """
+    name: ci
+    on:
+      push:
+        paths:
+          - "src/**"
+    jobs:
+      build:
+        runs-on: linux
+        steps:
+          - uses: actions/checkout@v4
+          - name: test
+            run: |
+              cargo test
+              cargo clippy
+    """
+    let f = ConfigLens.yaml(y)
+    #expect(f["name"] == "ci" && f["on.push.paths[0]"] == "\"src/**\"" && f["jobs.build.runs-on"] == "linux")
+    #expect(f["jobs.build.steps[0].uses"] == "actions/checkout@v4" && f["jobs.build.steps[1].name"] == "test")
+    #expect(f["jobs.build.steps[1].run"] == "cargo test\ncargo clippy")
+    #expect(ConfigLens.secret("jobs.x.with.token") && !ConfigLens.secret("jobs.design-tokens.steps[3].run"))
+}

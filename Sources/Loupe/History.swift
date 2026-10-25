@@ -471,12 +471,23 @@ struct CommitDetailView: View {
     var account: ForgejoAccount?
     var layout: DiffLayout
     var actions: (Commit) -> AnyView
+    @AppStorage("commitOverview") private var overview = false
+    @State private var reveal: DiffReveal?
 
     var body: some View {
         if let c = model.selected {
             VStack(spacing: 0) {
                 header(c)
                 Divider()
+                if overview && c.selector == nil {
+                    ChangeOverview(dir: model.path, a: c.parents.first.map { .rev($0) } ?? .empty, b: .rev(c.sha),
+                                   changes: model.files.map { ChangedPath(old: $0.oldPath, new: $0.newPath) },
+                                   key: "\(c.sha) \(model.files.count)") { path, line in
+                        overview = false
+                        model.selectedPath = path
+                        if let line { reveal = DiffReveal(line: line) }
+                    }
+                } else {
                 ResizableSplit(key: "commitTreeWidth", minWidth: 180, maxWidth: 300, defaultFraction: 1) {
                     FileTreeList(paths: model.files.map(\.path), selection: $model.selectedPath, collapsed: $model.collapsed) { path in
                         if let f = model.files.first(where: { $0.path == path }) {
@@ -495,7 +506,7 @@ struct CommitDetailView: View {
                                 Divider()
                                 if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
                                 else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
-                                else { DiffTableView(file: f, layout: layout) }
+                                else { DiffTableView(file: f, layout: layout, reveal: reveal) }
                             }
                         } else if model.detailLoading {
                             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -504,6 +515,7 @@ struct CommitDetailView: View {
                         }
                     }
                     .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                }
                 }
             }
         } else {
@@ -541,6 +553,13 @@ struct CommitDetailView: View {
                     }
                 }
                 Spacer()
+                if c.selector == nil {
+                    Picker("", selection: $overview) {
+                        Text("Files").tag(false)
+                        Text("Overview").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize().controlSize(.small)
+                }
                 Text(model.files.count == 1 ? "1 file" : "\(String(model.files.count)) files").foregroundStyle(.secondary)
                 Text(verbatim: "+\(String(adds))").foregroundStyle(.green).monospacedDigit()
                 Text(verbatim: "−\(String(dels))").foregroundStyle(.red).monospacedDigit()

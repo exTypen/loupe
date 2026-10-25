@@ -226,7 +226,11 @@ struct PullDetailView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if tab == "files" { files } else { ConversationView(pull: pull) }
+            switch tab {
+            case "overview": PROverview(pull: pull) { path, line in tab = "files"; pull.reveal(path, line: line) }
+            case "conversation": ConversationView(pull: pull)
+            default: files
+            }
         }
         // Always refresh on open (cached content stays on screen meanwhile), then keep polling while it's open:
         // new pushes dismiss approvals and re-request reviewers, and the header must reflect that.
@@ -286,6 +290,7 @@ struct PullDetailView: View {
                     withAnimation(.easeOut(duration: 0.15)) { app.checksOverlay = (pull.checks, pull.client.baseURL) }
                 }
                 Picker("", selection: $tab) {
+                    Text("Overview").tag("overview")
                     Text("Files \(pull.files.count)").tag("files")
                     Text("Conversation").tag("conversation")
                 }
@@ -430,7 +435,8 @@ struct PullDetailView: View {
             else {
                 DiffTableView(file: f, layout: layout, comments: pull.inlineComments(for: f.path),
                               onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },
-                              onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } })
+                              onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
+                              reveal: pull.reveal)
             }
         }
     }
@@ -464,6 +470,35 @@ struct PullDetailView: View {
             }
         }
         .task(id: path + pull.pr.head.sha) { await pull.loadFull(path) }
+    }
+}
+
+/// The PR's structural summary: from the merge base to the head, like the diff itself.
+struct PROverview: View {
+    var pull: PullRequestModel
+    var onOpen: (String, Int?) -> Void
+    @State private var base: String?
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if let base {
+                ChangeOverview(dir: pull.local.dir, a: .rev(base), b: .rev(pull.pr.head.sha),
+                               changes: pull.files.map { ChangedPath(old: $0.oldPath, new: $0.newPath) },
+                               key: "\(base) \(pull.pr.head.sha) \(pull.files.count)", onOpen: onOpen)
+            } else if let error {
+                ContentUnavailableView("Can't Read the Pull Request", systemImage: "exclamationmark.triangle", description: Text(error))
+            } else {
+                ProgressView("Fetching the pull request…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: pull.pr.head.sha) {
+            do {
+                try await pull.fetchHead()
+                base = try await Git.string(["merge-base", pull.pr.base.sha, pull.pr.head.sha], in: pull.local.dir)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 

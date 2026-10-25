@@ -171,6 +171,7 @@ struct ChangesView: View {
     var model: WorktreeModel
     var layout: DiffLayout
     @State private var confirmDiscard: [FileChange]?
+    @State private var overview = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -180,6 +181,22 @@ struct ChangesView: View {
         }
         ResizableSplit(key: "changesListWidth", minWidth: 220, maxWidth: 380, defaultFraction: 300/380) {
             VStack(spacing: 0) {
+                if !model.files.isEmpty {
+                    Button { overview.toggle() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "list.bullet.rectangle").foregroundStyle(overview ? Color.accentColor : .secondary)
+                            Text("Overview").fontWeight(overview ? .semibold : .regular)
+                            Spacer()
+                            Text("schema, dependencies, code").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(overview ? Color.accentColor.opacity(0.12) : .clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("What these uncommitted changes do, compared with the last commit")
+                    Divider()
+                }
                 FileListView(model: model, confirmDiscard: $confirmDiscard)
                 if model.stashCount > 0 { StashesLink(model: model) }
                 Divider()
@@ -189,13 +206,26 @@ struct ChangesView: View {
         } trailing: {
 
             Group {
-                if let f = model.selectedFile, f.kind == .conflicted { ConflictPane(model: model, path: f.path).id(f.path) }
+                if overview && !model.files.isEmpty {
+                    let changes = Dictionary(grouping: model.files, by: \.path).values.map { fs -> ChangedPath in
+                        let f = fs.first { !$0.staged } ?? fs[0]
+                        let gone = fs.contains { $0.kind == .deleted }, new = fs.contains { $0.kind == .added || $0.kind == .untracked }
+                        return ChangedPath(old: new ? nil : (f.origPath ?? f.path), new: gone ? nil : f.path)
+                    }
+                    ChangeOverview(dir: model.path, a: model.headOID.isEmpty || model.headOID.hasPrefix("(") ? .empty : .rev("HEAD"), b: .worktree,
+                                   changes: changes.sorted { $0.path < $1.path }, key: "\(model.headOID) \(model.statusVersion)") { path, _ in
+                        overview = false
+                        if let f = model.files.first(where: { $0.path == path && !$0.staged }) ?? model.files.first(where: { $0.path == path }) { model.select(f.id) }
+                    }
+                }
+                else if let f = model.selectedFile, f.kind == .conflicted { ConflictPane(model: model, path: f.path).id(f.path) }
                 else { DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard) }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onChange(of: model.selectedFileID) { overview = false }   // picking a file shows its diff
         .confirmationDialog("Discard changes?", isPresented: Binding(get: { confirmDiscard != nil }, set: { if !$0 { confirmDiscard = nil } })) {
             Button("Discard \(confirmDiscard?.count ?? 0) file(s)", role: .destructive) {
                 if let fs = confirmDiscard { Task { await model.discard(fs) } }

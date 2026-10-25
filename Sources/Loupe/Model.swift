@@ -241,7 +241,10 @@ final class WorktreeModel {
 
     // MARK: Status / diff
 
+    var statusVersion = 0                 // bumps on every status refresh: the Overview of uncommitted work follows edits
+
     func refreshStatus() async {
+        statusVersion += 1
         do {
             let s = try await Git.status(in: path)
             branch = s.branch; headOID = s.oid; ahead = s.ahead; behind = s.behind

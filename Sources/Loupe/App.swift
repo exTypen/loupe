@@ -9,6 +9,40 @@ struct LoupeApp: App {
     init() {
         // Dev aid: `Loupe --api /repos/o/r/pulls/1/reviews` prints a Forgejo response using the app's own Keychain
         // access (the terminal's `security` tool gets an ACL prompt for Loupe's item).
+        // Dev aid: `Loupe --lens <repo> <revA> <revB|worktree>` prints the change lenses' report.
+        if let i = CommandLine.arguments.firstIndex(of: "--lens"), i + 3 < CommandLine.arguments.count {
+            let a = CommandLine.arguments
+            let (dir, ra, rb) = (a[i + 1], a[i + 2], a[i + 3])
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                let b: Snapshot = rb == "worktree" ? .worktree : .rev(rb)
+                let raw = (try? await Git.string(["diff", "--name-status", "-z", "-M", ra] + (rb == "worktree" ? [] : [rb]), in: dir)) ?? ""
+                let f = raw.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+                var changes: [ChangedPath] = [], k = 0
+                while k < f.count, !f[k].isEmpty {
+                    let st = f[k]
+                    if st.hasPrefix("R") || st.hasPrefix("C") { changes.append(ChangedPath(old: f[k + 1], new: f[k + 2])); k += 3 }
+                    else if st == "A" { changes.append(ChangedPath(old: nil, new: f[k + 1])); k += 2 }
+                    else if st == "D" { changes.append(ChangedPath(old: f[k + 1], new: nil)); k += 2 }
+                    else { changes.append(ChangedPath(old: f[k + 1], new: f[k + 1])); k += 2 }
+                }
+                let start = Date()
+                for r in await ChangeLens.analyze(changes, a: .rev(ra), b: b, in: dir) {
+                    print("■ \(r.title): \(r.summary)")
+                    for s in r.sections {
+                        print("  \(s.title)")
+                        for x in s.facts.prefix(40) {
+                            let g = switch x.kind { case .added: "+"; case .removed: "−"; case .changed: "~"; case .renamed: "→"; case .info: "·"; case .warning: "!" }
+                            print("    \(g) \(x.title)\(x.detail.map { "  — \($0)" } ?? "")\(x.path.map { "  @\($0)\(x.line.map { ":\($0)" } ?? "")" } ?? "")")
+                        }
+                        if s.facts.count > 40 { print("    … \(s.facts.count - 40) more") }
+                    }
+                }
+                print(String(format: "(%.0f ms)", Date().timeIntervalSince(start) * 1000))
+                sem.signal()
+            }
+            sem.wait(); exit(0)
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--api"), i + 1 < CommandLine.arguments.count {
             let path = CommandLine.arguments[i + 1]
             let accts = (try? JSONDecoder().decode([ForgejoAccount].self, from: UserDefaults.standard.data(forKey: "accounts") ?? Data())) ?? []

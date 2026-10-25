@@ -313,6 +313,12 @@ final class PullRequestModel {
         reveal = DiffReveal(line: line)
     }
 
+    /// From the Overview: show a file (and a line, when known). A file this PR doesn't change needs Full mode.
+    func reveal(_ path: String, line: Int?) {
+        if file(path) == nil && !fullMode { fullMode = true }
+        if let line { open(path, line: line) } else { selectedPath = path }
+    }
+
     func closeTab(_ path: String) {
         guard let i = tabs.firstIndex(of: path) else { return }
         tabs.remove(at: i)
