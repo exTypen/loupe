@@ -453,3 +453,58 @@ import AppKit
     #expect(f["jobs.build.steps[1].run"] == "cargo test\ncargo clippy")
     #expect(ConfigLens.secret("jobs.x.with.token") && !ConfigLens.secret("jobs.design-tokens.steps[3].run"))
 }
+
+@Test func markdownBlocks() {
+    let b = MarkdownText.parse("""
+        ## Summary
+        Two lines
+        of text.
+
+        - one
+          wrapped
+        1. first
+        > quoted
+        ```swift
+        let x = 1
+        ```
+        | a | b |
+        |---|---|
+        <details>
+        <summary>More</summary>
+        ---
+        """)
+    let kinds = b.map { block -> String in
+        switch block {
+        case .heading(let l, let t): "h\(l):\(t)"
+        case .paragraph(let t): "p:\(t)"
+        case .list(let items): "list:" + items.map { "\($0.marker) \($0.text)" }.joined(separator: "|")
+        case .quote(let t): "q:\(t)"
+        case .code(let lang, let t): "code(\(lang)):\(t)"
+        case .table(let t): "table:\(t.split(separator: "\n").count)"
+        case .rule: "rule"
+        }
+    }
+    #expect(kinds == ["h2:Summary", "p:Two lines\nof text.", "list:• one wrapped|1. first", "q:quoted", "code(swift):let x = 1", "table:2", "h4:More", "rule"])
+}
+
+@MainActor @Test func timelineJoinsCommentsUntilAPush() {
+    let me = FUser(login: "ana")
+    let pr = PullRequest(id: 1, number: 1, title: "t", state: "open", user: me, head: FBranchRef(ref: "h", sha: "s"), base: FBranchRef(ref: "main", sha: "b"),
+                         html_url: "", updated_at: "", created_at: "2026-01-01T10:00:00Z")
+    let pull = PullRequestModel(pr: pr, client: ForgejoClient(baseURL: "https://x", token: ""), repo: RemoteRepo(remoteURL: "https://x/o/r")!,
+                                local: LocalCheckout(dir: "/tmp", remote: "origin"))
+    pull.conversation = [IssueComment(id: 1, user: me, body: "a", created_at: "2026-01-01T11:00:00Z"),
+                         IssueComment(id: 2, user: me, body: "b", created_at: "2026-01-01T11:05:00Z"),
+                         IssueComment(id: 3, user: me, body: "c", created_at: "2026-01-01T11:20:00Z")]
+    pull.commits = [PRCommit(sha: "k1", commit: .init(message: "fix", committer: .init(date: "2026-01-01T11:10:00Z")), author: me),
+                    PRCommit(sha: "k2", commit: .init(message: "more", committer: .init(date: "2026-01-01T11:11:00Z")), author: me)]
+    let shape = Timeline.build(pull).map { e -> String in
+        switch e.kind {
+        case .opened: "opened"
+        case .comments(let cs): "comments\(cs.count)"
+        case .commits(let cs): "commits\(cs.count)"
+        default: "other"
+        }
+    }
+    #expect(shape == ["opened", "comments2", "commits2", "comments1"])
+}

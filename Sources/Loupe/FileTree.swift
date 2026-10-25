@@ -58,6 +58,19 @@ enum FileTree {
         walk(root, prefix: "", depth: 0)
         return out
     }
+
+    /// One list's last rows: its body runs on every parent update, the paths and collapsed set rarely change.
+    final class Cache {
+        private var key: (paths: [String], collapsed: Set<String>)?
+        private var last: [TreeRow] = []
+
+        func rows(_ paths: [String], collapsed: Set<String>) -> [TreeRow] {
+            if let key, key.paths == paths, key.collapsed == collapsed { return last }
+            key = (paths, collapsed)
+            last = FileTree.rows(paths, collapsed: collapsed)
+            return last
+        }
+    }
 }
 
 struct FileTreeList<FileContent: View, DirAccessory: View>: View {
@@ -67,13 +80,11 @@ struct FileTreeList<FileContent: View, DirAccessory: View>: View {
     var dirMenu: ((String) -> (title: String, action: () -> Void))? = nil
     @ViewBuilder var file: (String) -> FileContent
     @ViewBuilder var dirAccessory: (String) -> DirAccessory
+    @State private var cache = FileTree.Cache()
 
     var body: some View {
-        let rows = FileTree.rows(paths, collapsed: collapsed)
-        List(selection: Binding(get: { selection }, set: { v in
-            // Clicking a directory toggles it rather than selecting it.
-            if let v, v.hasPrefix("dir:") { toggle(String(v.dropFirst(4))) } else { selection = v }
-        })) {
+        let rows = cache.rows(paths, collapsed: collapsed)
+        List(selection: $selection) {
             ForEach(rows) { r in
                 HStack(spacing: 4) {
                     if let dir = r.dirPath {
@@ -93,6 +104,10 @@ struct FileTreeList<FileContent: View, DirAccessory: View>: View {
                 }
                 .padding(.leading, CGFloat(r.depth) * 10)
                 .tag(r.id)
+                // A directory isn't selectable: a click toggles it. Selected, a second click wouldn't reach the list.
+                .selectionDisabled(r.dirPath != nil)
+                .contentShape(Rectangle())
+                .gesture(TapGesture().onEnded { if let dir = r.dirPath { toggle(dir) } }, including: r.dirPath == nil ? .none : .all)
                 .contextMenu {
                     if let dir = r.dirPath {
                         Button(collapsed.contains(dir) ? "Expand" : "Collapse") { toggle(dir) }

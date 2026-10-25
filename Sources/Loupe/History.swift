@@ -64,14 +64,16 @@ extension Git {
         }
     }
 
-    /// Diff of a commit against its first parent (merges included), root commits against the empty tree.
+    /// Diff of a commit against its first parent (merges included), root commits against the empty tree. In tree order.
     static func commitDiff(_ sha: String, in dir: String) async throws -> [FileDiff] {
         DiffParser.parse(try await run(["show", "--format=", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent", sha], in: dir))
+            .sorted { FileTree.treeOrder($0.path, $1.path) }
     }
 
-    /// A stash's changes, untracked files included (they live in the stash's third parent).
+    /// A stash's changes, untracked files included (they live in the stash's third parent). In tree order.
     static func stashDiff(_ selector: String, in dir: String) async throws -> [FileDiff] {
         DiffParser.parse(try await run(["stash", "show", "-p", "--include-untracked", "--no-color", "--no-ext-diff", "-M", selector], in: dir))
+            .sorted { FileTree.treeOrder($0.path, $1.path) }
     }
 }
 
@@ -195,12 +197,18 @@ final class HistoryModel {
             // The main line is HEAD's, or the shown branch's own when HEAD isn't in it.
             let head = scope == .current ? commits.first?.sha : (try? await Git.string(["rev-parse", "HEAD"], in: path))?.trimmingCharacters(in: .whitespacesAndNewlines)
             let tip = head.flatMap { h in commits.contains { $0.sha == h } ? h : nil } ?? commits.first?.sha
-            graph = search.isEmpty ? Graph.layout(commits, main: tip) : []   // a filtered list has no lines to draw
-            graphWidth = min(graph.map(\.width).max() ?? 0, 12)
-            if graphWidth <= 1 { graph = []; graphWidth = 0 }   // one straight line says nothing
+            let laidOut = commits, filtered = !search.isEmpty
+            // Off the main thread: thousands of commits once a few pages are loaded.
+            let (g, w) = await Task.detached(priority: .userInitiated) {
+                let g = filtered ? [] : Graph.layout(laidOut, main: tip)   // a filtered list has no lines to draw
+                let w = min(g.map(\.width).max() ?? 0, 12)
+                return w <= 1 ? ([], 0) : (g, w)   // one straight line says nothing
+            }.value
+            guard commits == laidOut else { return }   // a newer fetch replaced the list meanwhile
+            graph = g; graphWidth = w
             if scope == .current { notInHead = [] } else {
                 let out = try await Git.string(["rev-list", "-n", "20000"] + scope.revs.filter { $0 != "HEAD" } + ["^HEAD", "--"], in: path)
-                notInHead = Set(out.split(separator: "\n").map(String.init))
+                notInHead = await Task.detached(priority: .userInitiated) { Set(out.split(separator: "\n").map(String.init)) }.value
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -219,7 +227,7 @@ final class HistoryModel {
                 let (b, d) = try await (body, diff)
                 guard !Task.isCancelled else { return }
                 message = b.trimmingCharacters(in: .whitespacesAndNewlines)
-                files = d.sorted { FileTree.treeOrder($0.path, $1.path) }
+                files = d
                 if !files.contains(where: { $0.path == selectedPath }) { selectedPath = files.first?.path }
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
@@ -260,6 +268,7 @@ struct HistoryView: View {
     @AppStorage("tab") private var tab = "changes"
 
     var body: some View {
+        let (client, remote, headOID) = (worktree.client, worktree.remote, worktree.headOID)   // once, not per row
         ResizableSplit(key: "historyListWidth", minWidth: 260, maxWidth: 420, defaultFraction: 340/420) {
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
@@ -272,7 +281,7 @@ struct HistoryView: View {
                 Divider()
                 List(selection: Binding(get: { model.selectedSHA }, set: { model.select($0) })) {
                     ForEach(Array(model.commits.enumerated()), id: \.element.id) { i, c in
-                        CommitRow(commit: c, isHead: c.sha == worktree.headOID, client: worktree.client, remote: worktree.remote,
+                        CommitRow(commit: c, isHead: c.sha == headOID, client: client, remote: remote,
                                   graph: model.graph.indices.contains(i) ? model.graph[i] : nil, graphWidth: model.graphWidth)
                             .tag(c.sha)
                             .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 8))   // graph lines run row to row
@@ -488,9 +497,10 @@ struct CommitDetailView: View {
                         if let line { reveal = DiffReveal(line: line) }
                     }
                 } else {
+                let byPath = Dictionary(model.files.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
                 ResizableSplit(key: "commitTreeWidth", minWidth: 180, maxWidth: 300, defaultFraction: 1) {
                     FileTreeList(paths: model.files.map(\.path), selection: $model.selectedPath, collapsed: $model.collapsed) { path in
-                        if let f = model.files.first(where: { $0.path == path }) {
+                        if let f = byPath[path] {
                             TreeFileRow(path: f.path, badge: f.badge, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary)
                         }
                     } dirAccessory: { _ in EmptyView() }
@@ -518,6 +528,7 @@ struct CommitDetailView: View {
                 }
                 }
             }
+            .preference(key: DiffControlsKey.self, value: DiffControls(layout: !(overview && c.selector == nil) && model.selectedPath != nil))
         } else {
             ContentUnavailableView("Select a Commit", systemImage: "clock.arrow.circlepath")
         }
@@ -606,7 +617,7 @@ final class AuthorAvatars {
                 urls[job.email] = ""
             }
             pending.remove(job.email)
-            UserDefaults.standard.set(urls, forKey: "authorAvatars")
         }
+        UserDefaults.standard.set(urls, forKey: "authorAvatars")   // once per batch: the dictionary only grows
     }
 }

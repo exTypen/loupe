@@ -26,6 +26,7 @@ struct PullRequest: Codable, Identifiable, Hashable {
     var requested_reviewers: [FUser]?
     var html_url: String
     var updated_at: String
+    var created_at: String?
 }
 
 struct Review: Codable, Identifiable, Hashable {
@@ -48,6 +49,18 @@ struct ReviewComment: Codable, Identifiable, Hashable {
     var original_position: Int // line in the old file
     var created_at: String?
     var commit_id: String?
+    var pull_request_review_id: Int? = nil
+    var diff_hunk: String? = nil   // the code the comment was made on, ending at its line
+}
+
+/// A commit on a pull request's branch, as both servers list it.
+struct PRCommit: Codable, Hashable, Identifiable {
+    struct Signature: Codable, Hashable { var name: String?; var date: String? }
+    struct Detail: Codable, Hashable { var message: String; var author: Signature?; var committer: Signature? }
+    var sha: String
+    var commit: Detail
+    var author: FUser?
+    var id: String { sha }
 }
 
 struct IssueComment: Codable, Identifiable, Hashable {
@@ -285,13 +298,15 @@ struct ForgejoClient {
             struct C: Decodable {
                 var id: Int; var user: FUser?; var path: String; var body: String
                 var line: Int?; var side: String?; var created_at: String?; var commit_id: String?
+                var pull_request_review_id: Int?; var diff_hunk: String?
             }
             let list: [C] = try await getAll("/repos/\(r.owner)/\(r.name)/pulls/\(n)/comments")
             return list.map { c in
                 let left = c.side == "LEFT"
                 return ReviewComment(id: c.id, user: c.user, path: c.path, body: c.body,
                                      position: left ? 0 : c.line ?? 0, original_position: left ? c.line ?? 0 : 0,
-                                     created_at: c.created_at, commit_id: c.commit_id)
+                                     created_at: c.created_at, commit_id: c.commit_id,
+                                     pull_request_review_id: c.pull_request_review_id, diff_hunk: c.diff_hunk)
             }
         }
         return try await withThrowingTaskGroup(of: [ReviewComment].self) { g in
@@ -300,6 +315,11 @@ struct ForgejoClient {
             for try await c in g { all += c }
             return all.sorted { $0.id < $1.id }
         }
+    }
+
+    /// Oldest first. Forgejo skips signature checks and file lists when asked; GitHub ignores the flags.
+    func pullCommits(_ r: RemoteRepo, _ n: Int) async throws -> [PRCommit] {
+        try await getAll("/repos/\(r.owner)/\(r.name)/pulls/\(n)/commits", query: ["verification": "false", "files": "false"])
     }
 
     func issueComments(_ r: RemoteRepo, _ n: Int) async throws -> [IssueComment] {

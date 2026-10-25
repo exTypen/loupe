@@ -192,24 +192,46 @@ private struct Disclosure: View {
 }
 
 /// A source excerpt, syntax highlighted, with lines tinted for what happened to them, cut at `maxLines`.
+/// Highlighted lines of small snippets, so one that a lazy stack drops and recreates isn't highlighted again.
+/// Bounded: a few hundred snippets, a few MB.
+enum HighlightCache {
+    private final class Lines { let value: [AttributedString]; init(_ v: [AttributedString]) { value = v } }
+    private static let cache: NSCache<NSString, Lines> = {
+        let c = NSCache<NSString, Lines>(); c.countLimit = 400; c.totalCostLimit = 4 << 20; return c
+    }()
+    private static func key(_ lines: [String], _ path: String) -> NSString { (path + "\u{0}" + lines.joined(separator: "\n")) as NSString }
+
+    static func cached(_ lines: [String], path: String) -> [AttributedString]? { cache.object(forKey: key(lines, path))?.value }
+
+    static func highlight(_ lines: [String], path: String) async -> [AttributedString] {
+        if let c = cached(lines, path: path) { return c }
+        let out = await Task.detached(priority: .userInitiated) { BlameView.highlight(lines, path: path) }.value
+        cache.setObject(Lines(out), forKey: key(lines, path), cost: lines.reduce(0) { $0 + $1.utf16.count } * 8)
+        return out
+    }
+}
+
 struct CodeBlock: View {
     var text: String
     var path: String                      // picks the language
     var kind: LensFact.Kind? = nil        // added → green, removed → red
     var maxLines = 12
-    @State private var colored: [AttributedString] = []
+    private let all: [String]
+    @State private var colored: [AttributedString]
     @State private var expanded = false
 
-    private var lines: [String] {
+    init(text: String, path: String, kind: LensFact.Kind? = nil, maxLines: Int = 12) {
+        self.text = text; self.path = path; self.kind = kind; self.maxLines = maxLines
         var l = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         while l.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { l.removeLast() }
         while l.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { l.removeFirst() }
         let indent = l.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map { $0.prefix { $0 == " " || $0 == "\t" }.count }.min() ?? 0
-        return l.map { String($0.dropFirst(min(indent, $0.prefix { $0 == " " || $0 == "\t" }.count))) }
+        all = l.map { String($0.dropFirst(min(indent, $0.prefix { $0 == " " || $0 == "\t" }.count))) }
+        _colored = State(initialValue: HighlightCache.cached(all, path: path) ?? [])
     }
 
     var body: some View {
-        let all = lines
+        let all = self.all
         let shown = expanded ? all.count : min(all.count, maxLines)
         let tint: Color? = kind == .added ? .green : kind == .removed ? .red : nil
         let mark = kind == .added ? "+" : kind == .removed ? "−" : nil
@@ -223,7 +245,8 @@ struct CodeBlock: View {
                         }
                     }
                 }
-                .font(.system(size: 11, design: .monospaced))
+                .font(.editor(11))
+                .foregroundStyle(Color(nsColor: Theme.foreground))
                 .textSelection(.enabled)
                 .padding(.vertical, 7).padding(.horizontal, 9)
             }
@@ -235,13 +258,13 @@ struct CodeBlock: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background((tint ?? .clear).opacity(0.07))
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        // Shaped backgrounds rather than a clip: no mask layer over the scroll view inside.
+        .background((tint ?? .clear).opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color(nsColor: Theme.background), in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.08)))
         .task(id: text) {
-            let l = all, p = path
-            colored = await Task.detached(priority: .userInitiated) { BlameView.highlight(l, path: p) }.value
+            guard colored.isEmpty else { return }
+            colored = await HighlightCache.highlight(all, path: path)
         }
     }
 }
@@ -251,23 +274,31 @@ private struct Masonry: Layout {
     var minWidth: CGFloat = 300
     var spacing: CGFloat = 12
 
-    private func frames(_ width: CGFloat, _ subviews: Subviews) -> [CGRect] {
+    /// The frames sizeThatFits measured, reused by the placeSubviews that follows instead of measuring every card again.
+    /// Sizing always measures afresh, so a card that grew is never placed from stale heights.
+    struct Cache { var width: CGFloat = -1; var frames: [CGRect] = [] }
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    private func frames(_ width: CGFloat, _ subviews: Subviews, _ cache: inout Cache, reuse: Bool) -> [CGRect] {
+        if reuse, cache.width == width, cache.frames.count == subviews.count { return cache.frames }
         let n = max(1, Int((width + spacing) / (minWidth + spacing)))
         let w = (width - CGFloat(n - 1) * spacing) / CGFloat(n)
         var heights = [CGFloat](repeating: 0, count: n)
-        return subviews.map { v in
+        let out = subviews.map { v in
             let c = heights.firstIndex(of: heights.min()!)!
             let h = v.sizeThatFits(ProposedViewSize(width: w, height: nil)).height
             defer { heights[c] += h + spacing }
             return CGRect(x: CGFloat(c) * (w + spacing), y: heights[c], width: w, height: h)
         }
+        cache = Cache(width: width, frames: out)
+        return out
     }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minWidth
-        return CGSize(width: width, height: frames(width, subviews).map(\.maxY).max() ?? 0)
+        return CGSize(width: width, height: frames(width, subviews, &cache, reuse: false).map(\.maxY).max() ?? 0)
     }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        for (v, f) in zip(subviews, frames(bounds.width, subviews)) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        for (v, f) in zip(subviews, frames(bounds.width, subviews, &cache, reuse: true)) {
             v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY), proposal: ProposedViewSize(f.size))
         }
     }

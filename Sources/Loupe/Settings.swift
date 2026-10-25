@@ -26,12 +26,14 @@ struct SettingsView: View {
         TabView(selection: $tab) {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }.tag("general")
+            EditorSettingsView()
+                .tabItem { Label("Editor", systemImage: "chevron.left.forwardslash.chevron.right") }.tag("editor")
             SpacesSettings()
                 .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }.tag("spaces")
             ShortcutSettings()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
         }
-        .frame(width: 720, height: 500)
+        .frame(width: 720, height: 640)
     }
 }
 

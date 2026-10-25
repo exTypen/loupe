@@ -84,6 +84,7 @@ struct FileInspector: View {
 struct BlameView: View {
     @Binding var target: FileTarget
     @State private var lines: [BlameLine] = []
+    @State private var oddRun: [Bool] = []   // per line: in an odd-numbered commit run (for the block shade)
     @State private var commits: [String: BlameCommit] = [:]
     @State private var highlighted: [AttributedString] = []
     @State private var error: String?
@@ -107,7 +108,7 @@ struct BlameView: View {
                         .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .topLeading)
                     }
                 }
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(Color(nsColor: Theme.background))
             }
         }
         .task(id: [target.path, target.rev ?? ""]) { await load() }
@@ -118,8 +119,7 @@ struct BlameView: View {
         let first = i == 0 || lines[i - 1].sha != l.sha
         let c = commits[l.sha]
         let uncommitted = l.sha.allSatisfy { $0 == "0" }
-        return HStack(spacing: 0) {
-            Button { picked = l.sha } label: {
+        let button = Button { picked = l.sha } label: {
                 HStack(spacing: 8) {
                     if first {
                         Text(uncommitted ? "Not committed" : String(l.sha.prefix(7))).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -134,12 +134,18 @@ struct BlameView: View {
             }
             .buttonStyle(.plain)
             .disabled(uncommitted)
-            .popover(isPresented: Binding(get: { picked == l.sha && first }, set: { if !$0 { picked = nil } })) { commitCard(l.sha) }
+        return HStack(spacing: 0) {
+            // Only a run's first row can show the card.
+            Group {
+                if first { button.popover(isPresented: Binding(get: { picked == l.sha }, set: { if !$0 { picked = nil } })) { commitCard(l.sha) } }
+                else { button }
+            }
             .background(blockShade(i))
-            Text(String(i + 1)).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+            Text(String(i + 1)).font(.caption.monospacedDigit()).foregroundStyle(Color(nsColor: Theme.lineNumber))
                 .frame(width: 46, alignment: .trailing).padding(.trailing, 10)
             Text(i < highlighted.count ? highlighted[i] : AttributedString(l.text))
-                .font(.system(size: 12, design: .monospaced))
+                .font(.editor(EditorSettings.shared.fontSize))
+                .foregroundStyle(Color(nsColor: Theme.foreground))
                 .fixedSize()
                 .textSelection(.enabled)
             Spacer(minLength: 0)
@@ -149,9 +155,15 @@ struct BlameView: View {
 
     /// Alternate a faint shade per commit run, so runs read as blocks.
     private func blockShade(_ i: Int) -> Color {
-        var runs = 0
-        for j in stride(from: i, to: 0, by: -1) where lines[j].sha != lines[j - 1].sha { runs += 1 }
-        return runs % 2 == 0 ? Color.primary.opacity(0.03) : Color.primary.opacity(0.07)
+        i < oddRun.count && oddRun[i] ? Color.primary.opacity(0.07) : Color.primary.opacity(0.03)
+    }
+
+    nonisolated static func oddRuns(_ lines: [BlameLine]) -> [Bool] {
+        var odd = false
+        return lines.indices.map { i in
+            if i > 0, lines[i].sha != lines[i - 1].sha { odd.toggle() }
+            return odd
+        }
     }
 
     private func commitCard(_ sha: String) -> some View {
@@ -178,10 +190,10 @@ struct BlameView: View {
         loading = true; defer { loading = false }
         do {
             let r = try await Git.blame(target.path, rev: target.rev, in: target.worktree)
-            lines = r.lines; commits = r.commits; error = nil
+            lines = r.lines; oddRun = Self.oddRuns(r.lines); commits = r.commits; error = nil
             let texts = r.lines.map(\.text), path = target.path
             highlighted = await Task.detached(priority: .userInitiated) { Self.highlight(texts, path: path) }.value
-        } catch { self.error = error.localizedDescription; lines = [] }
+        } catch { self.error = error.localizedDescription; lines = []; oddRun = [] }
     }
 
     nonisolated static func highlight(_ texts: [String], path: String) -> [AttributedString] {

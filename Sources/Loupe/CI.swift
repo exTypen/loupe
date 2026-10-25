@@ -141,16 +141,16 @@ final class JobLogModel {
             let (data, start, total) = try await client.actionLog(repo, jobID: job.id, range: "bytes=-\(Self.initialTail)")
             truncatedBytes = start
             offset = (total ?? data.count)
-            append(data)
+            await append(data)
         } catch { self.error = error.localizedDescription }
         while !Task.isCancelled {
             if let j = try? await client.actionJob(repo, id: job.id) { job = j }
             let running = isRunning
             if let (data, _, total) = try? await client.actionLog(repo, jobID: job.id, range: "bytes=\(offset)-"), !data.isEmpty {
                 offset = total ?? offset + data.count
-                append(data)
+                await append(data)
             }
-            if !running { flushPending(); return }      // finished: one last read above, then stop
+            if !running { await flushPending(); return }      // finished: one last read above, then stop
             try? await Task.sleep(for: .seconds(2))
         }
     }
@@ -159,45 +159,58 @@ final class JobLogModel {
         guard truncatedBytes > 0 else { return }
         do {
             let (data, _, _) = try await client.actionLog(repo, jobID: job.id, range: "bytes=0-\(truncatedBytes - 1)")
-            let text = Self.format(String(decoding: data, as: UTF8.self))
+            let (text, found) = await Self.formatted(String(decoding: data, as: UTF8.self))
             storage.insert(text, at: 0)
             let shift = text.length
-            problems = Self.findProblems(text, base: 0) + problems.map { ($0.line, NSRange(location: $0.range.location + shift, length: $0.range.length)) }
+            problems = found + problems.map { ($0.line, NSRange(location: $0.range.location + shift, length: $0.range.length)) }
             truncatedBytes = 0
             version += 1
         } catch { self.error = error.localizedDescription }
     }
 
-    private func append(_ data: Data) {
+    private func append(_ data: Data) async {
         pending.append(data)
         guard let nl = pending.lastIndex(of: UInt8(ascii: "\n")) else { return }
         let chunk = pending[...nl]
         pending = Data(pending[pending.index(after: nl)...])
-        emit(String(decoding: chunk, as: UTF8.self))
+        await emit(String(decoding: chunk, as: UTF8.self))
     }
 
-    private func flushPending() {
-        if !pending.isEmpty { emit(String(decoding: pending, as: UTF8.self) + "\n"); pending = Data() }
+    private func flushPending() async {
+        guard !pending.isEmpty else { return }
+        let s = String(decoding: pending, as: UTF8.self) + "\n"
+        pending = Data()
+        await emit(s)
     }
 
-    private func emit(_ s: String) {
-        let text = Self.format(s)
-        let base = storage.length
+    private func emit(_ s: String) async {
+        let (text, found) = await Self.formatted(s)
+        let base = storage.length   // read after the await: loadEarlier may have inserted meanwhile
         storage.append(text)
-        problems += Self.findProblems(text, base: base)
+        problems += found.map { ($0.line, NSRange(location: $0.range.location + base, length: $0.range.length)) }
         version += 1
     }
 
-    private static let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let monoBold = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+    /// Formatting a multi-MB log takes long enough to drop frames: off the main thread.
+    private static func formatted(_ s: String) async -> (NSAttributedString, [(line: String, range: NSRange)]) {
+        struct Handoff: @unchecked Sendable { var text: NSAttributedString; var problems: [(line: String, range: NSRange)] }   // built there, only read here
+        let h = await Task.detached(priority: .userInitiated) {
+            let text = format(s)
+            return Handoff(text: text, problems: findProblems(text, base: 0))
+        }.value
+        return (h.text, h.problems)
+    }
 
-    static func isProblem(_ l: Substring) -> Bool {
+    nonisolated(unsafe) private static let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+    nonisolated(unsafe) private static let monoBold = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+
+    nonisolated static func isProblem(_ l: Substring) -> Bool {
         l.hasPrefix("##[error]") || l.contains("❌") || l.hasPrefix("error") || l.contains("error:") || l.contains("Error:")
             || l.contains("FAILED") || l.contains("panicked at") || l.hasPrefix("thread '") && l.contains("panicked")
     }
 
     /// Strips runner timestamps and turns workflow commands into readable, coloured lines.
-    static func format(_ s: String) -> NSAttributedString {
+    nonisolated static func format(_ s: String) -> NSAttributedString {
         let out = NSMutableAttributedString()
         for raw in s.split(separator: "\n", omittingEmptySubsequences: false).dropLast(s.hasSuffix("\n") ? 1 : 0) {
             var l = raw
@@ -219,7 +232,7 @@ final class JobLogModel {
         return out
     }
 
-    static func findProblems(_ text: NSAttributedString, base: Int) -> [(line: String, range: NSRange)] {
+    nonisolated static func findProblems(_ text: NSAttributedString, base: Int) -> [(line: String, range: NSRange)] {
         var found: [(String, NSRange)] = []
         let ns = text.string as NSString
         ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byLines) { sub, range, _, stop in

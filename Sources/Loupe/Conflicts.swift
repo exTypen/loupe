@@ -17,17 +17,11 @@ struct ConflictText {
         case text([Substring])
         case conflict(Conflict)
     }
-    var segments: [Segment] = []
-    var conflictCount: Int { segments.reduce(0) { if case .conflict = $1 { $0 + 1 } else { $0 } } }
-
-    /// Each segment with the index of the conflict it is (counting conflicts only), for numbering and resolving.
-    var numbered: [(segment: Segment, conflict: Int)] {
-        var k = -1
-        return segments.map { seg in
-            if case .conflict = seg { k += 1 }
-            return (seg, k)
-        }
-    }
+    private(set) var segments: [Segment] = []
+    private(set) var conflictCount = 0
+    /// Each segment's offset and the index of the conflict it is (counting conflicts only), for numbering and
+    /// resolving. Built once: the conflict pane's body reads it on every update.
+    private(set) var numbered: [(offset: Int, segment: Segment, conflict: Int)] = []
 
     init(_ text: String) {
         var plain: [Substring] = []
@@ -60,6 +54,12 @@ struct ConflictText {
             }
         }
         if !plain.isEmpty { segments.append(.text(plain)) }
+        var k = -1
+        numbered = segments.enumerated().map { i, seg in
+            if case .conflict = seg { k += 1 }
+            return (i, seg, k)
+        }
+        conflictCount = k + 1
     }
 
     /// The file with conflict `index` (counting conflicts only) replaced by `lines`.
@@ -140,7 +140,8 @@ struct ConflictPane: View {
             if let text, text.conflictCount > 0 {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(text.numbered.enumerated()), id: \.offset) { i, item in
+                        ForEach(text.numbered, id: \.offset) { item in
+                            let i = item.offset
                             switch item.segment {
                             case .text(let lines): ContextLines(lines: lines, colored: colors[i]?.first)
                             case .conflict(let c):
@@ -258,7 +259,7 @@ private struct CodeLine: View {
         Group {
             if text.isEmpty { Text(" ") } else if let colored { Text(colored) } else { Text(String(text)) }
         }
-        .font(.system(.body, design: .monospaced)).lineLimit(1).textSelection(.enabled)
+        .font(.editor(EditorSettings.shared.fontSize)).lineLimit(1).textSelection(.enabled)
     }
 }
 

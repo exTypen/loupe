@@ -99,8 +99,10 @@ final class AppModel {
     }
 
     func moveRepos(_ repos: [String], to id: String) {
-        for i in spaces.indices { spaces[i].repos.removeAll(where: repos.contains) }
-        if let i = spaces.firstIndex(where: { $0.id == id }) { spaces[i].repos += repos }
+        var sp = spaces   // one write: each one persists every space
+        for i in sp.indices { sp[i].repos.removeAll(where: repos.contains) }
+        if let i = sp.firstIndex(where: { $0.id == id }) { sp[i].repos += repos }
+        spaces = sp
         if let s = selection, repos.contains(repo(containing: s) ?? s), id != currentSpace { selection = space.repos.first }
     }
 
@@ -138,7 +140,9 @@ final class AppModel {
     }
 
     func removeRepo(_ path: String) {
-        for i in spaces.indices { spaces[i].repos.removeAll { $0 == path } }
+        var sp = spaces
+        for i in sp.indices { sp[i].repos.removeAll { $0 == path } }
+        spaces = sp
         for wt in worktrees[path] ?? [] { models[wt.path]?.stopWatching(); models[wt.path] = nil }
         worktrees[path] = nil
     }
@@ -149,7 +153,8 @@ final class AppModel {
 
     func refreshWorktrees(repo: String) async {
         guard let list = try? await Git.worktrees(in: repo) else { return }
-        worktrees[repo] = list.filter { !$0.isBare }
+        let wts = list.filter { !$0.isBare }
+        if worktrees[repo] != wts { worktrees[repo] = wts }   // a subscript write notifies even when equal
         for wt in list where !wt.isBare { Task { await model(for: wt.path).refreshStatus() } }
     }
 
@@ -203,7 +208,20 @@ final class WorktreeModel {
     var headOID = ""                   // changes on commit/checkout/reset → history reloads
     var ahead = 0
     var behind = 0
-    var files: [FileChange] = []
+    var files: [FileChange] = [] {
+        didSet {   // split once per status change: the file list and sidebar read these many times per body
+            staged = files.filter(\.staged)
+            unstaged = files.filter { !$0.staged && $0.kind != .conflicted }
+            conflicted = files.filter { $0.kind == .conflicted }
+            listed = conflicted + staged + unstaged
+            changeCount = Set(files.map(\.path)).count
+        }
+    }
+    private(set) var staged: [FileChange] = []
+    private(set) var unstaged: [FileChange] = []
+    private(set) var conflicted: [FileChange] = []
+    private(set) var listed: [FileChange] = []   // file list order
+    private(set) var changeCount = 0
     var stashCount = 0
     var operation: GitOperation?       // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
     var operationSubject = ""          // the commit it's applying
@@ -232,11 +250,6 @@ final class WorktreeModel {
         startWatching()
     }
 
-    var staged: [FileChange] { files.filter(\.staged) }
-    var unstaged: [FileChange] { files.filter { !$0.staged && $0.kind != .conflicted } }
-    var conflicted: [FileChange] { files.filter { $0.kind == .conflicted } }
-    var listed: [FileChange] { conflicted + staged + unstaged }   // file list order
-    var changeCount: Int { Set(files.map(\.path)).count }
     var selectedFile: FileChange? { files.first { $0.id == selectedFileID } }
 
     // MARK: Status / diff
@@ -257,7 +270,7 @@ final class WorktreeModel {
                 let p = selectedFileID.map { String($0.dropFirst(2)) }
                 selectedFileID = files.first { $0.path == p }?.id ?? files.first?.id
             }
-            selectedFileIDs.formIntersection(files.map(\.id))
+            selectedFileIDs = selectedFileIDs.intersection(files.map(\.id))   // in place would notify every refresh
             if selectedFileIDs.isEmpty, let id = selectedFileID { selectedFileIDs = [id] }
             loadDiff()
         } catch { self.error = error.localizedDescription }

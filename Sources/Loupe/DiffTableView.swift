@@ -45,7 +45,7 @@ struct DiffTableView: NSViewRepresentable {
         table.allowsMultipleSelection = false
         table.gridStyleMask = []
         table.style = .plain
-        table.backgroundColor = .textBackgroundColor
+        table.backgroundColor = Theme.background
         table.columnAutoresizingStyle = .noColumnAutoresizing
         let col = NSTableColumn(identifier: .init("diff"))
         table.addTableColumn(col)
@@ -64,12 +64,14 @@ struct DiffTableView: NSViewRepresentable {
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
-        scroll.backgroundColor = .textBackgroundColor
+        scroll.backgroundColor = Theme.background
         scroll.documentCursor = .iBeam
         // Keep the single column at least as wide as the viewport so row backgrounds span it.
         scroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.viewportResized(_:)),
                                                name: NSView.frameDidChangeNotification, object: scroll.contentView)
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.styleChanged(_:)),
+                                               name: .editorStyleChanged, object: nil)
         return scroll
     }
 
@@ -120,26 +122,69 @@ struct DiffTableView: NSViewRepresentable {
         var numberWidth: CGFloat = 0
         var revealed: UUID?
         var hover: (row: Int, side: Int, cols: Range<Int>)?   // the identifier under the mouse while ⌘ is held
+        private var commentHeights: [InlineComment: CGFloat] = [:]
+        /// Lines as drawn, by line index. Colors stay dynamic, so an appearance change needs no rebuild.
+        private let lineCache: NSCache<NSNumber, NSAttributedString> = {
+            let c = NSCache<NSNumber, NSAttributedString>()
+            c.countLimit = 1500; c.totalCostLimit = 1_000_000   // cost: UTF-16 length
+            return c
+        }()
+        // Line numbers and +/− markers, measured per font. The small font's digits are fixed-width, so a number's width follows its digit count.
+        private(set) var numAttrs: [NSAttributedString.Key: Any] = [:]
+        private(set) var numHeight: CGFloat = 0
+        private var numWidths: [Int: CGFloat] = [:]
+        private(set) var addMarker = NSAttributedString(), delMarker = NSAttributedString()
+
+        func digitsWidth(_ s: NSString) -> CGFloat {
+            if let w = numWidths[s.length] { return w }
+            let w = s.size(withAttributes: numAttrs).width
+            numWidths[s.length] = w
+            return w
+        }
+
+        private func measureStyle() {
+            numAttrs = [.font: Theme.smallFont, .foregroundColor: Theme.lineNumber]
+            numHeight = ("0" as NSString).size(withAttributes: numAttrs).height
+            numWidths = [:]
+            addMarker = NSAttributedString(string: "+", attributes: [.font: Theme.font, .foregroundColor: Theme.addMark])
+            delMarker = NSAttributedString(string: "−", attributes: [.font: Theme.font, .foregroundColor: Theme.delMark])
+        }
+
+        /// Line `i` as the row draws it: tabs expanded, syntax colors, the intra-line highlight.
+        func attributed(line i: Int) -> NSAttributedString {
+            if let s = lineCache.object(forKey: i as NSNumber) { return s }
+            let l = file.lines[i]
+            let text = Syntax.displayText(l.text)
+            let color: NSColor = l.kind == .meta ? Theme.metaForeground : Theme.foreground
+            let s = NSMutableAttributedString(string: text, attributes: [.font: Theme.font, .foregroundColor: color])
+            if i < syntax.count {
+                for sp in syntax[i] where Int(sp.start + sp.length) <= s.length {
+                    s.addAttribute(.foregroundColor, value: Syntax.color(sp.kind), range: NSRange(location: Int(sp.start), length: Int(sp.length)))
+                }
+            }
+            if let r = highlights[i], NSMaxRange(r) <= s.length, !l.text.contains("\t") {
+                s.addAttribute(.backgroundColor, value: l.kind == .added ? Theme.addHL : Theme.delHL, range: r)
+            }
+            lineCache.setObject(s, forKey: i as NSNumber, cost: s.length)
+            return s
+        }
 
         /// ⌘ held over an identifier: underline it and show the link cursor, as an IDE does.
         func updateHover(at p: NSPoint?, command: Bool) {
             var next: (row: Int, side: Int, cols: Range<Int>)?
-            if command, parent.onNavigate != nil, let p, table.bounds.contains(p), word(at: p) != nil {
-                let side = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
-                var at = pos(p); at.col = Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down))
-                next = (at.row, side, wordRange(at: at, side: side))
-            }
+            if command, parent.onNavigate != nil, let p, table.bounds.contains(p), let w = identifier(at: p) { next = (w.row, w.side, w.cols) }
             let changed = next?.row != hover?.row || next?.cols != hover?.cols || next?.side != hover?.side
             let oldRow = hover?.row
             hover = next
-            (next == nil ? NSCursor.iBeam : NSCursor.pointingHand).set()
+            let cursor = next == nil ? NSCursor.iBeam : NSCursor.pointingHand
+            if NSCursor.current != cursor { cursor.set() }
             guard changed else { return }
             for r in [oldRow, next?.row].compactMap({ $0 }) { table.view(atColumn: 0, row: r, makeIfNecessary: false)?.needsDisplay = true }
         }
 
         /// Scrolls the new-side `line` to a third of the way down and selects it.
         func reveal(line: Int) {
-            guard let table, let r = rows.firstIndex(where: { row in
+            guard table != nil, let r = rows.firstIndex(where: { row in
                 if case .line(let i) = row { return file.lines[i].newLine == line && file.lines[i].kind != .removed }
                 if case .split(_, let b?) = row { return file.lines[b].newLine == line }
                 return false
@@ -153,14 +198,17 @@ struct DiffTableView: NSViewRepresentable {
             let y = max(0, rect.minY - table.visibleRect.height / 3)
             table.scroll(NSPoint(x: 0, y: y))
             selSide = 1
-            anchor = TextPos(row: r, col: 0); head = TextPos(row: r, col: text(row: r, side: 1).count)
+            anchor = TextPos(row: r, col: 0); head = TextPos(row: r, col: length(row: r, side: 1))
             redrawVisible()
         }
 
         func rebuild(file: FileDiff, layout: DiffLayout, comments: [InlineComment], hunkActions: [HunkAction]) {
+            if fileUID != file.uid { highlights = DiffTableView.intraLineHighlights(file); lineCache.removeAllObjects() }
             self.file = file; fileUID = file.uid; path = file.path
             self.layout = layout; self.comments = comments; self.hunkActions = hunkActions
-            highlights = DiffTableView.intraLineHighlights(file)
+            measureStyle()
+            let heights = commentHeights
+            commentHeights = Dictionary(comments.map { ($0, heights[$0] ?? CommentRowView.height(for: $0)) }, uniquingKeysWith: { a, _ in a })
             if syntaxFileUID != file.uid { startSyntax(file) }
 
             var byNew: [Int: [InlineComment]] = [:], byOld: [Int: [InlineComment]] = [:]
@@ -228,10 +276,10 @@ struct DiffTableView: NSViewRepresentable {
             // thread, racing `draw` for `syntax` and touching the table off-main (memory corruption, crashes far away).
             syntaxTask = Task { @MainActor [weak self] in
                 let spans = await Task.detached(priority: .userInitiated) { Syntax.highlight(file, language: lang) }.value
-                guard let self, !Task.isCancelled, self.fileUID == uid, let table = self.table else { return }
+                guard let self, !Task.isCancelled, self.fileUID == uid, self.table != nil else { return }
                 self.syntax = spans
-                let visible = table.rows(in: table.visibleRect)
-                for r in visible.location..<NSMaxRange(visible) { table.view(atColumn: 0, row: r, makeIfNecessary: false)?.needsDisplay = true }
+                self.lineCache.removeAllObjects()
+                self.redrawVisible()
             }
         }
 
@@ -243,23 +291,37 @@ struct DiffTableView: NSViewRepresentable {
 
         @objc func viewportResized(_ n: Notification) { fitColumn() }
 
+        /// A new font or theme: widths and row heights follow the font, every row redraws.
+        @objc func styleChanged(_ n: Notification) {
+            guard let table else { return }
+            lineCache.removeAllObjects()
+            rebuild(file: file, layout: layout, comments: comments, hunkActions: hunkActions)
+            fitColumn()
+            table.reloadData()
+            table.enclosingScrollView?.verticalScroller?.needsDisplay = true
+        }
+
         /// Runs of changed rows, for the change ruler. Comments inside a run don't break it.
         func changeMarks() -> [ChangeScroller.Mark] {
             var out: [ChangeScroller.Mark] = []
             for (r, row) in rows.enumerated() {
-                let idx: [Int]
+                var added = 0, removed = 0, first: Int?
+                func count(_ i: Int?) {
+                    guard let i else { return }
+                    if first == nil { first = i }
+                    switch file.lines[i].kind { case .added: added += 1; case .removed: removed += 1; default: break }
+                }
                 switch row {
-                case .line(let i): idx = [i]
-                case .split(let a, let b): idx = a == b ? [a].compactMap { $0 } : [a, b].compactMap { $0 }
+                case .line(let i): count(i)
+                case .split(let a, let b): count(a); if a != b { count(b) }
                 default: continue
                 }
-                let added = idx.filter { file.lines[$0].kind == .added }.count, removed = idx.filter { file.lines[$0].kind == .removed }.count
-                guard added + removed > 0 else { continue }
+                guard added + removed > 0, let first else { continue }
                 if let last = out.last, rows[(last.rows.upperBound + 1)..<r].allSatisfy({ if case .comment = $0 { true } else { false } }) {
                     out[out.count - 1].rows = last.rows.lowerBound...r
                     out[out.count - 1].added += added; out[out.count - 1].removed += removed
                 } else {
-                    let l = file.lines[idx[0]]
+                    let l = file.lines[first]
                     out.append(.init(rows: r...r, added: added, removed: removed, line: l.newLine ?? l.oldLine ?? 0))
                 }
             }
@@ -269,7 +331,7 @@ struct DiffTableView: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             switch rows[row] {
             case .hunk: return Theme.lineHeight + 8
-            case .comment(let c): return CommentRowView.height(for: c)
+            case .comment(let c): return commentHeights[c] ?? CommentRowView.height(for: c)
             default: return Theme.lineHeight
             }
         }
@@ -348,21 +410,29 @@ struct DiffTableView: NSViewRepresentable {
             line(row: row, side: side).map { Array(Syntax.displayText(file.lines[$0].text).utf16) } ?? []
         }
 
+        /// The drawn length of a row's side, without copying its text.
+        func length(row: Int, side: Int) -> Int { line(row: row, side: side).map { attributed(line: $0).length } ?? 0 }
+
+        private func hitRow(_ p: NSPoint) -> Int {
+            let row = table.row(at: p)
+            return row >= 0 ? row : p.y < 0 ? 0 : max(0, rows.count - 1)
+        }
+
         func pos(_ p: NSPoint) -> TextPos {
-            var row = table.row(at: p)
-            if row < 0 { row = p.y < 0 ? 0 : max(0, rows.count - 1) }
-            let len = text(row: row, side: selSide).count
+            let row = hitRow(p)
+            let len = length(row: row, side: selSide)
             let col = Int(((p.x - textX(side: selSide)) / Theme.charWidth).rounded())
             return TextPos(row: row, col: max(0, min(len, col)))
         }
 
         /// The identifier around a text position, as a column range (empty when there's none).
-        func wordRange(at: TextPos, side: Int) -> Range<Int> {
+        func wordRange(at: TextPos, side: Int) -> Range<Int> { wordRange(in: text(row: at.row, side: side), col: at.col) }
+
+        private func wordRange(in u: [UInt16], col: Int) -> Range<Int> {
             // Left of the text (over the line numbers) the column is negative: no word there.
-            guard at.col >= 0 else { return 0..<0 }
-            let u = text(row: at.row, side: side)
+            guard col >= 0 else { return 0..<0 }
             func isWord(_ c: UInt16) -> Bool { (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c > 127 }
-            var a = min(at.col, u.count), b = a
+            var a = min(col, u.count), b = a
             if a < u.count, isWord(u[a]) || (a > 0 && isWord(u[a - 1])) {
                 if a == u.count || !isWord(u[a]) { a -= 1; b = a }
                 while a > 0, isWord(u[a - 1]) { a -= 1 }
@@ -371,36 +441,34 @@ struct DiffTableView: NSViewRepresentable {
             return a..<b
         }
 
-        /// The identifier under a point, if it is one (not a number or punctuation).
-        func word(at p: NSPoint) -> String? {
+        /// The identifier under a point, if it is one (not a number or punctuation), with where it is.
+        func identifier(at p: NSPoint) -> (row: Int, side: Int, cols: Range<Int>, word: String)? {
             let side = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
-            var at = pos(p)
-            at.col = Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down))
-            let r = wordRange(at: at, side: side)
-            guard !r.isEmpty else { return nil }
-            let u = Array(text(row: at.row, side: side)[r])
-            guard let first = u.first, !(first >= 48 && first <= 57) else { return nil }
-            return String(utf16CodeUnits: u, count: u.count)
+            let row = hitRow(p)
+            let u = text(row: row, side: side)
+            let r = wordRange(in: u, col: Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down)))
+            guard !r.isEmpty, !(u[r.lowerBound] >= 48 && u[r.lowerBound] <= 57) else { return nil }
+            return (row, side, r, String(utf16CodeUnits: Array(u[r]), count: r.count))
         }
+
+        func word(at p: NSPoint) -> String? { identifier(at: p)?.word }
 
         func mouseDown(_ p: NSPoint, clicks: Int, command: Bool = false) {
             selSide = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
-            if command, clicks == 1, let nav = parent.onNavigate, let w = word(at: p) {   // ⌘-click: go to definition
-                var at = pos(p); at.col = Int(((p.x - textX(side: selSide)) / Theme.charWidth).rounded(.down))
-                let r = wordRange(at: at, side: selSide)
-                anchor = TextPos(row: at.row, col: r.lowerBound); head = TextPos(row: at.row, col: r.upperBound)
+            if command, clicks == 1, let nav = parent.onNavigate, let w = identifier(at: p) {   // ⌘-click: go to definition
+                anchor = TextPos(row: w.row, col: w.cols.lowerBound); head = TextPos(row: w.row, col: w.cols.upperBound)
                 redrawVisible()
-                nav(w, .definition)
+                nav(w.word, .definition)
                 return
             }
             let at = pos(p)
             switch clicks {
             case 2:   // word
                 var r = wordRange(at: at, side: selSide)
-                if r.isEmpty, r.lowerBound < text(row: at.row, side: selSide).count { r = r.lowerBound..<(r.lowerBound + 1) }
+                if r.isEmpty, r.lowerBound < length(row: at.row, side: selSide) { r = r.lowerBound..<(r.lowerBound + 1) }
                 anchor = TextPos(row: at.row, col: r.lowerBound); head = TextPos(row: at.row, col: r.upperBound)
             case 3...:  // line
-                anchor = TextPos(row: at.row, col: 0); head = TextPos(row: at.row, col: text(row: at.row, side: selSide).count)
+                anchor = TextPos(row: at.row, col: 0); head = TextPos(row: at.row, col: length(row: at.row, side: selSide))
             default:
                 anchor = at; head = at
             }
@@ -408,15 +476,18 @@ struct DiffTableView: NSViewRepresentable {
         }
 
         func mouseDragged(_ p: NSPoint) {
-            guard anchor != nil else { return }
-            head = pos(p)
-            redrawVisible()
+            guard let a = anchor else { return }
+            let old = head, new = pos(p)
+            head = new
+            // Only rows between the old and new head, and the anchor's, change.
+            let lo = min(old?.row ?? a.row, new.row), hi = max(old?.row ?? a.row, new.row)
+            redrawVisible { $0 == a.row || (lo...hi).contains($0) }
         }
 
         func selectAll() {
             guard !rows.isEmpty else { return }
             anchor = TextPos(row: 0, col: 0)
-            head = TextPos(row: rows.count - 1, col: text(row: rows.count - 1, side: selSide).count)
+            head = TextPos(row: rows.count - 1, col: length(row: rows.count - 1, side: selSide))
             redrawVisible()
         }
 
@@ -425,16 +496,17 @@ struct DiffTableView: NSViewRepresentable {
         /// Selected column range on a row/side, if any.
         func selectedColumns(row: Int, side: Int) -> Range<Int>? {
             guard side == selSide, let (s, e) = selection, row >= s.row, row <= e.row, line(row: row, side: side) != nil else { return nil }
-            let len = text(row: row, side: side).count
+            let len = length(row: row, side: side)
             let a = row == s.row ? s.col : 0
             let b = row == e.row ? e.col : len + 1   // +1: a full-line selection shows its newline
             return a < b ? a..<b : nil
         }
 
-        func redrawVisible() {
-            guard let table else { return }
-            let vis = table.rows(in: table.visibleRect)
-            for r in vis.location..<NSMaxRange(vis) { table.view(atColumn: 0, row: r, makeIfNecessary: false)?.needsDisplay = true }
+        /// Marks every prepared row (also those just outside the viewport, which would keep stale pixels), or those `rows` picks.
+        func redrawVisible(_ rows: ((Int) -> Bool)? = nil) {
+            table?.enumerateAvailableRowViews { v, r in
+                if rows?(r) ?? true { (v.view(atColumn: 0) as? NSView)?.needsDisplay = true }
+            }
         }
 
         func beginComment(lineIndex i: Int, row: Int) {
@@ -573,28 +645,35 @@ struct DiffTableView: NSViewRepresentable {
 /// Clicking a mark scrolls to it; the knob and the rest of the track work as usual.
 final class ChangeScroller: NSScroller {
     struct Mark { var rows: ClosedRange<Int>; var added: Int; var removed: Int; var line: Int }
-    var marks: [Mark] = [] { didSet { needsDisplay = true } }
+    var marks: [Mark] = [] { didSet { placedRects = nil; hovered = nil; toolTip = nil; needsDisplay = true } }
     weak var table: NSTableView?
     var onJump: ((Int) -> Void)?
 
     // Not drawn as an overlay: the scroll view keeps the track visible, so the marks are always there.
     override class var isCompatibleWithOverlayScrollers: Bool { false }
 
-    private func placed() -> [(mark: Mark, rect: NSRect)] {
+    // Placed once per slot and table height: the slot draws every scroll frame.
+    private var placedRects: (slot: NSRect, height: CGFloat, rects: [NSRect])?
+    private var hovered: Int?
+
+    private func placed() -> [NSRect] {
         guard let table, table.bounds.height > 0 else { return [] }
         let slot = rect(for: .knobSlot), h = table.bounds.height
-        return marks.map { m in
+        if let p = placedRects, p.slot == slot, p.height == h { return p.rects }
+        let rects = marks.map { m in
             let top = table.rect(ofRow: m.rows.lowerBound).minY / h, bottom = table.rect(ofRow: m.rows.upperBound).maxY / h
             let height = max(3, (bottom - top) * slot.height)
             let y = isFlipped ? slot.minY + top * slot.height : slot.maxY - top * slot.height - height
-            return (m, NSRect(x: slot.minX + 3, y: y, width: slot.width - 6, height: height))
+            return NSRect(x: slot.minX + 3, y: y, width: slot.width - 6, height: height)
         }
+        placedRects = (slot, h, rects)
+        return rects
     }
 
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-        NSColor.textBackgroundColor.setFill(); slotRect.fill()
+        Theme.background.setFill(); slotRect.fill()
         NSColor.separatorColor.setFill(); NSRect(x: slotRect.minX, y: slotRect.minY, width: 1, height: slotRect.height).fill()
-        for (m, r) in placed() {
+        for (m, r) in zip(marks, placed()) {
             (m.removed == 0 ? NSColor.systemGreen : m.added == 0 ? NSColor.systemRed : NSColor.systemOrange).setFill()
             NSBezierPath(roundedRect: r, xRadius: 1, yRadius: 1).fill()
         }
@@ -607,13 +686,13 @@ final class ChangeScroller: NSScroller {
         NSColor.labelColor.withAlphaComponent(0.25).setStroke(); path.stroke()
     }
 
-    private func mark(at p: NSPoint) -> Mark? {
+    private func mark(at p: NSPoint) -> Int? {
         guard !rect(for: .knob).contains(p) else { return nil }   // the knob still drags
-        return placed().first { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }?.mark
+        return placed().firstIndex { $0.insetBy(dx: -3, dy: -3).contains(p) }
     }
 
     override func mouseDown(with event: NSEvent) {
-        if let m = mark(at: convert(event.locationInWindow, from: nil)) { onJump?(m.rows.lowerBound) } else { super.mouseDown(with: event) }
+        if let i = mark(at: convert(event.locationInWindow, from: nil)) { onJump?(marks[i].rows.lowerBound) } else { super.mouseDown(with: event) }
     }
 
     override func updateTrackingAreas() {
@@ -623,9 +702,12 @@ final class ChangeScroller: NSScroller {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let m = mark(at: convert(event.locationInWindow, from: nil))
-        toolTip = m.map { m in "Line \(m.line): " + [m.added > 0 ? "+\(m.added)" : nil, m.removed > 0 ? "−\(m.removed)" : nil].compactMap { $0 }.joined(separator: " ") }
-        (m == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+        let i = mark(at: convert(event.locationInWindow, from: nil))
+        let cursor = i == nil ? NSCursor.arrow : NSCursor.pointingHand
+        if NSCursor.current != cursor { cursor.set() }
+        guard i != hovered else { return }
+        hovered = i
+        toolTip = i.map { marks[$0] }.map { m in "Line \(m.line): " + [m.added > 0 ? "+\(m.added)" : nil, m.removed > 0 ? "−\(m.removed)" : nil].compactMap { $0 }.joined(separator: " ") }
     }
 
     override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
@@ -687,20 +769,31 @@ final class DiffTable: NSTableView {
 
 // MARK: - Theme
 
+/// The editor's metrics and colors, from `EditorSettings`. Colors resolve per appearance at draw time.
 enum Theme {
-    static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    static let smallFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-    static let lineHeight: CGFloat = 18
+    static var font: NSFont { EditorSettings.shared.font }
+    static var smallFont: NSFont { EditorSettings.shared.smallFont }
+    static var lineHeight: CGFloat { EditorSettings.shared.lineHeight }
+    static var charWidth: CGFloat { EditorSettings.shared.charWidth }
+    static var textY: CGFloat { EditorSettings.shared.textY }   // where a line's text starts inside its row
     static let maxDrawnChars = 1500   // ponytail: lines longer than this are truncated on screen (minified files); copy still gets full text
-    static let charWidth: CGFloat = ("M" as NSString).size(withAttributes: [.font: font]).width
 
-    static let addBG = NSColor(name: nil) { $0.isDark ? NSColor(srgbRed: 0.18, green: 0.35, blue: 0.22, alpha: 0.55) : NSColor(srgbRed: 0.85, green: 0.97, blue: 0.87, alpha: 1) }
-    static let delBG = NSColor(name: nil) { $0.isDark ? NSColor(srgbRed: 0.42, green: 0.18, blue: 0.19, alpha: 0.55) : NSColor(srgbRed: 1.0, green: 0.90, blue: 0.90, alpha: 1) }
-    static let addHL = NSColor(name: nil) { $0.isDark ? NSColor(srgbRed: 0.22, green: 0.55, blue: 0.3, alpha: 0.7) : NSColor(srgbRed: 0.65, green: 0.92, blue: 0.70, alpha: 1) }
-    static let delHL = NSColor(name: nil) { $0.isDark ? NSColor(srgbRed: 0.7, green: 0.25, blue: 0.27, alpha: 0.7) : NSColor(srgbRed: 1.0, green: 0.75, blue: 0.76, alpha: 1) }
-    static let gutterBG = NSColor(name: nil) { $0.isDark ? NSColor(white: 1, alpha: 0.03) : NSColor(white: 0, alpha: 0.025) }
-    static let hunkBG = NSColor(name: nil) { $0.isDark ? NSColor(srgbRed: 0.2, green: 0.25, blue: 0.4, alpha: 0.45) : NSColor(srgbRed: 0.92, green: 0.94, blue: 1.0, alpha: 1) }
-    static let emptyBG = NSColor(name: nil) { $0.isDark ? NSColor(white: 1, alpha: 0.025) : NSColor(white: 0, alpha: 0.035) }
+    private static func themed(_ f: @escaping (CodePalette) -> NSColor) -> NSColor {
+        NSColor(name: nil) { f(EditorSettings.shared.palette(dark: $0.isDark)) }
+    }
+    static let background = themed { $0.background }
+    static let foreground = themed { $0.foreground }
+    static let metaForeground = themed { $0.metaForeground }
+    static let lineNumber = themed { $0.lineNumber }
+    static let addMark = themed { $0.addMark }
+    static let delMark = themed { $0.delMark }
+    static let addBG = themed { $0.addBG }
+    static let delBG = themed { $0.delBG }
+    static let addHL = themed { $0.addHL }
+    static let delHL = themed { $0.delHL }
+    static let gutterBG = themed { $0.gutterBG }
+    static let hunkBG = themed { $0.hunkBG }
+    static let emptyBG = themed { $0.emptyBG }
 }
 
 extension NSAppearance {
@@ -754,14 +847,11 @@ final class LineRowView: NSView {
         let gutterW = nw * CGFloat(nums.count)
         Theme.gutterBG.setFill(); NSRect(x: x, y: 0, width: gutterW, height: h).fill()
 
-        let numAttrs: [NSAttributedString.Key: Any] = [.font: Theme.smallFont, .foregroundColor: NSColor.tertiaryLabelColor]
         for (k, n) in nums.enumerated() {
             guard let n else { continue }
             let s = String(n) as NSString
-            let sz = s.size(withAttributes: numAttrs)
-            s.draw(at: NSPoint(x: x + nw * CGFloat(k + 1) - sz.width - 6, y: (h - sz.height) / 2), withAttributes: numAttrs)
+            s.draw(at: NSPoint(x: x + nw * CGFloat(k + 1) - c.digitsWidth(s) - 6, y: (h - c.numHeight) / 2), withAttributes: c.numAttrs)
         }
-        let marker = l.kind == .added ? "+" : l.kind == .removed ? "−" : ""
         let tx = x + gutterW + 4
         if let cols = c.selectedColumns(row: rowIndex, side: splitLeft == true ? 0 : 1) {
             let focused = window?.firstResponder === c.table && window?.isKeyWindow == true
@@ -769,22 +859,11 @@ final class LineRowView: NSView {
             NSRect(x: tx + 12 + CGFloat(cols.lowerBound) * Theme.charWidth, y: 0,
                    width: CGFloat(cols.count) * Theme.charWidth, height: h).fill()
         }
-        (marker as NSString).draw(at: NSPoint(x: tx, y: 1), withAttributes: [.font: Theme.font, .foregroundColor: l.kind == .added ? NSColor.systemGreen : NSColor.systemRed])
+        if let marker = l.kind == .added ? c.addMarker : l.kind == .removed ? c.delMarker : nil { marker.draw(at: NSPoint(x: tx, y: Theme.textY)) }
 
-        let text = Syntax.displayText(l.text)
-        let color: NSColor = l.kind == .meta ? .secondaryLabelColor : .labelColor
-        let s = NSMutableAttributedString(string: text, attributes: [.font: Theme.font, .foregroundColor: color])
-        if index < c.syntax.count {
-            for sp in c.syntax[index] where Int(sp.start + sp.length) <= s.length {
-                s.addAttribute(.foregroundColor, value: Syntax.color(sp.kind), range: NSRange(location: Int(sp.start), length: Int(sp.length)))
-            }
-        }
-        if let r = c.highlights[index], NSMaxRange(r) <= s.length, !l.text.contains("\t") {
-            s.addAttribute(.backgroundColor, value: l.kind == .added ? Theme.addHL : Theme.delHL, range: r)
-        }
         NSGraphicsContext.saveGraphicsState()
         NSRect(x: x, y: 0, width: width, height: h).clip()
-        s.draw(at: NSPoint(x: tx + 12, y: 1))
+        c.attributed(line: index).draw(at: NSPoint(x: tx + 12, y: Theme.textY))
         NSGraphicsContext.restoreGraphicsState()
     }
 }
@@ -794,6 +873,7 @@ final class HunkRowView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let buttons = NSStackView()
     private var handler: ((HunkAction) -> Void)?
+    private var actions: [HunkAction]?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -814,11 +894,13 @@ final class HunkRowView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override func updateLayer() { layer?.backgroundColor = Theme.hunkBG.cgColor }
+    override func updateLayer() { label.font = Theme.smallFont; layer?.backgroundColor = Theme.hunkBG.cgColor }
 
     func configure(header: Substring, actions: [HunkAction], handler: @escaping (HunkAction) -> Void) {
         label.stringValue = String(header)
         self.handler = handler
+        guard actions != self.actions else { return }   // reused row: keep its buttons and their layout
+        self.actions = actions
         buttons.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for a in actions {
             let title = a == .stage ? "Stage Hunk" : a == .unstage ? "Unstage Hunk" : "Discard"

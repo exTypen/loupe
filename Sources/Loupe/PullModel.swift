@@ -14,10 +14,26 @@ final class PullListModel {
     private var exhausted = false
     var selected: Int?                         // PR number
     var details: [Int: PullRequestModel] = [:]
+    @ObservationIgnored private var inFlight: String?   // state of the load running now
+    @ObservationIgnored private var again = false
+    @ObservationIgnored private var saving: Task<Void, Never>?
 
     /// Reloads from page 1. The open list is small, so it is fetched completely; closed/all keep just the first page.
+    /// A call while one for the same state is in flight runs once more after it instead of alongside it.
     func load(_ client: ForgejoClient, _ repo: RemoteRepo) async {
+        // The detail replaces the list, and deselecting reloads it: polling it meanwhile is wasted.
+        guard selected == nil else { return }
+        guard inFlight != state else { again = true; return }
         loading = true; defer { loading = false }
+        repeat {
+            again = false
+            let st = state; inFlight = st
+            await loadOnce(client, repo)
+            if inFlight == st { inFlight = nil }
+        } while again && selected == nil
+    }
+
+    private func loadOnce(_ client: ForgejoClient, _ repo: RemoteRepo) async {
         let st = state
         do {
             var all = try await client.pulls(repo, state: st, page: 1)
@@ -45,20 +61,25 @@ final class PullListModel {
 
     // MARK: Disk cache (open list only) — the window shows the last known list instantly at launch.
 
-    private func cacheURL(_ r: RemoteRepo) -> URL {
+    nonisolated private static func cacheURL(_ r: RemoteRepo) -> URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("dev.extypen.loupe", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("pulls-\(r.host)-\(r.owner)-\(r.name).json".replacingOccurrences(of: ":", with: "_"))
     }
 
     func restoreCache(_ r: RemoteRepo) {
-        guard state == "open", pulls.isEmpty, let d = try? Data(contentsOf: cacheURL(r)),
+        guard state == "open", pulls.isEmpty, let d = try? Data(contentsOf: Self.cacheURL(r)),
               let cached = try? JSONDecoder().decode([PullRequest].self, from: d) else { return }
         pulls = cached
     }
 
+    /// Off the main thread, one write after another so an older list never lands last.
     private func saveCache(_ r: RemoteRepo) {
-        if let d = try? JSONEncoder().encode(pulls) { try? d.write(to: cacheURL(r), options: .atomic) }
+        let (pulls, prev) = (pulls, saving)
+        saving = Task.detached(priority: .utility) {
+            await prev?.value
+            if let d = try? JSONEncoder().encode(pulls) { try? d.write(to: Self.cacheURL(r), options: .atomic) }
+        }
     }
 
     func detail(for pr: PullRequest, client: ForgejoClient, repo: RemoteRepo, local: LocalCheckout) -> PullRequestModel {
@@ -77,12 +98,21 @@ final class PullRequestModel {
     let client: ForgejoClient
     let repo: RemoteRepo
     let local: LocalCheckout            // where to fetch and diff when the server won't send the diff
-    var files: [FileDiff] = []          // tree order (dirs first), so next/prev follows the sidebar
+    var files: [FileDiff] = [] { didSet { fileDerived = nil; viewedDerived = nil; viewedUnder = [:]; commentableCache = nil } }   // tree order (dirs first), so next/prev follows the sidebar
     var collapsed: Set<String> = []
     private var index: [String: Int] = [:]
     @ObservationIgnored private var lastDiff: Data?
     @ObservationIgnored private var localDiffSHA: String?   // head the local fallback diff was made at
-    private var fingerprints: [String: UInt64] = [:]
+    private var fingerprints: [String: UInt64] = [:] { didSet { viewedDerived = nil; viewedUnder = [:] } }
+    @ObservationIgnored private var reloadQueued = false
+    // Derived per-row lookups, rebuilt on first read after their inputs change. Readers go through the observed
+    // inputs first, so views still track those.
+    @ObservationIgnored private var fileDerived: (filtered: [FileDiff], under: [String: [Int]])?
+    @ObservationIgnored private var viewedDerived: Int?
+    @ObservationIgnored private var commentDerived: (counts: [String: Int], inline: [String: [InlineComment]])?
+    @ObservationIgnored private var commentableCache: (path: String, test: (DiffLine) -> Bool)?
+    @ObservationIgnored private var viewedUnder: [String: (done: Int, total: Int)] = [:]
+    @ObservationIgnored private var treeFilterCache: (tree: [String], filter: String, paths: [String])?
     var selectedPath: String? {
         didSet {
             // Full mode: whatever opens, from the tree, a jump or a result, opens as a tab next to the current one.
@@ -93,14 +123,15 @@ final class PullRequestModel {
     }
     var tabs: [String] = []                  // Full mode's open files, in tab order
     var reviews: [Review] = []
-    var comments: [ReviewComment] = []
+    var comments: [ReviewComment] = [] { didSet { commentDerived = nil } }
     var conversation: [IssueComment] = []
+    var commits: [PRCommit] = []
     var loading = false
     var error: String?
-    var filter = ""
+    var filter = "" { didSet { fileDerived = nil; viewedUnder = [:] } }
     @ObservationIgnored lazy var checks = ChecksModel(client: client, repo: repo, sha: pr.head.sha)
-    var drafts: [DraftComment] = [] { didSet { persistDrafts() } }
-    var viewed: [String: UInt64] = [:] { didSet { UserDefaults.standard.set(viewed.mapValues { String($0) }, forKey: viewedKey) } }
+    var drafts: [DraftComment] = [] { didSet { persistDrafts(); commentDerived = nil } }
+    var viewed: [String: UInt64] = [:] { didSet { viewedDerived = nil; viewedUnder = [:]; UserDefaults.standard.set(viewed.mapValues { String($0) }, forKey: viewedKey) } }
 
     private var viewedKey: String { "viewed:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
     private var draftsKey: String { "drafts:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
@@ -116,23 +147,75 @@ final class PullRequestModel {
 
     var selectedFile: FileDiff? { selectedPath.flatMap(file) }
     func file(_ path: String) -> FileDiff? { index[path].map { files[$0] } }
-    func files(under dir: String) -> [FileDiff] { filteredFiles.filter { $0.path.hasPrefix(dir + "/") } }
+    func files(under dir: String) -> [FileDiff] {
+        let d = derivedFiles
+        return d.under[dir]?.map { d.filtered[$0] } ?? []
+    }
 
     /// Directory checkbox: mark everything under it viewed, or clear it if it all already is.
     func toggleViewed(dir: String) {
         let fs = files(under: dir)
         let allViewed = fs.allSatisfy(isViewed)
-        for f in fs { viewed[f.path] = allViewed ? nil : fingerprints[f.path] }
+        var v = viewed   // one assignment: each write persists the whole dictionary
+        for f in fs { v[f.path] = allViewed ? nil : fingerprints[f.path] }
+        viewed = v
     }
-    var filteredFiles: [FileDiff] { filter.isEmpty ? files : files.filter { $0.path.localizedCaseInsensitiveContains(filter) } }
-    var viewedCount: Int { files.filter(isViewed).count }
+    var filteredFiles: [FileDiff] { derivedFiles.filtered }
 
+    /// A folder's viewed progress for the tree, counted once per folder until files, the filter or viewed change.
+    func viewedProgress(under dir: String) -> (done: Int, total: Int) {
+        let fs = files(under: dir)
+        _ = (viewed, fingerprints)   // observed reads
+        if let p = viewedUnder[dir] { return p }
+        let p = (fs.filter(isViewed).count, fs.count)
+        viewedUnder[dir] = p
+        return p
+    }
+
+    /// Full mode's tree paths with the filter applied, filtered again only when the tree or the filter changes.
+    var filteredTree: [String] {
+        let (t, q) = (tree, filter)   // observed reads
+        if q.isEmpty { return t }
+        if let c = treeFilterCache, c.filter == q, c.tree == t { return c.paths }
+        let paths = t.filter { $0.localizedCaseInsensitiveContains(q) }
+        treeFilterCache = (t, q, paths)
+        return paths
+    }
+    var viewedCount: Int {
+        let (fs, _, _) = (files, viewed, fingerprints)   // observed reads
+        if let n = viewedDerived { return n }
+        let n = fs.filter(isViewed).count
+        viewedDerived = n
+        return n
+    }
+
+    /// The filtered list, and for every directory the indexes into it of the files below it.
+    private var derivedFiles: (filtered: [FileDiff], under: [String: [Int]]) {
+        let (fs, q) = (files, filter)   // observed reads
+        if let d = fileDerived { return d }
+        let filtered = q.isEmpty ? fs : fs.filter { $0.path.localizedCaseInsensitiveContains(q) }
+        var under: [String: [Int]] = [:]
+        for (i, f) in filtered.enumerated() {
+            let p = f.path
+            for j in p.indices where p[j] == "/" { under[String(p[..<j]), default: []].append(i) }
+        }
+        fileDerived = (filtered, under)
+        return (filtered, under)
+    }
+
+    /// Runs one load at a time: a call while one is in flight (poll, app activation, refresh) runs once more after it.
     func load() async {
+        guard !loading else { reloadQueued = true; return }
         loading = true; defer { loading = false }
+        repeat { reloadQueued = false; await loadOnce() } while reloadQueued
+    }
+
+    private func loadOnce() async {
         do {
             async let prReq = client.pull(repo, pr.number)
             async let reviewsReq = client.reviews(repo, pr.number)
             async let convReq = client.issueComments(repo, pr.number)
+            async let commitsReq = client.pullCommits(repo, pr.number)
             pr = try await prReq
             if checks.sha != pr.head.sha { checks.sha = pr.head.sha; Task { await checks.refresh() } }   // new push
             let data = try await diffData()
@@ -150,6 +233,7 @@ final class PullRequestModel {
             applyDefaultCollapse()
             reviews = try await reviewsReq
             conversation = try await convReq
+            if let c = try? await commitsReq { commits = c }   // the timeline does without them rather than fail the load
             comments = try await client.reviewComments(repo, pr.number, reviews: reviews)
             error = nil
         } catch { self.error = error.localizedDescription }
@@ -300,9 +384,12 @@ final class PullRequestModel {
     /// Review comments only attach to lines inside the diff's hunks: in a whole file, the rest can't take one.
     func commentable(_ path: String) -> (DiffLine) -> Bool {
         guard let c = file(path) else { return { _ in false } }
+        if let cached = commentableCache, cached.path == path { return cached.test }
         let new = Set(c.lines.compactMap { $0.kind == .removed ? nil : $0.newLine })
         let old = Set(c.lines.compactMap { $0.kind == .removed ? $0.oldLine : nil })
-        return { l in l.kind == .removed ? old.contains(l.oldLine ?? -1) : new.contains(l.newLine ?? -1) }
+        let test: (DiffLine) -> Bool = { l in l.kind == .removed ? old.contains(l.oldLine ?? -1) : new.contains(l.newLine ?? -1) }
+        commentableCache = (path, test)
+        return test
     }
 
     func open(_ path: String, line: Int, record: Bool = true) {
@@ -404,15 +491,22 @@ final class PullRequestModel {
         return out.map { ($0.key, $0.value) }.sorted { $0.login < $1.login }
     }
 
-    func inlineComments(for path: String) -> [InlineComment] {
-        comments.filter { $0.path == path }.map {
-            InlineComment(author: $0.user?.login ?? "?", body: $0.body, newLine: $0.position > 0 ? $0.position : nil, oldLine: $0.original_position > 0 ? $0.original_position : nil)
-        } + drafts.filter { $0.path == path }.map {
-            InlineComment(author: "You", body: $0.body, newLine: $0.newLine, oldLine: $0.oldLine, draftID: $0.id)
-        }
-    }
+    func inlineComments(for path: String) -> [InlineComment] { derivedComments.inline[path] ?? [] }
 
-    func commentCount(for path: String) -> Int { comments.lazy.filter { $0.path == path }.count + drafts.lazy.filter { $0.path == path }.count }
+    func commentCount(for path: String) -> Int { derivedComments.counts[path] ?? 0 }
+
+    private var derivedComments: (counts: [String: Int], inline: [String: [InlineComment]]) {
+        let (cs, ds) = (comments, drafts)   // observed reads
+        if let d = commentDerived { return d }
+        var inline: [String: [InlineComment]] = [:]
+        for c in cs {
+            inline[c.path, default: []].append(InlineComment(author: c.user?.login ?? "?", body: c.body, newLine: c.position > 0 ? c.position : nil, oldLine: c.original_position > 0 ? c.original_position : nil))
+        }
+        for d in ds { inline[d.path, default: []].append(InlineComment(author: "You", body: d.body, newLine: d.newLine, oldLine: d.oldLine, draftID: d.id)) }
+        let d = (inline.mapValues(\.count), inline)
+        commentDerived = d
+        return d
+    }
 
     func submit(event: ForgejoClient.ReviewEvent, body: String) async -> Bool {
         do {

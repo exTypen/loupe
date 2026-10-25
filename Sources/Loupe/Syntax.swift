@@ -121,9 +121,8 @@ enum Syntax {
         var i = 0
         func add(_ s: Int, _ e: Int, _ k: TokenKind) { if e > s { spans.append(SyntaxSpan(start: Int32(s), length: Int32(e - s), kind: k)) } }
         func starts(_ s: String, at p: Int) -> Bool {
-            let x = Array(s.utf16)
-            guard p + x.count <= u.count else { return false }
-            for j in 0..<x.count where u[p + j] != x[j] { return false }
+            var j = p
+            for x in s.utf16 { guard j < u.count, u[j] == x else { return false }; j += 1 }
             return true
         }
         func find(_ s: String, from p: Int) -> Int? {
@@ -218,22 +217,9 @@ enum Syntax {
         return spans
     }
 
+    /// The current editor theme's color for a token, resolved per appearance at draw time.
     static func color(_ k: TokenKind) -> NSColor { palette[Int(k.rawValue)] }
-
-    // Xcode-like defaults, separate light / dark values.
-    private static func dyn(_ light: UInt32, _ dark: UInt32) -> NSColor {
-        func c(_ v: UInt32) -> NSColor { NSColor(srgbRed: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255, blue: CGFloat(v & 0xff) / 255, alpha: 1) }
-        return NSColor(name: nil) { $0.isDark ? c(dark) : c(light) }
+    private static let palette: [NSColor] = (0..<9).map { i in
+        NSColor(name: nil) { EditorSettings.shared.palette(dark: $0.isDark).tokens[i] }
     }
-    private static let palette: [NSColor] = [
-        dyn(0x9B2393, 0xFF7AB2),   // keyword
-        dyn(0xC41A16, 0xFF8170),   // string
-        dyn(0x5D6C79, 0x7F8C98),   // comment
-        dyn(0x1C00CF, 0xD9C97C),   // number
-        dyn(0x0B4F79, 0x6BDFFF),   // type
-        dyn(0x326D74, 0x67B7A4),   // function
-        dyn(0x643820, 0xFD8F3F),   // macro
-        dyn(0x815F03, 0xBF8555),   // attribute
-        dyn(0x0F68A0, 0x4EB0CC),   // property / key
-    ]
 }

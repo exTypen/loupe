@@ -6,6 +6,7 @@ struct WorktreeView: View {
     @AppStorage("tab") private var tab = "changes"
     @AppStorage("layout") private var layout = DiffLayout.unified
     @State private var showBranches = false
+    @State private var controls = DiffControls()
 
     var body: some View {
         Group {
@@ -44,12 +45,24 @@ struct WorktreeView: View {
                 .pickerStyle(.segmented)
                 .labelStyle(.titleOnly)
             }
+            // Only what applies to what's on screen: the layout while a diff shows, Compact/Full on a pull request's files.
             ToolbarItemGroup {
-                Picker("Layout", selection: $layout) {
-                    Image(systemName: "rectangle").help("Unified").tag(DiffLayout.unified)
-                    Image(systemName: "rectangle.split.2x1").help("Split").tag(DiffLayout.split)
+                if controls.layout {
+                    Picker("Layout", selection: $layout) {
+                        Image(systemName: "rectangle").help("Unified").tag(DiffLayout.unified)
+                        Image(systemName: "rectangle.split.2x1").help("Split").tag(DiffLayout.split)
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                if let pull = controls.fullMode {
+                    Picker("Mode", selection: Binding(get: { pull.fullMode }, set: { pull.fullMode = $0 })) {
+                        Image(systemName: "rectangle.compress.vertical").help("Compact: the changed files and their changes").tag(false)
+                        Image(systemName: "rectangle.expand.vertical").help("Full: the whole repository, whole files and code navigation (⌥⌘F)").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+            ToolbarItemGroup {
                 // No separate spinner (it shifted the buttons); the running operation animates its own icon.
                 Button { Task { await model.remoteOp("Fetching", ["fetch", "--all", "--prune"]) } } label: {
                     Label("Fetch", systemImage: "arrow.triangle.2.circlepath").symbolEffect(.rotate, isActive: model.busy == "Fetching")
@@ -72,6 +85,23 @@ struct WorktreeView: View {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await model.refreshStatus() } }
+        .onPreferenceChange(DiffControlsKey.self) { controls = $0 }
+    }
+}
+
+/// Which of the toolbar's diff controls apply to what's on screen. Views showing a diff set it.
+struct DiffControls: Equatable {
+    var layout = false
+    var fullMode: PullRequestModel?
+    static func == (a: Self, b: Self) -> Bool { a.layout == b.layout && a.fullMode === b.fullMode }
+}
+
+struct DiffControlsKey: PreferenceKey {
+    static var defaultValue: DiffControls { DiffControls() }
+    static func reduce(value: inout DiffControls, nextValue: () -> DiffControls) {
+        let next = nextValue()
+        value.layout = value.layout || next.layout
+        value.fullMode = value.fullMode ?? next.fullMode
     }
 }
 
@@ -219,7 +249,10 @@ struct ChangesView: View {
                     }
                 }
                 else if let f = model.selectedFile, f.kind == .conflicted { ConflictPane(model: model, path: f.path).id(f.path) }
-                else { DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard) }
+                else {
+                    DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard)
+                        .preference(key: DiffControlsKey.self, value: DiffControls(layout: model.selectedFile != nil))
+                }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         }
