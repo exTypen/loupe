@@ -294,6 +294,7 @@ struct ChecksBadge: View {
                     if s.running > 0 { Label(String(s.running), systemImage: "circle.fill").foregroundStyle(.orange).symbolEffect(.pulse) }
                     if s.queued > 0 { Label(String(s.queued), systemImage: "circle.dashed").foregroundStyle(.secondary) }
                     Label(String(s.passed), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("checks").foregroundStyle(.secondary)
                 }
             }
             .labelStyle(.titleAndIcon)

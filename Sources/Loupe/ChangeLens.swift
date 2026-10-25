@@ -100,7 +100,7 @@ struct LensMetric: Sendable {
 }
 
 struct LensReport: Identifiable, Sendable {
-    enum Kind: Sendable { case files, database, dependencies, configuration, code }
+    enum Kind: Sendable { case files, database, dependencies, configuration }
     var id: String { title }
     var kind: Kind
     var title: String
@@ -118,10 +118,9 @@ enum ChangeLens {
     static func analyze(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> [LensReport] {
         async let sql = SQLLens.report(changes, a: a, b: b, in: dir)
         async let deps = DependencyLens.report(changes, a: a, b: b, in: dir)
-        async let code = CodeLens.report(changes, a: a, b: b, in: dir)
         async let config = ConfigLens.report(changes, a: a, b: b, in: dir)
         let files = FilesLens.report(changes)
-        return [files] + [await sql, await deps, await config, await code].compactMap { $0 }
+        return [files] + [await sql, await deps, await config].compactMap { $0 }
     }
 }
 

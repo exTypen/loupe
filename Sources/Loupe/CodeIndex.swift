@@ -93,31 +93,6 @@ enum CodeIndex {
         return out
     }
 
-    /// Definitions with their source: the first line (signature) and the whole node (body), for comparing two
-    /// versions of a file.
-    static func definitions(in text: String, path: String) -> [(symbol: CodeSymbol, signature: String, body: String)] {
-        guard let g = grammar(for: path), let query = g.tags else { return [] }
-        let parser = Parser()
-        guard (try? parser.setLanguage(g.language)) != nil, let tree = parser.parse(text) else { return [] }
-        let ns = text as NSString
-        var out: [(CodeSymbol, String, String)] = []
-        for match in query.execute(in: tree) {
-            guard let nameCapture = match.captures.first(where: { $0.name == "name" }),
-                  let def = match.captures.first(where: { $0.name?.hasPrefix("definition.") == true }),
-                  let tag = def.name else { continue }
-            let name = ns.substring(with: nameCapture.range)
-            guard !name.isEmpty, name.count < 200 else { continue }
-            let body = ns.substring(with: def.range)
-            let signature = body.split(separator: "\n", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-            out.append((CodeSymbol(name: name, kind: kind(String(tag.dropFirst("definition.".count))), isDefinition: true, path: path,
-                                   line: Int(nameCapture.node.pointRange.lowerBound.row) + 1), signature, body))
-        }
-        // Some queries tag one item twice (a Rust fn in an impl is both a method and a function): keep the first,
-        // more specific match per name and line.
-        var seen = Set<String>()
-        return out.filter { seen.insert("\($0.0.name)@\($0.0.line)").inserted }
-    }
-
     /// The definitions in a file, in order, one per line: the file's outline.
     static func outline(_ text: String, path: String) -> [CodeSymbol] {
         var seen = Set<Int>()

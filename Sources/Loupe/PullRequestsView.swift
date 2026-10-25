@@ -244,6 +244,8 @@ struct PullDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await pull.load() } }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in if let d = n.object as? Int { pull.move(d) } }
         .onReceive(NotificationCenter.default.publisher(for: .markViewed)) { _ in pull.markViewedAndAdvance() }
+        // ⌘W closes the open tab rather than the window; with no tab open it does nothing, so it never quits the app.
+        .background(CommandWInterceptor(action: tab == "files" && pull.fullMode ? { if let p = pull.selectedPath { pull.closeTab(p) } } : nil))
         .alert("Forgejo", isPresented: Binding(get: { pull.error != nil }, set: { if !$0 { pull.error = nil } })) {
             Button("OK") { pull.error = nil }
         } message: { Text(pull.error ?? "") }
@@ -251,18 +253,22 @@ struct PullDetailView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Who and what, then the actions on the pull request.
             HStack(alignment: .firstTextBaseline) {
                 Button(action: back) { Label("Pull Requests", systemImage: "chevron.left") }
                     .buttonStyle(.borderless).shortcut(.back)
-                Text(pull.pr.title).font(.title3.weight(.semibold)).lineLimit(1).textSelection(.enabled)
-                Text(verbatim: "#\(pull.pr.number)").font(.title3).foregroundStyle(.secondary)
+                Text(pull.pr.title).font(.title3.weight(.semibold)).lineLimit(1).textSelection(.enabled).help(pull.pr.title)
+                Text(verbatim: "#\(pull.pr.number)").font(.title3).foregroundStyle(.secondary).fixedSize()
                 Spacer()
                 HStack(spacing: 8) {
-                    if pull.loading { ProgressView() }
+                    ProgressView().controlSize(.small).opacity(pull.loading ? 1 : 0)
                     Button { Task { await worktree.checkoutInWorktree(pull.pr) } } label: { Label("Check Out", systemImage: "arrow.triangle.branch") }
                         .help("Check Out in New Worktree")
-                    Button { if let u = URL(string: pull.pr.html_url) { NSWorkspace.shared.open(u) } } label: { Label("Open in Browser", systemImage: "safari") }
-                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(pull.pr.html_url, forType: .string) } label: { Label("Copy Link", systemImage: "link") }
+                    Menu {
+                        Button { if let u = URL(string: pull.pr.html_url) { NSWorkspace.shared.open(u) } } label: { Label("Open in Browser", systemImage: "safari") }
+                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(pull.pr.html_url, forType: .string) } label: { Label("Copy Link", systemImage: "link") }
+                    } label: { Image(systemName: "ellipsis") }
+                    .menuIndicator(.hidden).fixedSize()
                     if pull.pr.state == "open" {
                         Menu {
                             ForEach(ForgejoClient.MergeStyle.allCases, id: \.self) { s in
@@ -271,36 +277,47 @@ struct PullDetailView: View {
                         } label: { Label("Merge", systemImage: "arrow.triangle.merge") }
                         .fixedSize()
                         .disabled(pull.pr.mergeable == false)
+                        .help(pull.pr.mergeable == false ? "Can't be merged: conflicts with \(pull.pr.base.ref), or a branch protection rule isn't met" : "Merge into \(pull.pr.base.ref)")
                     }
+                    Button { showSubmit = true } label: {
+                        Text(pull.drafts.isEmpty ? "Review" : "Review (\(pull.drafts.count))")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .popover(isPresented: $showSubmit, arrowEdge: .bottom) { SubmitReviewView(pull: pull) { showSubmit = false } }
                 }
                 .controlSize(.small)
                 .fixedSize()
             }
+            // Its state, then where to look.
             HStack(spacing: 10) {
                 Avatar(user: pull.pr.user, size: 18)
                 Text(pull.pr.user.login).fontWeight(.medium).lineLimit(1).fixedSize()
-                Text("\(pull.pr.head.ref) → \(pull.pr.base.ref)").font(.callout.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text("\(pull.pr.head.ref) → \(pull.pr.base.ref)").font(.callout.monospaced()).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).layoutPriority(1).help("\(pull.pr.head.ref) → \(pull.pr.base.ref)")
                 if let a = pull.pr.additions, let d = pull.pr.deletions {
                     Text(verbatim: "+\(String(a))").foregroundStyle(.green).monospacedDigit().fixedSize()
                     Text(verbatim: "−\(String(d))").foregroundStyle(.red).monospacedDigit().fixedSize()
                 }
                 reviewBadges
-                Spacer()
                 ChecksBadge(model: pull.checks) {
                     withAnimation(.easeOut(duration: 0.15)) { app.checksOverlay = (pull.checks, pull.client.baseURL) }
                 }
+                .fixedSize()
+                Spacer()
                 Picker("", selection: $tab) {
                     Text("Overview").tag("overview")
                     Text("Files \(pull.files.count)").tag("files")
                     Text("Conversation").tag("conversation")
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Button { showSubmit = true } label: {
-                    Text(pull.drafts.isEmpty ? "Review" : "Review (\(pull.drafts.count))")
+                if tab == "files" {
+                    Picker("Mode", selection: Binding(get: { pull.fullMode }, set: { pull.fullMode = $0 })) {
+                        Image(systemName: "rectangle.compress.vertical").help("Compact: the changed files and their changes").tag(false)
+                        Image(systemName: "rectangle.expand.vertical").help("Full: the whole repository, whole files and code navigation").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize().tint(.gray)
+                    .help("Compact or Full (⌥⌘F)")
                 }
-                .buttonStyle(.borderedProminent)
-                .fixedSize()
-                .popover(isPresented: $showSubmit, arrowEdge: .bottom) { SubmitReviewView(pull: pull) { showSubmit = false } }
             }
             .controlSize(.small)
         }
@@ -309,12 +326,17 @@ struct PullDetailView: View {
         .background(.bar)
     }
 
+    /// One mark per state, with the count; the names are in the tooltip.
     @ViewBuilder private var reviewBadges: some View {
-        ForEach(pull.reviewerStates, id: \.login) { r in
-            switch r.state {
-            case .approved: Label(r.login, systemImage: "checkmark.circle.fill").foregroundStyle(.green).help("\(r.login) approved")
-            case .changesRequested: Label(r.login, systemImage: "exclamationmark.circle.fill").foregroundStyle(.red).help("\(r.login) requested changes")
-            case .pending: Label(r.login, systemImage: "circle.fill").foregroundStyle(.orange).help("Waiting for \(r.login)'s review")
+        let states = pull.reviewerStates
+        ForEach([(PullRequestModel.ReviewerState.approved, "approved", "checkmark.circle.fill", Color.green),
+                 (.changesRequested, "requested changes", "exclamationmark.circle.fill", .red),
+                 (.pending, "pending", "circle.fill", .orange)], id: \.1) { state, label, icon, color in
+            let names = states.filter { $0.state == state }.map(\.login)
+            if !names.isEmpty {
+                Label { Text("\(names.count) \(label)").foregroundStyle(.secondary) } icon: { Image(systemName: icon).foregroundStyle(color) }
+                    .fixedSize()
+                    .help(names.joined(separator: ", "))
             }
         }
         .font(.caption)
@@ -331,16 +353,8 @@ struct PullDetailView: View {
     private var files: some View {
         ResizableSplit(key: "prTreeWidth", minWidth: 250, maxWidth: 460) {
             VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    TextField("Filter files", text: $pull.filter).textFieldStyle(.roundedBorder)
-                    Picker("Mode", selection: Binding(get: { pull.fullMode }, set: { pull.fullMode = $0 })) {
-                        Text("Compact").tag(false)
-                        Text("Full").tag(true)
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
-                    .help("Compact: the changed files and their changes. Full: the whole repository, whole files and code navigation.")
-                }
-                .padding(8)
+                TextField("Filter files", text: $pull.filter).textFieldStyle(.roundedBorder)
+                    .padding(8)
                 let total = max(1, pull.files.count)
                 VStack(alignment: .leading, spacing: 3) {
                     ProgressView(value: Double(pull.viewedCount), total: Double(total))
@@ -463,7 +477,7 @@ struct PullDetailView: View {
                                   onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
                                   canComment: pull.commentable(path),
                                   onNavigate: { word, action in Task { await pull.navigate(word, action, from: path) } },
-                                  reveal: pull.reveal)
+                                  reveal: pull.reveal, changeRuler: true)
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -744,5 +758,31 @@ struct ConversationView: View {
         .frame(maxWidth: 760, alignment: .leading)
         .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(tint.opacity(0.25)))
+    }
+}
+
+/// While `action` is set, ⌘W in this view's window runs it instead of closing the window.
+struct CommandWInterceptor: NSViewRepresentable {
+    var action: (() -> Void)?
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ v: Probe, context: Context) { v.action = action }
+
+    final class Probe: NSView {
+        var action: (() -> Void)?
+        private var monitor: Any?
+        override func viewDidMoveToWindow() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+                MainActor.assumeIsolated {
+                    guard let self, let action = self.action, e.window === self.window,
+                          e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                          e.charactersIgnoringModifiers?.lowercased() == "w" else { return e }
+                    action()
+                    return nil
+                }
+            }
+        }
     }
 }

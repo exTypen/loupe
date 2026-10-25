@@ -32,6 +32,7 @@ struct DiffTableView: NSViewRepresentable {
     var canComment: ((DiffLine) -> Bool)? = nil                   // nil → every line (when commenting is on)
     var onNavigate: ((_ word: String, _ action: CodeAction) -> Void)? = nil   // nil → no ⌘-click / Go to Definition
     var reveal: DiffReveal? = nil                                 // scroll to a line and select it
+    var changeRuler = false                                       // marks for the changes beside the vertical scroller
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -58,6 +59,7 @@ struct DiffTableView: NSViewRepresentable {
 
         let scroll = NSScrollView()
         scroll.documentView = table
+        if changeRuler { scroll.verticalScroller = ChangeScroller() }
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
@@ -84,6 +86,11 @@ struct DiffTableView: NSViewRepresentable {
             if !samePath { c.clearSelection() }
             scroll.contentView.scroll(to: keepScroll)
             scroll.reflectScrolledClipView(scroll.contentView)
+            if let ruler = scroll.verticalScroller as? ChangeScroller {
+                ruler.table = c.table
+                ruler.onJump = { [weak c] row in c?.show(row: row) }
+                ruler.marks = c.changeMarks()
+            }
         }
         if let r = reveal, r.id != c.revealed {
             c.revealed = r.id
@@ -137,6 +144,11 @@ struct DiffTableView: NSViewRepresentable {
                 if case .split(_, let b?) = row { return file.lines[b].newLine == line }
                 return false
             }) else { return }
+            show(row: r)
+        }
+
+        /// Scrolls `r` to a third of the way down and selects it.
+        func show(row r: Int) {
             let rect = table.rect(ofRow: r)
             let y = max(0, rect.minY - table.visibleRect.height / 3)
             table.scroll(NSPoint(x: 0, y: y))
@@ -231,6 +243,29 @@ struct DiffTableView: NSViewRepresentable {
 
         @objc func viewportResized(_ n: Notification) { fitColumn() }
 
+        /// Runs of changed rows, for the change ruler. Comments inside a run don't break it.
+        func changeMarks() -> [ChangeScroller.Mark] {
+            var out: [ChangeScroller.Mark] = []
+            for (r, row) in rows.enumerated() {
+                let idx: [Int]
+                switch row {
+                case .line(let i): idx = [i]
+                case .split(let a, let b): idx = a == b ? [a].compactMap { $0 } : [a, b].compactMap { $0 }
+                default: continue
+                }
+                let added = idx.filter { file.lines[$0].kind == .added }.count, removed = idx.filter { file.lines[$0].kind == .removed }.count
+                guard added + removed > 0 else { continue }
+                if let last = out.last, rows[(last.rows.upperBound + 1)..<r].allSatisfy({ if case .comment = $0 { true } else { false } }) {
+                    out[out.count - 1].rows = last.rows.lowerBound...r
+                    out[out.count - 1].added += added; out[out.count - 1].removed += removed
+                } else {
+                    let l = file.lines[idx[0]]
+                    out.append(.init(rows: r...r, added: added, removed: removed, line: l.newLine ?? l.oldLine ?? 0))
+                }
+            }
+            return out
+        }
+
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             switch rows[row] {
             case .hunk: return Theme.lineHeight + 8
@@ -323,6 +358,8 @@ struct DiffTableView: NSViewRepresentable {
 
         /// The identifier around a text position, as a column range (empty when there's none).
         func wordRange(at: TextPos, side: Int) -> Range<Int> {
+            // Left of the text (over the line numbers) the column is negative: no word there.
+            guard at.col >= 0 else { return 0..<0 }
             let u = text(row: at.row, side: side)
             func isWord(_ c: UInt16) -> Bool { (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c > 127 }
             var a = min(at.col, u.count), b = a
@@ -531,6 +568,68 @@ struct DiffTableView: NSViewRepresentable {
 }
 
 // MARK: - Table subclass (keyboard + copy)
+
+/// A vertical scroller with a mark beside the track for every run of changes, at its place in the file.
+/// Clicking a mark scrolls to it; the knob and the rest of the track work as usual.
+final class ChangeScroller: NSScroller {
+    struct Mark { var rows: ClosedRange<Int>; var added: Int; var removed: Int; var line: Int }
+    var marks: [Mark] = [] { didSet { needsDisplay = true } }
+    weak var table: NSTableView?
+    var onJump: ((Int) -> Void)?
+
+    // Not drawn as an overlay: the scroll view keeps the track visible, so the marks are always there.
+    override class var isCompatibleWithOverlayScrollers: Bool { false }
+
+    private func placed() -> [(mark: Mark, rect: NSRect)] {
+        guard let table, table.bounds.height > 0 else { return [] }
+        let slot = rect(for: .knobSlot), h = table.bounds.height
+        return marks.map { m in
+            let top = table.rect(ofRow: m.rows.lowerBound).minY / h, bottom = table.rect(ofRow: m.rows.upperBound).maxY / h
+            let height = max(3, (bottom - top) * slot.height)
+            let y = isFlipped ? slot.minY + top * slot.height : slot.maxY - top * slot.height - height
+            return (m, NSRect(x: slot.minX + 3, y: y, width: slot.width - 6, height: height))
+        }
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+        NSColor.textBackgroundColor.setFill(); slotRect.fill()
+        NSColor.separatorColor.setFill(); NSRect(x: slotRect.minX, y: slotRect.minY, width: 1, height: slotRect.height).fill()
+        for (m, r) in placed() {
+            (m.removed == 0 ? NSColor.systemGreen : m.added == 0 ? NSColor.systemRed : NSColor.systemOrange).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 1, yRadius: 1).fill()
+        }
+    }
+
+    override func drawKnob() {
+        let r = rect(for: .knob).insetBy(dx: 1.5, dy: 1)
+        let path = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+        NSColor.labelColor.withAlphaComponent(0.12).setFill(); path.fill()
+        NSColor.labelColor.withAlphaComponent(0.25).setStroke(); path.stroke()
+    }
+
+    private func mark(at p: NSPoint) -> Mark? {
+        guard !rect(for: .knob).contains(p) else { return nil }   // the knob still drags
+        return placed().first { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }?.mark
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let m = mark(at: convert(event.locationInWindow, from: nil)) { onJump?(m.rows.lowerBound) } else { super.mouseDown(with: event) }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let m = mark(at: convert(event.locationInWindow, from: nil))
+        toolTip = m.map { m in "Line \(m.line): " + [m.added > 0 ? "+\(m.added)" : nil, m.removed > 0 ? "−\(m.removed)" : nil].compactMap { $0 }.joined(separator: " ") }
+        (m == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+    }
+
+    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+}
 
 final class DiffTable: NSTableView {
     weak var coordinator: DiffTableView.Coordinator?

@@ -1,57 +1,5 @@
 import Foundation
 
-// MARK: - Code: definitions added, removed, changed (tree-sitter)
-
-enum CodeLens {
-    static func report(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> LensReport? {
-        let code = changes.filter { CodeIndex.canNavigate($0.path) }
-        guard !code.isEmpty else { return nil }
-        let olds = code.compactMap(\.old), news = code.compactMap(\.new)
-        async let ta = a.read(olds, in: dir, maxSize: 1_000_000)
-        async let tb = b.read(news, in: dir, maxSize: 1_000_000)
-        let (textA, textB) = (await ta, await tb)
-        return await Task.detached { () -> LensReport? in
-            var sections: [LensSection] = []
-            var n = (added: 0, removed: 0, changed: 0)
-            for c in code {
-                let da = c.old.flatMap { p in textA[p].map { CodeIndex.definitions(in: $0, path: p) } } ?? []
-                let db = c.new.flatMap { p in textB[p].map { CodeIndex.definitions(in: $0, path: p) } } ?? []
-                // Same name and kind, in order: the second `new` in a file pairs with the second one in the other version.
-                func keyed(_ d: [(symbol: CodeSymbol, signature: String, body: String)]) -> [String: (symbol: CodeSymbol, signature: String, body: String)] {
-                    var seen: [String: Int] = [:], out: [String: (symbol: CodeSymbol, signature: String, body: String)] = [:]
-                    for x in d { let k = "\(x.symbol.kind.rawValue) \(x.symbol.name)"; let i = seen[k, default: 0]; seen[k] = i + 1; out["\(k)#\(i)"] = x }
-                    return out
-                }
-                let ka = keyed(da), kb = keyed(db)
-                var facts: [LensFact] = []
-                let tag = { (s: CodeSymbol) in s.kind == .other ? nil : s.kind.rawValue }
-                for (k, x) in kb.sorted(by: { $0.value.symbol.line < $1.value.symbol.line }) {
-                    if let o = ka[k] {
-                        guard o.body != x.body else { continue }
-                        let sig = o.signature != x.signature
-                        facts.append(LensFact(kind: .changed, title: x.symbol.name, detail: sig ? "signature changed" : "body changed",
-                                              path: c.new, line: x.symbol.line, tag: tag(x.symbol), before: sig ? o.signature : nil, after: sig ? x.signature : nil))
-                        n.changed += 1
-                    } else {
-                        facts.append(LensFact(kind: .added, title: x.symbol.name, detail: "added", path: c.new, line: x.symbol.line, tag: tag(x.symbol), after: x.signature)); n.added += 1
-                    }
-                }
-                for (k, x) in ka.sorted(by: { $0.value.symbol.line < $1.value.symbol.line }) where kb[k] == nil {
-                    facts.append(LensFact(kind: .removed, title: x.symbol.name, detail: "removed", tag: tag(x.symbol), before: x.signature)); n.removed += 1
-                }
-                if !facts.isEmpty { sections.append(LensSection(title: c.path, facts: facts)) }
-            }
-            guard !sections.isEmpty else { return nil }
-            var s: [String] = []
-            if n.added > 0 { s.append("\(n.added) added") }
-            if n.removed > 0 { s.append("\(n.removed) removed") }
-            if n.changed > 0 { s.append("\(n.changed) changed") }
-            return LensReport(kind: .code, title: "Code", icon: "curlybraces", summary: s.joined(separator: " · ") + " definitions in " + plural(sections.count, "file"), sections: sections,
-                              metric: LensMetric(value: n.added + n.removed + n.changed, unit: "definitions", added: n.added, removed: n.removed, changed: n.changed))
-        }.value
-    }
-}
-
 // MARK: - Dependencies
 
 enum DependencyLens {

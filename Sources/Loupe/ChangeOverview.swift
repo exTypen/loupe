@@ -10,7 +10,6 @@ struct ChangeOverview: View {
     var onOpen: (String, Int?) -> Void
     @State private var reports: [LensReport]?
     @State private var computedFor: String?
-    @State private var width: CGFloat = 0
 
     var body: some View {
         Group {
@@ -19,9 +18,7 @@ struct ChangeOverview: View {
                     ScrollView {
                         content(reports, proxy)
                             .padding(.horizontal, 24).padding(.vertical, 20)
-                            .frame(maxWidth: 1320, alignment: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
                     }
                 }
             } else {
@@ -41,22 +38,14 @@ struct ChangeOverview: View {
     }
 
     @ViewBuilder private func content(_ reports: [LensReport], _ proxy: ScrollViewProxy) -> some View {
-        let main = reports.filter { $0.kind == .database || $0.kind == .code }
-        let side = reports.filter { $0.kind != .database && $0.kind != .code }
-        VStack(alignment: .leading, spacing: 28) {
+        LazyVStack(alignment: .leading, spacing: 28) {
             Summary(reports: reports) { id in withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) } }
             if reports.count == 1 {
-                Text("Nothing structural beyond the files: no schema, dependency, configuration or code-definition changes.")
+                Text("Nothing structural beyond the files: no schema, dependency or configuration changes.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            if !main.isEmpty && !side.isEmpty && width > 1060 {
-                HStack(alignment: .top, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 28) { ForEach(main) { section($0) } }.frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 28) { ForEach(side) { section($0) } }.frame(width: 340)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 28) { ForEach(main + side) { section($0) } }
-            }
+            // The files lens lives in its summary tile; the others get a section each.
+            ForEach(reports.filter { $0.kind != .files }) { section($0) }
         }
     }
 
@@ -105,7 +94,6 @@ private extension LensReport.Kind {
         case .database: .orange
         case .dependencies: .brown
         case .configuration: .gray
-        case .code: .indigo
         }
     }
 }
@@ -258,35 +246,30 @@ struct CodeBlock: View {
     }
 }
 
-/// Lays children out left to right, wrapping to new rows.
-private struct Flow: Layout {
-    var spacing: CGFloat = 5
+/// Cards in as many columns as fit, each one under the currently shortest column.
+private struct Masonry: Layout {
+    var minWidth: CGFloat = 300
+    var spacing: CGFloat = 12
+
+    private func frames(_ width: CGFloat, _ subviews: Subviews) -> [CGRect] {
+        let n = max(1, Int((width + spacing) / (minWidth + spacing)))
+        let w = (width - CGFloat(n - 1) * spacing) / CGFloat(n)
+        var heights = [CGFloat](repeating: 0, count: n)
+        return subviews.map { v in
+            let c = heights.firstIndex(of: heights.min()!)!
+            let h = v.sizeThatFits(ProposedViewSize(width: w, height: nil)).height
+            defer { heights[c] += h + spacing }
+            return CGRect(x: CGFloat(c) * (w + spacing), y: heights[c], width: w, height: h)
+        }
+    }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = arrange(proposal.width ?? .infinity, subviews)
-        return CGSize(width: rows.map(\.width).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minWidth
+        return CGSize(width: width, height: frames(width, subviews).map(\.maxY).max() ?? 0)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        for row in arrange(bounds.width, subviews) {
-            var x = bounds.minX
-            for i in row.items {
-                let s = subviews[i].sizeThatFits(.unspecified)
-                subviews[i].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: .unspecified)
-                x += s.width + spacing
-            }
+        for (v, f) in zip(subviews, frames(bounds.width, subviews)) {
+            v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY), proposal: ProposedViewSize(f.size))
         }
-    }
-    private func arrange(_ width: CGFloat, _ subviews: Subviews) -> [(items: [Int], y: CGFloat, width: CGFloat, height: CGFloat)] {
-        var rows: [(items: [Int], y: CGFloat, width: CGFloat, height: CGFloat)] = []
-        var cur: [Int] = [], x: CGFloat = 0, y: CGFloat = 0, h: CGFloat = 0
-        for (i, v) in subviews.enumerated() {
-            let s = v.sizeThatFits(.unspecified)
-            if !cur.isEmpty && x + s.width > width {
-                rows.append((cur, y, x - spacing, h)); y += h + spacing; cur = []; x = 0; h = 0
-            }
-            cur.append(i); x += s.width + spacing; h = max(h, s.height)
-        }
-        if !cur.isEmpty { rows.append((cur, y, x - spacing, h)) }
-        return rows
     }
 }
 
@@ -316,9 +299,10 @@ private struct Summary: View {
     var reports: [LensReport]
     var onSelect: (String) -> Void
     var body: some View {
-        HStack(spacing: 10) {
-            ForEach(reports) { r in SummaryTile(report: r).onTapGesture { onSelect(r.id) } }
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(reports) { r in SummaryTile(report: r).onTapGesture { if r.kind != .files { onSelect(r.id) } } }
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -334,17 +318,23 @@ private struct SummaryTile: View {
                     .background(report.kind.tint.gradient, in: RoundedRectangle(cornerRadius: 5))
                 Text(report.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).opacity(hover ? 1 : 0)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).opacity(hover && report.kind != .files ? 1 : 0)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("\(m.value)").font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
-                Text(m.unit).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            HStack(alignment: .bottom, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text("\(m.value)").font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
+                        Text(m.unit).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Deltas(added: m.added, removed: m.removed, changed: m.changed).frame(height: 13, alignment: .leading)
+                }
+                .fixedSize()
+                if report.kind == .files { FileKinds(facts: report.sections.first?.facts ?? []) }
             }
-            Deltas(added: m.added, removed: m.removed, changed: m.changed).frame(height: 13, alignment: .leading)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(hover ? 0.06 : 0.035), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.primary.opacity(hover && report.kind != .files ? 0.06 : 0.035), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -373,9 +363,8 @@ private struct LensSectionView: View {
             .buttonStyle(.plain)
             if !collapsed {
                 switch report.kind {
-                case .files: FilesBody(report: report)
+                case .files: EmptyView()
                 case .database: DatabaseBody(groups: report.database, onOpen: onOpen)
-                case .code: CodeBody(report: report, onOpen: onOpen)
                 case .dependencies: DependencyBody(report: report, onOpen: onOpen)
                 case .configuration: ConfigBody(report: report, onOpen: onOpen)
                 }
@@ -386,41 +375,30 @@ private struct LensSectionView: View {
 
 // MARK: - Files
 
-private struct FilesBody: View {
-    var report: LensReport
+/// How the changed files split by kind: a thin bar, and the counts in one wrapping line.
+private struct FileKinds: View {
+    var facts: [LensFact]
     static let colors: [String: Color] = ["Code": .blue, "Tests": .teal, "SQL": .orange, "Dependencies": .brown, "Config": .gray,
                                           "Build & CI": .indigo, "Docs": .mint, "Assets": .pink]
     var body: some View {
-        let facts = report.sections.first?.facts ?? []
         let total = max(1, facts.reduce(0) { $0 + ($1.count ?? 0) })
-        Grouped {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(report.summary).font(.callout).foregroundStyle(.secondary)
-                // A storage-style bar: how the change splits by kind of file.
-                GeometryReader { g in
-                    HStack(spacing: 1.5) {
-                        ForEach(facts) { f in
-                            Rectangle().fill(Self.colors[f.title, default: .gray])
-                                .frame(width: max(2, (g.size.width - CGFloat(facts.count - 1) * 1.5) * CGFloat(f.count ?? 0) / CGFloat(total)))
-                        }
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { g in
+                HStack(spacing: 1.5) {
+                    ForEach(facts) { f in
+                        Rectangle().fill(Self.colors[f.title, default: .gray])
+                            .frame(width: max(2, (g.size.width - CGFloat(facts.count - 1) * 1.5) * CGFloat(f.count ?? 0) / CGFloat(total)))
                     }
                 }
-                .frame(height: 6)
-                .clipShape(Capsule())
             }
-            .padding(12)
-            Divider()
-            Rows(items: facts, inset: 30) { f in
-                HStack(spacing: 8) {
-                    Circle().fill(Self.colors[f.title, default: .gray]).frame(width: 8, height: 8).padding(.leading, 2)
-                    Text(f.title)
-                    Spacer()
-                    Text(f.detail?.split(separator: "·").dropFirst().joined(separator: "·").trimmingCharacters(in: .whitespaces) ?? "")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("\(f.count ?? 0)").monospacedDigit().foregroundStyle(.secondary).frame(minWidth: 24, alignment: .trailing)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
+            .frame(height: 4)
+            .clipShape(Capsule())
+            facts.enumerated().reduce(Text("")) { t, e in
+                let dot = Text("●").foregroundStyle(Self.colors[e.element.title, default: .gray])
+                return Text("\(t)\(e.offset == 0 ? "" : "   ")\(dot) \(e.element.count ?? 0) \(e.element.title == "SQL" ? "SQL" : e.element.title.lowercased())")
             }
+            .font(.caption).foregroundStyle(.secondary)
+            .help(facts.map { "\($0.title): \($0.detail ?? "")" }.joined(separator: "\n"))
         }
     }
 }
@@ -442,9 +420,7 @@ private struct DatabaseBody: View {
                     if !g.tables.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Subheading(text: "Tables")
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 270, maximum: 520), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
-                                ForEach(g.tables) { TableBox(table: $0, onOpen: onOpen) }
-                            }
+                            Masonry { ForEach(g.tables) { TableBox(table: $0, onOpen: onOpen) } }
                         }
                     }
                     if !g.objects.isEmpty {
@@ -720,94 +696,6 @@ private struct WarningRow: View {
             if show, let s = fact.after { CodeBlock(text: s, path: "x.sql", maxLines: 14).padding(.leading, 24) }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
-    }
-}
-
-// MARK: - Code
-
-private struct CodeBody: View {
-    var report: LensReport
-    var onOpen: (String, Int?) -> Void
-
-    /// Files whose interface changed (definitions added, removed, re-signed) first; body-only edits after.
-    private var files: [LensSection] {
-        func weight(_ s: LensSection) -> Int { s.facts.filter { $0.kind != .changed || $0.after != nil }.count * 100 + s.facts.count }
-        return report.sections.sorted { weight($0) > weight($1) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(report.summary).font(.callout).foregroundStyle(.secondary)
-            Grouped { CappedRows(items: files, limit: 10, noun: "Files") { FileDefinitions(section: $0, onOpen: onOpen) } }
-        }
-    }
-}
-
-private struct FileDefinitions: View {
-    var section: LensSection
-    var onOpen: (String, Int?) -> Void
-
-    var body: some View {
-        let path = section.title
-        let api = section.facts.filter { $0.kind != .changed || $0.after != nil }
-        let bodies = section.facts.filter { $0.kind == .changed && $0.after == nil }
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.text").foregroundStyle(.secondary)
-                Text((path as NSString).lastPathComponent).font(.system(size: 12.5, weight: .medium))
-                Text((path as NSString).deletingLastPathComponent).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
-                Spacer()
-                Deltas(added: section.facts.filter { $0.kind == .added }.count, removed: section.facts.filter { $0.kind == .removed }.count,
-                       changed: section.facts.filter { $0.kind == .changed }.count)
-            }
-            .openable(path, nil, onOpen)
-            ForEach(api.prefix(12)) { f in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        StatusSymbol(kind: f.kind, size: 11)
-                        Text(f.title).font(.system(size: 12, weight: .medium))
-                        if let t = f.tag { Text(t).font(.caption).foregroundStyle(.tertiary) }
-                        Spacer()
-                        Text(f.kind == .changed ? "Signature changed" : f.kind.label).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .openable(f.path, f.line, onOpen)
-                    Group {
-                        if f.kind == .changed, let b = f.before, let a = f.after {
-                            CodeBlock(text: b, path: path, kind: .removed, maxLines: 4)
-                            CodeBlock(text: a, path: path, kind: .added, maxLines: 4)
-                        } else if let s = f.after ?? f.before {
-                            CodeBlock(text: s, path: path, maxLines: 4)
-                        }
-                    }
-                    .padding(.leading, 19)
-                }
-                .padding(.leading, 20)
-            }
-            if api.count > 12 { Text("\(api.count - 12) more").font(.caption).foregroundStyle(.secondary).padding(.leading, 40) }
-            if !bodies.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Body changed").font(.caption).foregroundStyle(.secondary).fixedSize()
-                    Flow { ForEach(bodies) { BodyChip(fact: $0, onOpen: onOpen) } }
-                }
-                .padding(.leading, 20)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-    }
-}
-
-private struct BodyChip: View {
-    var fact: LensFact
-    var onOpen: (String, Int?) -> Void
-    @State private var hover = false
-    var body: some View {
-        Text(fact.title)
-            .font(.system(size: 11.5))
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Color.primary.opacity(hover ? 0.12 : 0.06), in: Capsule())
-            .onHover { hover = $0 }
-            .onTapGesture { if let p = fact.path { onOpen(p, fact.line) } }
-            .help("\(fact.tag ?? "") \(fact.title)")
     }
 }
 
