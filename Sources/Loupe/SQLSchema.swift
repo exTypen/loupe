@@ -22,7 +22,14 @@ enum SQL {
     struct Statement {
         var tokens: [Token]
         var line: Int
+        var endLine: Int
         var text: String      // whitespace-normalised source, for data statement comparison
+
+        /// The statement as written, comments and layout kept, from the file's lines.
+        func source(_ lines: [Substring]) -> String {
+            guard line >= 1, line <= lines.count else { return text }
+            return lines[(line - 1)...min(endLine, lines.count) - 1].joined(separator: "\n")
+        }
     }
 
     /// Splits SQL into statements on top-level semicolons. Comments are dropped; strings, quoted identifiers and
@@ -34,7 +41,8 @@ enum SQL {
         var raw = ""   // the current statement's text
         func flush() {
             if !toks.isEmpty {
-                out.append(Statement(tokens: toks, line: toks[0].line,
+                let last = toks[toks.count - 1]
+                out.append(Statement(tokens: toks, line: toks[0].line, endLine: last.line + last.text.filter { $0 == "\n" }.count,
                                      text: raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")))
             }
             toks = []; raw = ""
@@ -232,6 +240,7 @@ enum SQL {
         for x in t {
             let glue = prev.map { p in
                 (p.kind == .symbol && ["(", ".", "::"].contains(p.text)) || (x.kind == .symbol && [")", ",", ".", "(", "::", "[", "]"].contains(x.text))
+                    || (p.kind == .symbol && x.kind == .symbol && "<>!=".contains(p.text) && "<>=".contains(x.text))   // <>, <=, !=
             } ?? true
             if !glue { s += " " }
             s += x.kind == .quoted ? "\"\(x.text)\"" : x.text

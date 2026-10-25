@@ -24,20 +24,20 @@ enum CodeLens {
                 }
                 let ka = keyed(da), kb = keyed(db)
                 var facts: [LensFact] = []
-                let label = { (s: CodeSymbol) in s.kind == .other ? s.name : "\(s.kind.rawValue) \(s.name)" }
+                let tag = { (s: CodeSymbol) in s.kind == .other ? nil : s.kind.rawValue }
                 for (k, x) in kb.sorted(by: { $0.value.symbol.line < $1.value.symbol.line }) {
                     if let o = ka[k] {
                         guard o.body != x.body else { continue }
                         let sig = o.signature != x.signature
-                        facts.append(LensFact(kind: .changed, title: label(x.symbol), detail: sig ? "signature changed: \(x.signature)" : "body changed",
-                                              path: c.new, line: x.symbol.line))
+                        facts.append(LensFact(kind: .changed, title: x.symbol.name, detail: sig ? "signature changed" : "body changed",
+                                              path: c.new, line: x.symbol.line, tag: tag(x.symbol), before: sig ? o.signature : nil, after: sig ? x.signature : nil))
                         n.changed += 1
                     } else {
-                        facts.append(LensFact(kind: .added, title: label(x.symbol), detail: x.signature, path: c.new, line: x.symbol.line)); n.added += 1
+                        facts.append(LensFact(kind: .added, title: x.symbol.name, detail: "added", path: c.new, line: x.symbol.line, tag: tag(x.symbol), after: x.signature)); n.added += 1
                     }
                 }
                 for (k, x) in ka.sorted(by: { $0.value.symbol.line < $1.value.symbol.line }) where kb[k] == nil {
-                    facts.append(LensFact(kind: .removed, title: label(x.symbol), detail: x.signature, path: c.old, line: nil)); n.removed += 1
+                    facts.append(LensFact(kind: .removed, title: x.symbol.name, detail: "removed", tag: tag(x.symbol), before: x.signature)); n.removed += 1
                 }
                 if !facts.isEmpty { sections.append(LensSection(title: c.path, facts: facts)) }
             }
@@ -46,7 +46,8 @@ enum CodeLens {
             if n.added > 0 { s.append("\(n.added) added") }
             if n.removed > 0 { s.append("\(n.removed) removed") }
             if n.changed > 0 { s.append("\(n.changed) changed") }
-            return LensReport(title: "Code", icon: "curlybraces", summary: s.joined(separator: " · ") + " definitions in \(sections.count) file\(sections.count == 1 ? "" : "s")", sections: sections)
+            return LensReport(kind: .code, title: "Code", icon: "curlybraces", summary: s.joined(separator: " · ") + " definitions in " + plural(sections.count, "file"), sections: sections,
+                              metric: LensMetric(value: n.added + n.removed + n.changed, unit: "definitions", added: n.added, removed: n.removed, changed: n.changed))
         }.value
     }
 }
@@ -194,12 +195,12 @@ enum DependencyLens {
             let pa = c.old.flatMap { p in textA[p].flatMap { parse(p, $0) } } ?? [:]
             let pb = c.new.flatMap { p in textB[p].flatMap { parse(p, $0) } } ?? [:]
             var facts: [LensFact] = []
-            for k in Set(pb.keys).subtracting(pa.keys).sorted() { facts.append(LensFact(kind: .added, title: k, detail: pb[k], path: c.new)); n.added += 1 }
-            for k in Set(pa.keys).subtracting(pb.keys).sorted() { facts.append(LensFact(kind: .removed, title: k, detail: pa[k], path: c.old)); n.removed += 1 }
+            for k in Set(pb.keys).subtracting(pa.keys).sorted() { facts.append(LensFact(kind: .added, title: k, detail: pb[k], path: c.new, after: pb[k])); n.added += 1 }
+            for k in Set(pa.keys).subtracting(pb.keys).sorted() { facts.append(LensFact(kind: .removed, title: k, detail: pa[k], before: pa[k])); n.removed += 1 }
             for k in Set(pa.keys).intersection(pb.keys).sorted() where pa[k] != pb[k] {
                 let kind = bump(pa[k]!, pb[k]!)
                 if kind == "major" { n.major += 1 }
-                facts.append(LensFact(kind: .changed, title: k, detail: "\(pa[k]!) → \(pb[k]!)" + (kind.map { " · \($0)" } ?? ""), path: c.new)); n.changed += 1
+                facts.append(LensFact(kind: .changed, title: k, detail: "\(pa[k]!) → \(pb[k]!)" + (kind.map { " · \($0)" } ?? ""), path: c.new, tag: kind, before: pa[k], after: pb[k])); n.changed += 1
             }
             if !facts.isEmpty { sections.append(LensSection(title: c.path, facts: facts)) }
         }
@@ -208,7 +209,8 @@ enum DependencyLens {
         if n.added > 0 { s.append("\(n.added) added") }
         if n.removed > 0 { s.append("\(n.removed) removed") }
         if n.changed > 0 { s.append("\(n.changed) updated" + (n.major > 0 ? " (\(n.major) major)" : "")) }
-        return LensReport(title: "Dependencies", icon: "shippingbox", summary: s.joined(separator: " · "), sections: sections)
+        return LensReport(kind: .dependencies, title: "Dependencies", icon: "shippingbox", summary: s.joined(separator: " · "), sections: sections,
+                          metric: LensMetric(value: n.added + n.removed + n.changed, unit: n.added + n.removed + n.changed == 1 ? "package" : "packages", added: n.added, removed: n.removed, changed: n.changed))
     }
 }
 
@@ -329,7 +331,7 @@ enum ConfigLens {
                 let first = String((lines.first ?? "").prefix(80))
                 return lines.count > 1 ? "\(first) … (\(lines.count) lines)" : first
             }
-            func show(_ k: String, _ v: String) -> String { secret(k) ? "(value hidden)" : one(v) }
+            func show(_ k: String, _ v: String) -> String? { secret(k) ? nil : one(v) }
             /// Keys under a parent that exists only on one side collapse into the parent: a new CI job is one fact.
             func collapse(_ keys: [String], absentFrom other: [String: String]) -> [(key: String, count: Int)] {
                 let otherKeys = Array(other.keys)
@@ -355,25 +357,31 @@ enum ConfigLens {
             }
             var facts: [LensFact] = []
             // Whole new or deleted files: one line, not every key.
-            if c.old == nil { facts.append(LensFact(kind: .added, title: c.path, detail: "new file · \(fb.count) keys", path: c.new)) }
-            else if c.new == nil { facts.append(LensFact(kind: .removed, title: c.path, detail: "deleted · had \(fa.count) keys")) }
+            if c.old == nil { facts.append(LensFact(kind: .added, title: c.path, detail: "new file · \(fb.count) keys", path: c.new, tag: "new file", count: fb.count)) }
+            else if c.new == nil { facts.append(LensFact(kind: .removed, title: c.path, detail: "deleted · had \(fa.count) keys", tag: "deleted", count: fa.count)) }
             else {
                 for (k, n) in collapse(Set(fb.keys).subtracting(fa.keys).sorted(), absentFrom: fa) {
-                    facts.append(LensFact(kind: .added, title: k, detail: n > 1 ? "added · \(n) keys" : show(k, fb[k] ?? ""), path: c.new))
+                    facts.append(LensFact(kind: .added, title: k, detail: n > 1 ? "added · \(n) keys" : show(k, fb[k] ?? "") ?? "(value hidden)", path: c.new,
+                                          tag: n > 1 ? "\(n) keys" : nil, after: n > 1 ? nil : show(k, fb[k] ?? ""), count: n))
                 }
                 for (k, n) in collapse(Set(fa.keys).subtracting(fb.keys).sorted(), absentFrom: fb) {
-                    facts.append(LensFact(kind: .removed, title: k, detail: n > 1 ? "removed · \(n) keys" : show(k, fa[k] ?? "")))
+                    facts.append(LensFact(kind: .removed, title: k, detail: n > 1 ? "removed · \(n) keys" : show(k, fa[k] ?? "") ?? "(value hidden)",
+                                          tag: n > 1 ? "\(n) keys" : nil, before: n > 1 ? nil : show(k, fa[k] ?? ""), count: n))
                 }
                 for k in Set(fa.keys).intersection(fb.keys).sorted() where fa[k] != fb[k] {
                     let multi = fa[k]!.contains("\n") || fb[k]!.contains("\n")
                     let d = secret(k) ? "(value hidden)" : multi ? "changed (\(fb[k]!.split(separator: "\n").count) lines)" : "\(one(fa[k]!)) → \(one(fb[k]!))"
-                    facts.append(LensFact(kind: .changed, title: k, detail: d, path: c.new))
+                    let plain = !secret(k) && !multi
+                    facts.append(LensFact(kind: .changed, title: k, detail: d, path: c.new, before: plain ? one(fa[k]!) : nil, after: plain ? one(fb[k]!) : nil))
                 }
             }
             total += facts.count
             if !facts.isEmpty { sections.append(LensSection(title: c.path, facts: facts)) }
         }
         guard !sections.isEmpty else { return nil }
-        return LensReport(title: "Configuration", icon: "slider.horizontal.3", summary: "\(total) key change\(total == 1 ? "" : "s") in \(sections.count) file\(sections.count == 1 ? "" : "s")", sections: sections)
+        let all = sections.flatMap(\.facts)
+        return LensReport(kind: .configuration, title: "Configuration", icon: "slider.horizontal.3", summary: plural(total, "key change") + " in " + plural(sections.count, "file"), sections: sections,
+                          metric: LensMetric(value: total, unit: total == 1 ? "config change" : "config changes", added: all.filter { $0.kind == .added }.count,
+                                             removed: all.filter { $0.kind == .removed }.count, changed: all.filter { $0.kind == .changed }.count))
     }
 }
