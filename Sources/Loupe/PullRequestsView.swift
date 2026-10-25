@@ -326,8 +326,14 @@ struct PullDetailView: View {
     private var files: some View {
         ResizableSplit(key: "prTreeWidth", minWidth: 250, maxWidth: 460) {
             VStack(spacing: 0) {
-                HStack {
+                HStack(spacing: 6) {
                     TextField("Filter files", text: $pull.filter).textFieldStyle(.roundedBorder)
+                    Picker("Mode", selection: Binding(get: { pull.fullMode }, set: { pull.fullMode = $0 })) {
+                        Text("Compact").tag(false)
+                        Text("Full").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .help("Compact: the changed files and their changes. Full: the whole repository, whole files and code navigation.")
                 }
                 .padding(8)
                 let total = max(1, pull.files.count)
@@ -336,53 +342,210 @@ struct PullDetailView: View {
                     Text("\(pull.viewedCount) of \(pull.files.count) files viewed").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 10).padding(.bottom, 6)
-                FileTreeList(paths: pull.filteredFiles.map(\.path), selection: $pull.selectedPath,
-                             collapsed: pull.filter.isEmpty ? $pull.collapsed : .constant([]),
-                             dirMenu: { dir in
-                                 let fs = pull.files(under: dir)
-                                 return (fs.allSatisfy(pull.isViewed) && !fs.isEmpty ? "Mark Folder as Not Viewed" : "Mark Folder as Viewed", { pull.toggleViewed(dir: dir) })
-                             }) { path in
-                    if let f = pull.file(path) {
-                        HStack(spacing: 6) {
-                            TreeFileRow(path: f.path, badge: f.badge, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary, dimmed: pull.isViewed(f))
-                            let c = pull.commentCount(for: f.path)
-                            if c > 0 { Label(String(c), systemImage: "bubble.left.fill").font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon).fixedSize() }
-                        }
+                if pull.fullMode && pull.tree.isEmpty {
+                    Group {
+                        if let e = pull.treeError { ContentUnavailableView("Can't Load the Repository", systemImage: "exclamationmark.triangle", description: Text(e)) }
+                        else { ProgressView("Fetching the pull request…").controlSize(.small) }
                     }
-                } dirAccessory: { dir in
-                    let fs = pull.files(under: dir)
-                    let done = fs.filter(pull.isViewed).count
-                    // Viewed is toggled from the file header; the tree only reports progress.
-                    Text(verbatim: "\(done)/\(fs.count)").font(.caption2.monospacedDigit())
-                        .foregroundStyle(done == fs.count && !fs.isEmpty ? Color.accentColor : Color.secondary.opacity(0.6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    tree
                 }
             }
             .frame(maxHeight: .infinity)
         } trailing: {
-            Group {
-                if let f = pull.selectedFile {
-                    VStack(spacing: 0) {
-                        DiffHeader(path: f.path, oldPath: f.oldPath != f.newPath ? f.oldPath : nil, additions: f.additions, deletions: f.deletions) {
-                            Toggle("Viewed", isOn: Binding(get: { pull.isViewed(f) }, set: { _ in pull.toggleViewed(f) })).toggleStyle(.checkbox)
-                        }
-                        Divider()
-                        if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
-                        else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
-                        else {
-                            DiffTableView(file: f, layout: layout, comments: pull.inlineComments(for: f.path),
-                                          onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },
-                                          onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } })
-                        }
-                    }
-                } else if pull.loading {
-                    ProgressView("Loading diff…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView("No File Selected", systemImage: "doc.text.magnifyingglass")
+            VStack(spacing: 0) {
+                Group {
+                    if pull.fullMode, let path = pull.selectedPath { fullFile(path) }
+                    else if let f = pull.selectedFile { compactFile(f) }
+                    else if pull.loading { ProgressView("Loading diff…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                    else { ContentUnavailableView("No File Selected", systemImage: "doc.text.magnifyingglass") }
+                }
+                .frame(maxHeight: .infinity)
+                if let r = pull.navResults {
+                    Divider()
+                    NavResultsPanel(results: r, pull: pull).frame(height: 220)
                 }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: pull.fullMode) { if pull.fullMode { await pull.loadTree() } }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            let on = UserDefaults.standard.bool(forKey: "prFullMode")   // the Review menu's Compact / Full Mode
+            if on != pull.fullMode { pull.fullMode = on }
+        }
+        .onChange(of: pull.pr.head.sha) { if pull.fullMode { Task { await pull.loadTree() } } }
+    }
+
+    private var tree: some View {
+        let paths = pull.fullMode
+            ? (pull.filter.isEmpty ? pull.tree : pull.tree.filter { $0.localizedCaseInsensitiveContains(pull.filter) })
+            : pull.filteredFiles.map(\.path)
+        let collapsed = pull.fullMode ? $pull.fullCollapsed : $pull.collapsed
+        return FileTreeList(paths: paths, selection: $pull.selectedPath,
+                            collapsed: pull.filter.isEmpty ? collapsed : .constant([]),
+                            dirMenu: { dir in
+                                let fs = pull.files(under: dir)
+                                return (fs.allSatisfy(pull.isViewed) && !fs.isEmpty ? "Mark Folder as Not Viewed" : "Mark Folder as Viewed", { pull.toggleViewed(dir: dir) })
+                            }) { path in
+            if let f = pull.file(path) {
+                HStack(spacing: 6) {
+                    TreeFileRow(path: f.path, badge: f.badge, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary, dimmed: pull.isViewed(f))
+                    let c = pull.commentCount(for: f.path)
+                    if c > 0 { Label(String(c), systemImage: "bubble.left.fill").font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon).fixedSize() }
+                }
+            } else {
+                // Full mode: a file this PR doesn't touch.
+                HStack(spacing: 6) {
+                    FileIcon(path: path)
+                    Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .help(path)
+            }
+        } dirAccessory: { dir in
+            let fs = pull.files(under: dir)
+            if !fs.isEmpty {
+                let done = fs.filter(pull.isViewed).count
+                // Viewed is toggled from the file header; the tree only reports progress.
+                Text(verbatim: "\(done)/\(fs.count)").font(.caption2.monospacedDigit())
+                    .foregroundStyle(done == fs.count ? Color.accentColor : Color.secondary.opacity(0.6))
+            }
+        }
+    }
+
+    @ViewBuilder private func compactFile(_ f: FileDiff) -> some View {
+        VStack(spacing: 0) {
+            DiffHeader(path: f.path, oldPath: f.oldPath != f.newPath ? f.oldPath : nil, additions: f.additions, deletions: f.deletions) {
+                Toggle("Viewed", isOn: Binding(get: { pull.isViewed(f) }, set: { _ in pull.toggleViewed(f) })).toggleStyle(.checkbox)
+            }
+            Divider()
+            if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+            else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
+            else {
+                DiffTableView(file: f, layout: layout, comments: pull.inlineComments(for: f.path),
+                              onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },
+                              onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } })
+            }
+        }
+    }
+
+    @ViewBuilder private func fullFile(_ path: String) -> some View {
+        let changed = pull.file(path)
+        VStack(spacing: 0) {
+            DiffHeader(path: path, oldPath: changed.flatMap { $0.oldPath != $0.newPath ? $0.oldPath : nil },
+                       additions: changed?.additions ?? 0, deletions: changed?.deletions ?? 0) {
+                FileNavControls(pull: pull, path: path)
+                if let f = changed {
+                    Toggle("Viewed", isOn: Binding(get: { pull.isViewed(f) }, set: { _ in pull.toggleViewed(f) })).toggleStyle(.checkbox)
+                } else {
+                    Text("Unchanged").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Divider()
+            if let f = pull.fullFiles[path] {
+                if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                else if f.lines.isEmpty { ContentUnavailableView("Empty File", systemImage: "doc") }
+                else {
+                    DiffTableView(file: f, layout: changed == nil ? .unified : layout, comments: changed == nil ? [] : pull.inlineComments(for: path),
+                                  onAddComment: changed == nil ? nil : { n, o, body in pull.drafts.append(DraftComment(path: path, newLine: n, oldLine: o, body: body)) },
+                                  onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
+                                  canComment: pull.commentable(path),
+                                  onNavigate: { word, action in Task { await pull.navigate(word, action, from: path) } },
+                                  reveal: pull.reveal)
+                }
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: path + pull.pr.head.sha) { await pull.loadFull(path) }
+    }
+}
+
+/// Back / forward through jumps, the file's outline, and what's being looked up.
+struct FileNavControls: View {
+    var pull: PullRequestModel
+    var path: String
+    @State private var outline: [CodeSymbol] = []
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if let w = pull.navBusy {
+                ProgressView().controlSize(.mini)
+                Text(w).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Button { pull.goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(pull.back.isEmpty).help("Back").shortcut(.navigateBack)
+            Button { pull.goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(pull.forward.isEmpty).help("Forward").shortcut(.navigateForward)
+            if !outline.isEmpty {
+                Menu {
+                    ForEach(outline, id: \.self) { s in
+                        Button { pull.open(path, line: s.line) } label: { Text("\(s.name)  \(s.kind.rawValue) · \(s.line)") }
+                    }
+                } label: { Image(systemName: "list.bullet.indent") }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Outline: jump to a definition in this file")
+            }
+        }
+        .buttonStyle(.borderless)
+        .task(id: [path, pull.fullFiles[path] == nil ? "0" : "1"]) {
+            guard let text = pull.headText(path) else { outline = []; return }
+            let p = path
+            outline = await Task.detached(priority: .utility) { CodeIndex.outline(text, path: p) }.value
+        }
+    }
+}
+
+/// Under the file: the definitions to choose from, or every reference.
+struct NavResultsPanel: View {
+    var results: PullRequestModel.NavResults
+    var pull: PullRequestModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                switch results {
+                case .definitions(let w, let d): Text("\(d.count) definitions of ").foregroundStyle(.secondary) + Text(w).font(.body.monospaced())
+                case .references(let w, let r, let noDef):
+                    let n = r.count >= 2000 ? "2000+ references" : r.count == 1 ? "1 reference" : "\(r.count) references"
+                    Text(noDef ? "No definition found in this repository · " : "").foregroundStyle(.secondary)
+                        + Text("\(n) to ").foregroundStyle(.secondary) + Text(w).font(.body.monospaced())
+                }
+                Spacer()
+                Button { pull.navResults = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).keyboardShortcut(.cancelAction)
+            }
+            .font(.callout)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(.bar)
+            Divider()
+            List {
+                switch results {
+                case .definitions(_, let defs):
+                    ForEach(defs, id: \.self) { d in
+                        row(path: d.path, line: d.line, text: "\(d.kind.rawValue) \(d.name)")
+                    }
+                case .references(_, let refs, _):
+                    ForEach(refs, id: \.self) { r in row(path: r.path, line: r.line, text: r.text) }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private func row(path: String, line: Int, text: String) -> some View {
+        Button { pull.open(path, line: line) } label: {
+            HStack(spacing: 8) {
+                FileIcon(path: path)
+                Text("\(path):\(line)").font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    .frame(width: 260, alignment: .leading)
+                Text(text).font(.callout.monospaced()).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -139,6 +139,7 @@ final class PullRequestModel {
             if selectedPath == nil || !files.contains(where: { $0.path == selectedPath }) {
                 selectedPath = files.first { !isViewed($0) }?.path ?? files.first?.path
             }
+            applyDefaultCollapse()
             reviews = try await reviewsReq
             conversation = try await convReq
             comments = try await client.reviewComments(repo, pr.number, reviews: reviews)
@@ -150,14 +151,182 @@ final class PullRequestModel {
     private func diffData() async throws -> Data {
         if localDiffSHA == pr.head.sha, let lastDiff { return lastDiff }   // polling: no new push, skip the fetch
         do { return try await client.diff(repo, pr.number) } catch is ForgejoClient.DiffTooLarge {}
-        let (dir, remote) = (local.dir, local.remote)
-        let head = "refs/remotes/\(remote)/pr/\(pr.number)", base = "refs/remotes/\(remote)/\(pr.base.ref)"
-        // Fetching the base branch brings in pr.base.sha. Diff from that sha, not the branch tip: once the PR is
-        // merged the tip contains it and `tip...head` is empty. Byte-identical to GitHub's own diff.
-        try await Git.run(["fetch", "--no-tags", remote, "+refs/pull/\(pr.number)/head:\(head)", "+refs/heads/\(pr.base.ref):\(base)"], in: dir, env: local.gitAuth)
-        let data = try await Git.run(["diff", "--no-color", "--no-ext-diff", "-M", "\(pr.base.sha)...\(head)"], in: dir)
+        try await fetchHead()
+        // Diff from the base sha, not the branch tip: once the PR is merged the tip contains it and `tip...head` is
+        // empty. Byte-identical to GitHub's own diff.
+        let data = try await Git.run(["diff", "--no-color", "--no-ext-diff", "-M", "\(pr.base.sha)...\(pr.head.sha)"], in: local.dir)
         localDiffSHA = pr.head.sha
         return data
+    }
+
+    /// Brings the PR's head and base commits into the local repository (`refs/pull/N/head` works for forks too).
+    /// Fetching the base branch brings in pr.base.sha. A no-op when both are already here.
+    func fetchHead() async throws {
+        let dir = local.dir
+        let hasHead = (try? await Git.run(["cat-file", "-e", "\(pr.head.sha)^{commit}"], in: dir)) != nil
+        let hasBase = (try? await Git.run(["cat-file", "-e", "\(pr.base.sha)^{commit}"], in: dir)) != nil
+        if hasHead && hasBase { return }
+        let head = "refs/remotes/\(local.remote)/pr/\(pr.number)", base = "refs/remotes/\(local.remote)/\(pr.base.ref)"
+        try await Git.run(["fetch", "--no-tags", local.remote, "+refs/pull/\(pr.number)/head:\(head)", "+refs/heads/\(pr.base.ref):\(base)"], in: dir, env: local.gitAuth)
+    }
+
+    // MARK: Full mode — the whole repository at the PR head, whole files, code navigation
+
+    struct Location: Hashable { var path: String; var line: Int }
+    enum NavResults {
+        case definitions(String, [CodeSymbol])
+        case references(String, [CodeMatch], noDefinition: Bool)
+    }
+
+    var fullMode = UserDefaults.standard.bool(forKey: "prFullMode") {
+        didSet {
+            if UserDefaults.standard.bool(forKey: "prFullMode") != fullMode { UserDefaults.standard.set(fullMode, forKey: "prFullMode") }
+            // Back to Compact on a file this PR doesn't change: show the first change instead.
+            if !fullMode, selectedPath.flatMap(file) == nil { selectedPath = files.first?.path }
+            if !fullMode { navResults = nil }
+        }
+    }
+    var tree: [String] = []                 // every path at the head (and deleted ones), tree order
+    var treeError: String?
+    var treeLoading = false
+    var fullCollapsed: Set<String> = []
+    @ObservationIgnored private var treeSHA: String?
+    @ObservationIgnored private var treeDirs = Set<String>()
+    @ObservationIgnored private var collapseApplied = false
+
+    /// Once both the tree and the PR's files are known: fold every directory this PR doesn't touch.
+    /// (Either can arrive first.)
+    func applyDefaultCollapse() {
+        guard !collapseApplied, !treeDirs.isEmpty, !files.isEmpty else { return }
+        collapseApplied = true
+        var open = Set<String>()
+        for f in files { var d = (f.path as NSString).deletingLastPathComponent; while !d.isEmpty { open.insert(d); d = (d as NSString).deletingLastPathComponent } }
+        fullCollapsed = treeDirs.subtracting(open)
+    }
+    var fullFiles: [String: FileDiff] = [:]  // whole files at the head, with this PR's changes inline
+    @ObservationIgnored private var fullSHA: String?
+    var reveal: DiffReveal?
+    var back: [Location] = []
+    var forward: [Location] = []
+    var navResults: NavResults?
+    var navBusy: String?                     // the word being looked up
+
+    /// `git ls-tree` at the head. Directories start collapsed except where this PR changes something.
+    func loadTree() async {
+        guard treeSHA != pr.head.sha, !treeLoading else { return }
+        treeLoading = true; defer { treeLoading = false }
+        do {
+            try await fetchHead()
+            let out = try await Git.run(["ls-tree", "-r", "-z", "--name-only", pr.head.sha], in: local.dir)
+            let changed = files.map(\.path)
+            let sha = pr.head.sha
+            let (paths, dirs) = await Task.detached(priority: .userInitiated) {
+                var set = Set(out.split(separator: 0).map { String(decoding: $0, as: UTF8.self) })
+                set.formUnion(changed)   // deleted files stay reachable
+                let paths = set.sorted(by: FileTree.treeOrder)
+                var dirs = Set<String>()
+                for p in paths { var d = (p as NSString).deletingLastPathComponent; while !d.isEmpty, dirs.insert(d).inserted { d = (d as NSString).deletingLastPathComponent } }
+                return (paths, dirs)
+            }.value
+            treeDirs = dirs
+            tree = paths; treeSHA = sha; treeError = nil
+            applyDefaultCollapse()
+        } catch { treeError = error.localizedDescription }
+    }
+
+    /// The whole file at the head: changed files as a full-context diff, the rest as plain lines.
+    func loadFull(_ path: String) async {
+        if fullSHA != pr.head.sha { fullFiles = [:]; fullSHA = pr.head.sha }
+        guard fullFiles[path] == nil else { return }
+        do {
+            try await fetchHead()
+            let dir = local.dir, base = pr.base.sha, head = pr.head.sha
+            let changed = file(path)
+            let f: FileDiff
+            if let c = changed {
+                if c.isBinary || c.newPath == nil { f = c }   // binary, or deleted: the diff already shows everything
+                else {
+                    let paths = [c.oldPath, c.newPath].compactMap { $0 }
+                    let data = try await Git.run(["diff", "--no-color", "--no-ext-diff", "-M", "-U1000000", "\(base)...\(head)", "--"] + Array(Set(paths)), in: dir)
+                    f = await Task.detached { Self.wholeFile(DiffParser.parse(data).first) }.value ?? c
+                }
+            } else {
+                let data = try await Git.run(["show", "\(head):\(path)"], in: dir)
+                f = await Task.detached { Self.plainFile(path, data) }.value
+            }
+            fullFiles[path] = f
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// A full-context diff without its single hunk header row: the file reads top to bottom.
+    nonisolated static func wholeFile(_ d: FileDiff?) -> FileDiff? {
+        guard var d else { return nil }
+        d.lines.removeAll { $0.kind == .hunk }
+        for i in d.lines.indices { d.lines[i].hunkIndex = 0 }
+        d.hunks = [Hunk(header: d.hunks.first?.header ?? "", lines: 0..<d.lines.count)]
+        return d
+    }
+
+    /// An unchanged file, as context lines.
+    nonisolated static func plainFile(_ path: String, _ data: Data) -> FileDiff {
+        var f = FileDiff()
+        f.oldPath = path; f.newPath = path
+        if data.prefix(8000).contains(0) { f.isBinary = true; return f }
+        let text = String(decoding: data, as: UTF8.self)
+        var n = 0
+        text.enumerateSubstringLines { line in
+            n += 1
+            f.lines.append(DiffLine(kind: .context, text: line, oldLine: n, newLine: n, hunkIndex: 0))
+        }
+        f.hunks = [Hunk(header: "", lines: 0..<f.lines.count)]
+        return f
+    }
+
+    /// The file's text at the head (its new side), for the outline.
+    func headText(_ path: String) -> String? {
+        guard let f = fullFiles[path], !f.isBinary else { return nil }
+        return f.lines.filter { $0.kind != .removed && $0.kind != .meta }.map { String($0.text) }.joined(separator: "\n")
+    }
+
+    /// Review comments only attach to lines inside the diff's hunks: in a whole file, the rest can't take one.
+    func commentable(_ path: String) -> (DiffLine) -> Bool {
+        guard let c = file(path) else { return { _ in false } }
+        let new = Set(c.lines.compactMap { $0.kind == .removed ? nil : $0.newLine })
+        let old = Set(c.lines.compactMap { $0.kind == .removed ? $0.oldLine : nil })
+        return { l in l.kind == .removed ? old.contains(l.oldLine ?? -1) : new.contains(l.newLine ?? -1) }
+    }
+
+    func open(_ path: String, line: Int, record: Bool = true) {
+        if record, let cur = selectedPath, cur != path || reveal?.line != line {
+            back.append(Location(path: cur, line: reveal?.line ?? 1)); forward = []
+        }
+        selectedPath = path
+        reveal = DiffReveal(line: line)
+    }
+
+    func goBack() {
+        guard let to = back.popLast() else { return }
+        if let cur = selectedPath { forward.append(Location(path: cur, line: reveal?.line ?? 1)) }
+        open(to.path, line: to.line, record: false)
+    }
+
+    func goForward() {
+        guard let to = forward.popLast() else { return }
+        if let cur = selectedPath { back.append(Location(path: cur, line: reveal?.line ?? 1)) }
+        open(to.path, line: to.line, record: false)
+    }
+
+    /// ⌘-click / Go to Definition / Find References on `word` in `path`.
+    func navigate(_ word: String, _ action: CodeAction, from path: String) async {
+        navBusy = word; defer { navBusy = nil }
+        do { try await fetchHead() } catch { self.error = error.localizedDescription; return }
+        let (dir, head) = (local.dir, pr.head.sha)
+        if action == .definition {
+            let defs = await CodeNavigator.definitions(of: word, at: head, in: dir, from: path)
+            if defs.count == 1, let d = defs.first { navResults = nil; open(d.path, line: d.line); return }
+            if !defs.isEmpty { navResults = .definitions(word, defs); return }
+        }
+        navResults = .references(word, await CodeNavigator.references(of: word, at: head, in: dir), noDefinition: action == .definition)
     }
 
     // MARK: Viewed — keyed by a fingerprint of the file's diff, so a file changed by a new push turns unviewed.

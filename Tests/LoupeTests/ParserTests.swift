@@ -348,3 +348,30 @@ import AppKit
     let t = ConflictText("a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\nc\n<<<<<<< HEAD\np\n=======\nq\n>>>>>>> b\n")
     #expect(t.numbered.compactMap { if case .conflict = $0.segment { $0.conflict } else { nil } } == [0, 1])
 }
+
+@Test func findsDefinitionsWithTreeSitter() {
+    let rust = "struct Foo;\nimpl Foo { fn bar(&self) {} }\n// helper is mentioned here\nfn helper() { let f = Foo; f.bar(); }\n"
+    let defs = CodeIndex.outline(rust, path: "src/lib.rs")
+    #expect(defs.map(\.name) == ["Foo", "bar", "helper"])
+    #expect(defs.map(\.line) == [1, 2, 4])
+    let ts = "export function encode() {}\nclass Preset { name = '' }\ninterface Opts { a: number }\n"
+    #expect(Set(CodeIndex.outline(ts, path: "a.ts").map(\.name)).isSuperset(of: ["encode", "Preset", "Opts"]))
+    #expect(CodeIndex.symbols(in: "x: 1", path: "a.yaml").isEmpty)   // no grammar: nothing, no crash
+}
+
+@Test func navigatesAtACommitWithoutCheckout() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-\(UUID().uuidString)").path
+    try FileManager.default.createDirectory(atPath: dir + "/src", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    try "pub fn fit(edge: u32) -> u32 { edge }\n".write(toFile: dir + "/src/fit.rs", atomically: true, encoding: .utf8)
+    try "use crate::fit::fit;\n// fit is great\nfn main() { fit(3); }\n".write(toFile: dir + "/src/main.rs", atomically: true, encoding: .utf8)
+    try await Git.run(["init", "-q"], in: dir)
+    try await Git.run(["add", "."], in: dir)
+    try await Git.run(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], in: dir)
+    let head = try await Git.string(["rev-parse", "HEAD"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+    try FileManager.default.removeItem(atPath: dir + "/src/fit.rs")   // the worktree doesn't matter: reads go to the commit
+    let defs = await CodeNavigator.definitions(of: "fit", at: head, in: dir, from: "src/main.rs")
+    #expect(defs.map(\.path) == ["src/fit.rs"] && defs.first?.line == 1)
+    let refs = await CodeNavigator.references(of: "fit", at: head, in: dir)
+    #expect(refs.count == 4 && refs.contains { $0.path == "src/main.rs" && $0.line == 3 })
+}

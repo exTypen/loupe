@@ -54,6 +54,7 @@ struct LoupeApp: App {
                 Button("Next File") { NotificationCenter.default.post(name: .moveFile, object: 1) }.shortcut(.nextFile)
                 Button("Previous File") { NotificationCenter.default.post(name: .moveFile, object: -1) }.shortcut(.previousFile)
                 Button("Mark Viewed & Next") { NotificationCenter.default.post(name: .markViewed, object: nil) }.shortcut(.markViewed)
+                Button("Compact / Full Mode") { UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "prFullMode"), forKey: "prFullMode") }.shortcut(.fullMode)
                 Divider()
                 Button("Refresh") { NotificationCenter.default.post(name: .refresh, object: nil) }.shortcut(.refresh)
             }

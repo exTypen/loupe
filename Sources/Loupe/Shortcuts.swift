@@ -50,6 +50,7 @@ struct Shortcut: Codable, Hashable {
 
 enum ShortcutAction: String, CaseIterable, Identifiable {
     case openRepository, goToWorktree, toggleSidebar, changesTab, historyTab, pullsTab, refresh, commit, nextFile, previousFile, markViewed, back
+    case fullMode, navigateBack, navigateForward
     var id: String { rawValue }
 
     var title: String {
@@ -66,6 +67,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .previousFile: "Previous File"
         case .markViewed: "Mark Viewed & Next"
         case .back: "Back to List"
+        case .fullMode: "Compact / Full Mode"
+        case .navigateBack: "Navigate Back"
+        case .navigateForward: "Navigate Forward"
         }
     }
 
@@ -74,7 +78,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openRepository, .goToWorktree, .toggleSidebar, .refresh: "General"
         case .changesTab, .historyTab, .pullsTab: "Tabs"
         case .commit: "Changes"
-        case .nextFile, .previousFile, .markViewed, .back: "Review"
+        case .nextFile, .previousFile, .markViewed, .back, .fullMode, .navigateBack, .navigateForward: "Review"
         }
     }
 
@@ -92,6 +96,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .previousFile: Shortcut("up", .option)
         case .markViewed: Shortcut("v", [.command, .shift])
         case .back: Shortcut("[")
+        case .fullMode: Shortcut("f", [.command, .option])
+        case .navigateBack: Shortcut("-", .control)
+        case .navigateForward: Shortcut("-", [.control, .shift])
         }
     }
 }

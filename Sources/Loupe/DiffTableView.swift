@@ -16,6 +16,11 @@ enum HunkAction { case stage, unstage, discard }
 
 /// Virtualized diff renderer. NSTableView only materializes visible rows and each row draws itself
 /// with one attributed-string draw, so 100k-line diffs scroll at display refresh rate.
+enum CodeAction { case definition, references }
+
+/// A request to bring a new-side line into view; a new `id` repeats it.
+struct DiffReveal: Equatable { var line: Int; var id = UUID() }
+
 struct DiffTableView: NSViewRepresentable {
     var file: FileDiff
     var layout: DiffLayout = .unified
@@ -24,6 +29,9 @@ struct DiffTableView: NSViewRepresentable {
     var onHunkAction: ((HunkAction, _ lines: Set<Int>) -> Void)?   // lines: indices into file.lines (a hunk or a selection)
     var onAddComment: ((_ newLine: Int?, _ oldLine: Int?, _ body: String) -> Void)?   // nil → commenting disabled
     var onDeleteDraft: ((UUID) -> Void)?
+    var canComment: ((DiffLine) -> Bool)? = nil                   // nil → every line (when commenting is on)
+    var onNavigate: ((_ word: String, _ action: CodeAction) -> Void)? = nil   // nil → no ⌘-click / Go to Definition
+    var reveal: DiffReveal? = nil                                 // scroll to a line and select it
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -77,6 +85,11 @@ struct DiffTableView: NSViewRepresentable {
             scroll.contentView.scroll(to: keepScroll)
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        if let r = reveal, r.id != c.revealed {
+            c.revealed = r.id
+            // After this layout pass: a file that just loaded has no row frames yet.
+            DispatchQueue.main.async { c.reveal(line: r.line) }
+        }
     }
 
     // MARK: Coordinator
@@ -98,6 +111,22 @@ struct DiffTableView: NSViewRepresentable {
         private var syntaxTask: Task<Void, Never>?
         var contentWidth: CGFloat = 0
         var numberWidth: CGFloat = 0
+        var revealed: UUID?
+
+        /// Scrolls the new-side `line` to a third of the way down and selects it.
+        func reveal(line: Int) {
+            guard let table, let r = rows.firstIndex(where: { row in
+                if case .line(let i) = row { return file.lines[i].newLine == line && file.lines[i].kind != .removed }
+                if case .split(_, let b?) = row { return file.lines[b].newLine == line }
+                return false
+            }) else { return }
+            let rect = table.rect(ofRow: r)
+            let y = max(0, rect.minY - table.visibleRect.height / 3)
+            table.scroll(NSPoint(x: 0, y: y))
+            selSide = 1
+            anchor = TextPos(row: r, col: 0); head = TextPos(row: r, col: text(row: r, side: 1).count)
+            redrawVisible()
+        }
 
         func rebuild(file: FileDiff, layout: DiffLayout, comments: [InlineComment], hunkActions: [HunkAction]) {
             self.file = file; fileUID = file.uid; path = file.path
@@ -275,20 +304,47 @@ struct DiffTableView: NSViewRepresentable {
             return TextPos(row: row, col: max(0, min(len, col)))
         }
 
-        func mouseDown(_ p: NSPoint, clicks: Int) {
+        /// The identifier around a text position, as a column range (empty when there's none).
+        func wordRange(at: TextPos, side: Int) -> Range<Int> {
+            let u = text(row: at.row, side: side)
+            func isWord(_ c: UInt16) -> Bool { (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c > 127 }
+            var a = min(at.col, u.count), b = a
+            if a < u.count, isWord(u[a]) || (a > 0 && isWord(u[a - 1])) {
+                if a == u.count || !isWord(u[a]) { a -= 1; b = a }
+                while a > 0, isWord(u[a - 1]) { a -= 1 }
+                while b < u.count, isWord(u[b]) { b += 1 }
+            }
+            return a..<b
+        }
+
+        /// The identifier under a point, if it is one (not a number or punctuation).
+        func word(at p: NSPoint) -> String? {
+            let side = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
+            var at = pos(p)
+            at.col = Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down))
+            let r = wordRange(at: at, side: side)
+            guard !r.isEmpty else { return nil }
+            let u = Array(text(row: at.row, side: side)[r])
+            guard let first = u.first, !(first >= 48 && first <= 57) else { return nil }
+            return String(utf16CodeUnits: u, count: u.count)
+        }
+
+        func mouseDown(_ p: NSPoint, clicks: Int, command: Bool = false) {
             selSide = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
+            if command, clicks == 1, let nav = parent.onNavigate, let w = word(at: p) {   // ⌘-click: go to definition
+                var at = pos(p); at.col = Int(((p.x - textX(side: selSide)) / Theme.charWidth).rounded(.down))
+                let r = wordRange(at: at, side: selSide)
+                anchor = TextPos(row: at.row, col: r.lowerBound); head = TextPos(row: at.row, col: r.upperBound)
+                redrawVisible()
+                nav(w, .definition)
+                return
+            }
             let at = pos(p)
             switch clicks {
             case 2:   // word
-                let u = text(row: at.row, side: selSide)
-                func isWord(_ c: UInt16) -> Bool { (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c > 127 }
-                var a = min(at.col, u.count), b = a
-                if a < u.count, isWord(u[a]) || (a > 0 && isWord(u[a - 1])) {
-                    if a == u.count || !isWord(u[a]) { a -= 1; b = a }
-                    while a > 0, isWord(u[a - 1]) { a -= 1 }
-                    while b < u.count, isWord(u[b]) { b += 1 }
-                } else if a < u.count { b = a + 1 }
-                anchor = TextPos(row: at.row, col: a); head = TextPos(row: at.row, col: b)
+                var r = wordRange(at: at, side: selSide)
+                if r.isEmpty, r.lowerBound < text(row: at.row, side: selSide).count { r = r.lowerBound..<(r.lowerBound + 1) }
+                anchor = TextPos(row: at.row, col: r.lowerBound); head = TextPos(row: at.row, col: r.upperBound)
             case 3...:  // line
                 anchor = TextPos(row: at.row, col: 0); head = TextPos(row: at.row, col: text(row: at.row, side: selSide).count)
             default:
@@ -348,8 +404,13 @@ struct DiffTableView: NSViewRepresentable {
             menu.removeAllItems()
             let row = table.clickedRow
             let p = table.window.map { table.convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+            if let nav = parent.onNavigate, let p, row >= 0, let w = word(at: NSPoint(x: p.x, y: table.rect(ofRow: row).midY)) {
+                menu.addItem(ClosureMenuItem("Go to Definition of “\(w)”") { nav(w, .definition) })
+                menu.addItem(ClosureMenuItem("Find References to “\(w)”") { nav(w, .references) })
+                menu.addItem(.separator())
+            }
             if let i = lineIndex(row: row, x: p?.x) {
-                if parent.onAddComment != nil {
+                if parent.onAddComment != nil, parent.canComment?(file.lines[i]) ?? true {
                     menu.addItem(ClosureMenuItem("Add Comment…") { [weak self] in self?.beginComment(lineIndex: i, row: row) })
                 }
                 // Lines: the selection if the click is inside it, else the clicked line if it's a change.
@@ -361,8 +422,8 @@ struct DiffTableView: NSViewRepresentable {
                     let title = a == .stage ? "Stage \(what)" : a == .unstage ? "Unstage \(what)" : "Discard \(what)…"
                     menu.addItem(ClosureMenuItem(title) { [weak self] in self?.parent.onHunkAction?(a, lines) })
                 }
-                let hunk = Set(file.hunks[file.lines[i].hunkIndex].lines)
-                for a in hunkActions {
+                let hunk = file.hunks.indices.contains(file.lines[i].hunkIndex) ? Set(file.hunks[file.lines[i].hunkIndex].lines) : []
+                for a in hunkActions where !hunk.isEmpty {
                     let title = a == .stage ? "Stage Hunk" : a == .unstage ? "Unstage Hunk" : "Discard Hunk…"
                     menu.addItem(ClosureMenuItem(title) { [weak self] in self?.parent.onHunkAction?(a, hunk) })
                 }
@@ -397,14 +458,30 @@ struct DiffTableView: NSViewRepresentable {
             return out.joined(separator: "\n")
         }
 
-        /// n / p: jump between hunks.
+        /// n / p: jump to the next or previous change: a hunk header, or in a whole-file view the first line of a run
+        /// of changes. It lands a few lines below the top, so the context above it shows.
         func jumpHunk(forward: Bool) {
-            let start = table.rows(in: table.visibleRect).location
+            func isChange(_ r: Int) -> Bool {
+                switch rows[r] {
+                case .hunk: return true
+                case .line(let i): return file.lines[i].kind == .added || file.lines[i].kind == .removed
+                case .split(let a, let b): return [a, b].contains { $0.map { file.lines[$0].kind == .added || file.lines[$0].kind == .removed } ?? false }
+                case .comment: return false
+                }
+            }
+            func starts(_ r: Int) -> Bool {
+                guard isChange(r) else { return false }
+                if case .hunk = rows[r] { return true }
+                return r == 0 || !isChange(r - 1)   // a change right under its hunk header isn't a second stop
+            }
+            let margin = 3
+            let start = table.rows(in: table.visibleRect).location + margin
             let range = forward ? Array(min(rows.count, start + 1)..<rows.count) : Array((0..<max(0, start)).reversed())
-            for r in range { if case .hunk = rows[r] {
-                table.scroll(NSPoint(x: table.visibleRect.minX, y: table.rect(ofRow: r).minY))   // hunk header to the top
+            for r in range where starts(r) {
+                if case .hunk = rows[r] { table.scroll(NSPoint(x: table.visibleRect.minX, y: table.rect(ofRow: r).minY)); return }
+                table.scroll(NSPoint(x: table.visibleRect.minX, y: max(0, table.rect(ofRow: max(0, r - margin)).minY)))
                 return
-            } }
+            }
         }
     }
 
@@ -456,7 +533,7 @@ final class DiffTable: NSTableView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        coordinator?.mouseDown(convert(event.locationInWindow, from: nil), clicks: event.clickCount)
+        coordinator?.mouseDown(convert(event.locationInWindow, from: nil), clicks: event.clickCount, command: event.modifierFlags.contains(.command))
     }
 
     override func mouseDragged(with event: NSEvent) {
