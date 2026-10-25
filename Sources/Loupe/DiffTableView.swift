@@ -112,6 +112,23 @@ struct DiffTableView: NSViewRepresentable {
         var contentWidth: CGFloat = 0
         var numberWidth: CGFloat = 0
         var revealed: UUID?
+        var hover: (row: Int, side: Int, cols: Range<Int>)?   // the identifier under the mouse while ⌘ is held
+
+        /// ⌘ held over an identifier: underline it and show the link cursor, as an IDE does.
+        func updateHover(at p: NSPoint?, command: Bool) {
+            var next: (row: Int, side: Int, cols: Range<Int>)?
+            if command, parent.onNavigate != nil, let p, table.bounds.contains(p), word(at: p) != nil {
+                let side = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
+                var at = pos(p); at.col = Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down))
+                next = (at.row, side, wordRange(at: at, side: side))
+            }
+            let changed = next?.row != hover?.row || next?.cols != hover?.cols || next?.side != hover?.side
+            let oldRow = hover?.row
+            hover = next
+            (next == nil ? NSCursor.iBeam : NSCursor.pointingHand).set()
+            guard changed else { return }
+            for r in [oldRow, next?.row].compactMap({ $0 }) { table.view(atColumn: 0, row: r, makeIfNecessary: false)?.needsDisplay = true }
+        }
 
         /// Scrolls the new-side `line` to a third of the way down and selects it.
         func reveal(line: Int) {
@@ -541,6 +558,30 @@ final class DiffTable: NSTableView {
         coordinator?.mouseDragged(convert(event.locationInWindow, from: nil))
     }
 
+    // ⌘-hover: links on identifiers.
+    private var tracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(t)
+        tracking = t
+    }
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        coordinator?.updateHover(at: convert(event.locationInWindow, from: nil), command: event.modifierFlags.contains(.command))
+    }
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard let w = window else { return }
+        let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
+        coordinator?.updateHover(at: visibleRect.contains(p) ? p : nil, command: event.modifierFlags.contains(.command))
+    }
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        coordinator?.updateHover(at: nil, command: false)
+    }
+
     override func becomeFirstResponder() -> Bool { coordinator?.redrawVisible(); return super.becomeFirstResponder() }
     override func resignFirstResponder() -> Bool { coordinator?.redrawVisible(); return super.resignFirstResponder() }
 }
@@ -596,6 +637,11 @@ final class LineRowView: NSView {
             else { Theme.emptyBG.setFill(); NSRect(x: half, y: 0, width: bounds.width - half, height: bounds.height).fill() }
             NSColor.separatorColor.setFill(); NSRect(x: half - 0.5, y: 0, width: 1, height: bounds.height).fill()
         default: break
+        }
+        if let h = c.hover, h.row == rowIndex, !h.cols.isEmpty {   // ⌘-hover link
+            let x = c.textX(side: h.side) + CGFloat(h.cols.lowerBound) * Theme.charWidth
+            NSColor.linkColor.setFill()
+            NSRect(x: x, y: bounds.height - 2.5, width: CGFloat(h.cols.count) * Theme.charWidth, height: 1.2).fill()
         }
     }
 

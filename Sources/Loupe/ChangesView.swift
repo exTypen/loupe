@@ -402,6 +402,7 @@ struct DiffHeader<Actions: View>: View {
     var additions: Int
     var deletions: Int
     var file: FileTarget? = nil   // offers Blame and History for it
+    var showCounts = true
     @ViewBuilder var actions: Actions
     @Environment(\.openWindow) private var openWindow
 
@@ -410,8 +411,10 @@ struct DiffHeader<Actions: View>: View {
             Image(systemName: "doc.text").foregroundStyle(.secondary)
             if let oldPath { Text(oldPath).foregroundStyle(.secondary).lineLimit(1); Image(systemName: "arrow.right").font(.caption) }
             Text(path).fontWeight(.medium).lineLimit(1).truncationMode(.head).textSelection(.enabled)
-            Text(verbatim: "+\(String(additions))").foregroundStyle(.green).monospacedDigit()
-            Text(verbatim: "−\(String(deletions))").foregroundStyle(.red).monospacedDigit()
+            if showCounts {
+                Text(verbatim: "+\(String(additions))").foregroundStyle(.green).monospacedDigit()
+                Text(verbatim: "−\(String(deletions))").foregroundStyle(.red).monospacedDigit()
+            }
             Spacer()
             if let file {
                 Group {

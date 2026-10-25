@@ -355,6 +355,10 @@ struct PullDetailView: View {
             .frame(maxHeight: .infinity)
         } trailing: {
             VStack(spacing: 0) {
+                if pull.fullMode && !pull.tabs.isEmpty {
+                    FileTabBar(pull: pull)
+                    Divider()
+                }
                 Group {
                     if pull.fullMode, let path = pull.selectedPath { fullFile(path) }
                     else if let f = pull.selectedFile { compactFile(f) }
@@ -435,7 +439,7 @@ struct PullDetailView: View {
         let changed = pull.file(path)
         VStack(spacing: 0) {
             DiffHeader(path: path, oldPath: changed.flatMap { $0.oldPath != $0.newPath ? $0.oldPath : nil },
-                       additions: changed?.additions ?? 0, deletions: changed?.deletions ?? 0) {
+                       additions: changed?.additions ?? 0, deletions: changed?.deletions ?? 0, showCounts: changed != nil) {
                 FileNavControls(pull: pull, path: path)
                 if let f = changed {
                     Toggle("Viewed", isOn: Binding(get: { pull.isViewed(f) }, set: { _ in pull.toggleViewed(f) })).toggleStyle(.checkbox)
@@ -460,6 +464,61 @@ struct PullDetailView: View {
             }
         }
         .task(id: path + pull.pr.head.sha) { await pull.loadFull(path) }
+    }
+}
+
+/// Full mode's open files. Changed files carry their status colour; the selected tab is the one shown.
+struct FileTabBar: View {
+    var pull: PullRequestModel
+    @State private var hovered: String?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(pull.tabs, id: \.self) { path in tab(path).id(path) }
+                }
+            }
+            .onChange(of: pull.selectedPath) { _, p in if let p { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(p) } } }
+        }
+        .frame(height: 30)
+        .background(.bar)
+    }
+
+    private func tab(_ path: String) -> some View {
+        let active = pull.selectedPath == path
+        let name = (path as NSString).lastPathComponent
+        // Same file name twice (mod.rs, index.ts): add the parent directory.
+        let twin = pull.tabs.contains { $0 != path && ($0 as NSString).lastPathComponent == name }
+        let parent = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        let changed = pull.file(path)
+        return HStack(spacing: 5) {
+            FileIcon(path: path)
+            Text(name).lineLimit(1).foregroundStyle(active ? .primary : .secondary)
+            if twin, !parent.isEmpty { Text(parent).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
+            if let c = changed { Circle().fill(c.badge.color).frame(width: 6, height: 6).help("Changed in this pull request") }
+            Button { pull.closeTab(path) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
+                .buttonStyle(.borderless)
+                .opacity(active || hovered == path ? 1 : 0)
+                .help("Close Tab")
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(active ? Color(nsColor: .textBackgroundColor) : Color.clear)
+        .overlay(alignment: .trailing) { Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1) }
+        .overlay(alignment: .top) { if active { Rectangle().fill(Color.accentColor).frame(height: 2) } }
+        .contentShape(Rectangle())
+        .onTapGesture { pull.selectedPath = path }
+        .onHover { hovered = $0 ? path : (hovered == path ? nil : hovered) }
+        .help(path)
+        .contextMenu {
+            Button("Close Tab") { pull.closeTab(path) }
+            Button("Close Other Tabs") { pull.closeOtherTabs(path) }.disabled(pull.tabs.count < 2)
+            Button("Close All Tabs") { pull.tabs = []; pull.selectedPath = nil }
+            Divider()
+            Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string) }
+        }
     }
 }
 

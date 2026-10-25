@@ -83,7 +83,15 @@ final class PullRequestModel {
     @ObservationIgnored private var lastDiff: Data?
     @ObservationIgnored private var localDiffSHA: String?   // head the local fallback diff was made at
     private var fingerprints: [String: UInt64] = [:]
-    var selectedPath: String?
+    var selectedPath: String? {
+        didSet {
+            // Full mode: whatever opens, from the tree, a jump or a result, opens as a tab next to the current one.
+            guard fullMode, let p = selectedPath, !tabs.contains(p) else { return }
+            let at = oldValue.flatMap { tabs.firstIndex(of: $0) }.map { $0 + 1 } ?? tabs.count
+            tabs.insert(p, at: min(at, tabs.count))
+        }
+    }
+    var tabs: [String] = []                  // Full mode's open files, in tab order
     var reviews: [Review] = []
     var comments: [ReviewComment] = []
     var conversation: [IssueComment] = []
@@ -181,6 +189,7 @@ final class PullRequestModel {
     var fullMode = UserDefaults.standard.bool(forKey: "prFullMode") {
         didSet {
             if UserDefaults.standard.bool(forKey: "prFullMode") != fullMode { UserDefaults.standard.set(fullMode, forKey: "prFullMode") }
+            if fullMode, let p = selectedPath, !tabs.contains(p) { tabs.append(p) }
             // Back to Compact on a file this PR doesn't change: show the first change instead.
             if !fullMode, selectedPath.flatMap(file) == nil { selectedPath = files.first?.path }
             if !fullMode { navResults = nil }
@@ -303,6 +312,17 @@ final class PullRequestModel {
         selectedPath = path
         reveal = DiffReveal(line: line)
     }
+
+    func closeTab(_ path: String) {
+        guard let i = tabs.firstIndex(of: path) else { return }
+        tabs.remove(at: i)
+        if selectedPath == path {
+            let next = tabs.isEmpty ? nil : tabs[min(i, tabs.count - 1)]
+            selectedPath = next
+        }
+    }
+
+    func closeOtherTabs(_ path: String) { tabs = tabs.filter { $0 == path }; if selectedPath != path { selectedPath = path } }
 
     func goBack() {
         guard let to = back.popLast() else { return }
