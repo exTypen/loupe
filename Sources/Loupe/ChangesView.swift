@@ -4,22 +4,41 @@ struct WorktreeView: View {
     @Environment(AppModel.self) private var app
     var model: WorktreeModel
     @AppStorage("tab") private var tab = "changes"
-    @AppStorage("layout") private var layout = DiffLayout.unified
     @State private var showBranches = false
     @State private var controls = DiffControls()
+    @AppStorage("prFullMode") private var fullMode = false
 
     var body: some View {
         Group {
             switch tab {
-            case "history": HistoryView(worktree: model, model: model.history, layout: layout)
-            case "pulls": PullRequestsView(model: model, layout: layout)
-            default: ChangesView(model: model, layout: layout)
+            case "history": HistoryView(worktree: model, model: model.history)
+            case "pulls": PullRequestsView(model: model)
+            default: ChangesView(model: model)
             }
         }
         .navigationTitle(model.headOID.isEmpty ? "" : model.branch ?? "detached HEAD")
         .navigationSubtitle((model.path as NSString).abbreviatingWithTildeInPath)
         .toolbar(removing: .title)   // drawn by the branch button below instead
         .toolbar {
+            // Fetch, pull and push act on the branch: beside it, on the left.
+            ToolbarItemGroup(placement: .navigation) {
+                // No separate spinner (it shifted the buttons); the running operation animates its own icon.
+                Button { Task { await model.remoteOp("Fetching", ["fetch", "--all", "--prune"]) } } label: {
+                    Label("Fetch", systemImage: "arrow.triangle.2.circlepath").symbolEffect(.rotate, isActive: model.busy == "Fetching")
+                }
+                .disabled(model.busy != nil)
+                    .help("Fetch all remotes")
+                Button { Task { await model.remoteOp("Pulling", ["pull", "--ff-only"]) } } label: {
+                    Label("Pull", systemImage: "arrow.down").symbolEffect(.pulse, isActive: model.busy == "Pulling")
+                }
+                .disabled(model.busy != nil)
+                    .help(model.behind > 0 ? "Pull \(model.behind) commits (fast-forward only)" : "Pull (fast-forward only)")
+                Button { Task { await model.remoteOp("Pushing", ["push", "--set-upstream", model.remoteName, "HEAD"]) } } label: {
+                    Label("Push", systemImage: "arrow.up").symbolEffect(.pulse, isActive: model.busy == "Pushing")
+                }
+                .disabled(model.busy != nil)
+                    .help(model.ahead > 0 ? "Push \(model.ahead) commits" : "Push")
+            }
             ToolbarItem(placement: .navigation) {
                 Button { showBranches.toggle() } label: {
                     VStack(alignment: .leading, spacing: 0) {
@@ -45,40 +64,29 @@ struct WorktreeView: View {
                 .pickerStyle(.segmented)
                 .labelStyle(.titleOnly)
             }
-            // Only what applies to what's on screen: the layout while a diff shows, Compact/Full on a pull request's files.
+            // Compact/Full while a diff shows; the view switch stays put at the right edge, whatever comes and goes.
             ToolbarItemGroup {
-                if controls.layout {
-                    Picker("Layout", selection: $layout) {
-                        Image(systemName: "rectangle").help("Unified").tag(DiffLayout.unified)
-                        Image(systemName: "rectangle.split.2x1").help("Split").tag(DiffLayout.split)
-                    }
-                    .pickerStyle(.segmented)
-                }
-                if let pull = controls.fullMode {
-                    Picker("Mode", selection: Binding(get: { pull.fullMode }, set: { pull.fullMode = $0 })) {
-                        Image(systemName: "rectangle.compress.vertical").help("Compact: the changed files and their changes").tag(false)
-                        Image(systemName: "rectangle.expand.vertical").help("Full: the whole repository, whole files and code navigation (⌥⌘F)").tag(true)
+                if controls.full {
+                    Picker("Mode", selection: $fullMode) {
+                        Image(systemName: "rectangle.compress.vertical").help("Compact: the changes with a few lines around them").tag(false)
+                        Image(systemName: "rectangle.expand.vertical").help("Full: whole files with the changes inline (⌥⌘F)").tag(true)
                     }
                     .pickerStyle(.segmented)
                 }
             }
             ToolbarItemGroup {
-                // No separate spinner (it shifted the buttons); the running operation animates its own icon.
-                Button { Task { await model.remoteOp("Fetching", ["fetch", "--all", "--prune"]) } } label: {
-                    Label("Fetch", systemImage: "arrow.triangle.2.circlepath").symbolEffect(.rotate, isActive: model.busy == "Fetching")
+                if let v = controls.view {
+                    Picker("View", selection: Binding(get: { v.current }, set: v.set)) {
+                        ForEach(v.modes, id: \.self) { m in
+                            switch m {
+                            case .overview: Image(systemName: "square.grid.2x2").help("Overview: what the change does").tag(m)
+                            case .files: Image(systemName: "doc.text").help("Files: the diff").tag(m)
+                            case .conversation: Image(systemName: "bubble.left.and.bubble.right").help("Conversation").tag(m)
+                            }
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .disabled(model.busy != nil)
-                    .help("Fetch all remotes")
-                Button { Task { await model.remoteOp("Pulling", ["pull", "--ff-only"]) } } label: {
-                    Label("Pull", systemImage: "arrow.down").symbolEffect(.pulse, isActive: model.busy == "Pulling")
-                }
-                .disabled(model.busy != nil)
-                    .help(model.behind > 0 ? "Pull \(model.behind) commits (fast-forward only)" : "Pull (fast-forward only)")
-                Button { Task { await model.remoteOp("Pushing", ["push", "--set-upstream", model.remoteName, "HEAD"]) } } label: {
-                    Label("Push", systemImage: "arrow.up").symbolEffect(.pulse, isActive: model.busy == "Pushing")
-                }
-                .disabled(model.busy != nil)
-                    .help(model.ahead > 0 ? "Push \(model.ahead) commits" : "Push")
             }
         }
         .alert("Git", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
@@ -91,17 +99,25 @@ struct WorktreeView: View {
 
 /// Which of the toolbar's diff controls apply to what's on screen. Views showing a diff set it.
 struct DiffControls: Equatable {
-    var layout = false
-    var fullMode: PullRequestModel?
-    static func == (a: Self, b: Self) -> Bool { a.layout == b.layout && a.fullMode === b.fullMode }
+    var full = false           // a diff is showing: Compact/Full applies (the mode itself is the "prFullMode" default)
+    var view: ViewSwitch?
+}
+
+/// Overview / Files (/ Conversation) for whatever change is on screen: the modes it has, the one showing, and how to switch.
+struct ViewSwitch: Equatable {
+    enum Mode: String { case overview, files, conversation }
+    var modes: [Mode]
+    var current: Mode
+    var set: (Mode) -> Void
+    static func == (a: Self, b: Self) -> Bool { a.modes == b.modes && a.current == b.current }
 }
 
 struct DiffControlsKey: PreferenceKey {
     static var defaultValue: DiffControls { DiffControls() }
     static func reduce(value: inout DiffControls, nextValue: () -> DiffControls) {
         let next = nextValue()
-        value.layout = value.layout || next.layout
-        value.fullMode = value.fullMode ?? next.fullMode
+        value.full = value.full || next.full
+        value.view = value.view ?? next.view
     }
 }
 
@@ -199,9 +215,10 @@ struct BranchPicker: View {
 
 struct ChangesView: View {
     var model: WorktreeModel
-    var layout: DiffLayout
     @State private var confirmDiscard: [FileChange]?
     @State private var overview = false
+    @AppStorage("prFullMode") private var fullMode = false
+    @AppStorage("diffSide") private var side = DiffSide.diff
 
     var body: some View {
         VStack(spacing: 0) {
@@ -211,23 +228,8 @@ struct ChangesView: View {
         }
         ResizableSplit(key: "changesListWidth", minWidth: 220, maxWidth: 380, defaultFraction: 300/380) {
             VStack(spacing: 0) {
-                if !model.files.isEmpty {
-                    Button { overview.toggle() } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "list.bullet.rectangle").foregroundStyle(overview ? Color.accentColor : .secondary)
-                            Text("Overview").fontWeight(overview ? .semibold : .regular)
-                            Spacer()
-                            Text("schema, dependencies, code").font(.caption).foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 7)
-                        .background(overview ? Color.accentColor.opacity(0.12) : .clear)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("What these uncommitted changes do, compared with the last commit")
-                    Divider()
-                }
-                FileListView(model: model, confirmDiscard: $confirmDiscard)
+                if fullMode { WorktreeTree(model: model, browser: model.browser) }
+                else { FileListView(model: model, confirmDiscard: $confirmDiscard) }
                 if model.stashCount > 0 { StashesLink(model: model) }
                 Divider()
                 CommitBox(model: model)
@@ -248,17 +250,41 @@ struct ChangesView: View {
                         if let f = model.files.first(where: { $0.path == path && !$0.staged }) ?? model.files.first(where: { $0.path == path }) { model.select(f.id) }
                     }
                 }
+                else if fullMode { WorktreeFilePane(model: model, browser: model.browser, confirmDiscard: $confirmDiscard) }
                 else if let f = model.selectedFile, f.kind == .conflicted { ConflictPane(model: model, path: f.path).id(f.path) }
                 else {
-                    DiffPane(model: model, layout: layout, confirmDiscard: $confirmDiscard)
-                        .preference(key: DiffControlsKey.self, value: DiffControls(layout: model.selectedFile != nil))
+                    DiffPane(model: model, confirmDiscard: $confirmDiscard)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !overview, let r = model.browser.navResults {
+                    VStack(spacing: 0) { Divider(); NavResultsPanel(results: r, browser: model.browser).frame(height: 220) }
                 }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            .preference(key: DiffControlsKey.self, value: model.files.isEmpty ? DiffControls()
+                        : DiffControls(full: !overview && (fullMode || model.selectedFile != nil),
+                                       view: ViewSwitch(modes: [.overview, .files], current: overview ? .overview : .files) { overview = $0 == .overview }))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onChange(of: model.selectedFileID) { overview = false }   // picking a file shows its diff
+        .onChange(of: model.selectedFileID) {
+            overview = false   // picking a file shows its diff
+            if !fullMode, let f = model.selectedFile { model.browser.follow(f.path) }
+        }
+        .onChange(of: fullMode) {
+            model.loadDiff()
+            // The file showing carries over between the change list and the worktree.
+            if fullMode, let f = model.selectedFile { model.browser.selectedPath = f.path }
+            if !fullMode, let p = model.browser.selectedPath, let c = model.browser.change(p) { model.select(c.id) }
+        }
+        // A jump (⌘-click, a result, back / forward) in Compact: a changed file shows in the list, any other needs Full.
+        .onChange(of: model.browser.selectedPath) {
+            guard !fullMode, let p = model.browser.selectedPath else { return }
+            if let c = model.browser.change(p) { if model.selectedFile?.path != p { model.select(c.id) } } else { fullMode = true }
+        }
+        .onChange(of: side) { model.loadDiff() }
         .confirmationDialog("Discard changes?", isPresented: Binding(get: { confirmDiscard != nil }, set: { if !$0 { confirmDiscard = nil } })) {
             Button("Discard \(confirmDiscard?.count ?? 0) file(s)", role: .destructive) {
                 if let fs = confirmDiscard { Task { await model.discard(fs) } }
@@ -275,7 +301,8 @@ struct ChangesView: View {
 struct FileListView: View {
     var model: WorktreeModel
     @Binding var confirmDiscard: [FileChange]?
-    @Environment(\.openWindow) private var openWindow
+    @AppStorage("filePanel") private var panel = FilePanel.none
+    @State private var collapsed: Set<String> = []   // "<section>/<directory>"
 
     var body: some View {
         // The diff follows the row just added to the selection (plain click, ⌘-click), else stays put.
@@ -290,20 +317,20 @@ struct FileListView: View {
         List(selection: selection) {
             if !model.conflicted.isEmpty {
                 Section {
-                    ForEach(model.conflicted) { f in row(f) }
+                    tree(model.conflicted, section: "conflicts")
                 } header: {
                     sectionHeader("Conflicts", count: model.conflicted.count, action: nil) {}
                 }
             }
             if !model.staged.isEmpty {
                 Section {
-                    ForEach(model.staged) { f in row(f) }
+                    tree(model.staged, section: "staged")
                 } header: {
                     sectionHeader("Staged", count: model.staged.count, action: "Unstage All") { Task { await model.unstage(model.staged) } }
                 }
             }
             Section {
-                ForEach(model.unstaged) { f in row(f) }
+                tree(model.unstaged, section: "changes")
             } header: {
                 sectionHeader("Changes", count: model.unstaged.count, action: model.unstaged.isEmpty ? nil : "Stage All") { Task { await model.stage(model.unstaged) } }
             }
@@ -339,8 +366,34 @@ struct FileListView: View {
         }
     }
 
-    private func row(_ f: FileChange) -> some View {
-        FileRow(path: f.path, badge: f.kind).tag(f.id)
+    /// A section's files under their folders. A folder isn't selectable: a click folds or unfolds it.
+    @ViewBuilder private func tree(_ files: [FileChange], section: String) -> some View {
+        let byPath = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        let closed = Set(collapsed.compactMap { $0.hasPrefix(section + "/") ? String($0.dropFirst(section.count + 1)) : nil })
+        ForEach(FileTree.rows(files.map(\.path).sorted(by: FileTree.treeOrder), collapsed: closed)) { r in
+            if let dir = r.dirPath {
+                let key = section + "/" + dir
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(collapsed.contains(key) ? 0 : 90)).foregroundStyle(.secondary).frame(width: 12)
+                    Image(systemName: collapsed.contains(key) ? "folder" : "folder.fill").foregroundStyle(.secondary)
+                    Text(r.name).lineLimit(1).truncationMode(.head).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                }
+                .treeRow(depth: r.depth)
+                .contentShape(Rectangle())
+                .onTapGesture { if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) } }
+                .selectionDisabled()
+                .tag(section + ":" + r.id)
+            } else if let p = r.filePath, let f = byPath[p] {
+                HStack(spacing: 4) {
+                    Color.clear.frame(width: 12)
+                    FileRow(path: f.path, badge: f.kind, nameOnly: true)
+                }
+                .treeRow(depth: r.depth)
+                .tag(f.id)
+            }
+        }
     }
 
     /// Right-click menu for the selection (or the clicked row when it's outside the selection).
@@ -359,8 +412,8 @@ struct FileListView: View {
         }
         if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added {
             Divider()
-            Button("Blame") { openWindow(id: "file", value: FileTarget(worktree: model.path, path: f.path)) }
-            Button("File History") { openWindow(id: "file", value: FileTarget(worktree: model.path, path: f.path, mode: "history")) }
+            Button("Blame") { model.select(f.id); panel = .blame }
+            Button("File History") { model.select(f.id); panel = .history }
         }
         if !fs.isEmpty {
             Divider()
@@ -376,13 +429,14 @@ struct FileListView: View {
 struct FileRow: View {
     var path: String
     var badge: FileChange.Kind?
+    var nameOnly = false   // in a tree, where the folders are rows
     var additions: Int? = nil
     var deletions: Int? = nil
 
     var body: some View {
         HStack(spacing: 7) {
             FileIcon(path: path)
-            let dir = (path as NSString).deletingLastPathComponent
+            let dir = nameOnly ? "" : (path as NSString).deletingLastPathComponent
             // GitHub Desktop style: one line, directory dimmed, file name emphasized; the head truncates first.
             (Text(dir.isEmpty ? "" : dir + "/").foregroundStyle(.secondary) + Text((path as NSString).lastPathComponent))
                 .lineLimit(1)
@@ -416,7 +470,7 @@ extension FileChange.Kind {
 
 struct DiffPane: View {
     var model: WorktreeModel
-    var layout: DiffLayout
+    @AppStorage("prFullMode") private var fullMode = false
     @Binding var confirmDiscard: [FileChange]?
 
     var body: some View {
@@ -432,9 +486,10 @@ struct DiffPane: View {
                     }
                 }
                 Divider()
+                WithFilePanel(file: f.kind == .untracked || f.kind == .added ? nil : FileTarget(worktree: model.path, path: f.path), version: d.uid) {
                 if d.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
                 else {
-                    DiffTableView(file: d, layout: layout,
+                    DiffTableView(file: d,
                                   hunkActions: f.staged ? [.unstage] : f.kind == .untracked ? [] : [.discard, .stage],
                                   onHunkAction: { a, lines in
                                       if a == .discard {
@@ -446,7 +501,12 @@ struct DiffPane: View {
                                           guard alert.runModal() == .alertFirstButtonReturn else { return }
                                       }
                                       Task { await model.apply(a, lines: lines) }
-                                  })
+                                  },
+                                  onNavigate: { word, action in Task { await model.browser.navigate(word, action, from: f.path) } },
+                                  // A jump's line, once this is the file it landed in.
+                                  reveal: model.browser.selectedPath == d.path ? model.browser.reveal : nil,
+                                  changeRuler: fullMode)
+                }
                 }
             }
         } else if model.selectedFile != nil {
@@ -467,11 +527,12 @@ struct DiffHeader<Actions: View>: View {
     var file: FileTarget? = nil   // offers Blame and History for it
     var showCounts = true
     @ViewBuilder var actions: Actions
-    @Environment(\.openWindow) private var openWindow
+    @AppStorage("diffSide") private var side = DiffSide.diff
+    @AppStorage("filePanel") private var panel = FilePanel.none
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "doc.text").foregroundStyle(.secondary)
+            FileIcon(path: path)
             if let oldPath { Text(oldPath).foregroundStyle(.secondary).lineLimit(1); Image(systemName: "arrow.right").font(.caption) }
             Text(path).fontWeight(.medium).lineLimit(1).truncationMode(.head).textSelection(.enabled)
             if showCounts {
@@ -479,12 +540,21 @@ struct DiffHeader<Actions: View>: View {
                 Text(verbatim: "−\(String(deletions))").foregroundStyle(.red).monospacedDigit()
             }
             Spacer()
+            // Before / After only mean something when the file has both: a new or deleted file is one side.
+            if additions > 0 && deletions > 0 {
+                Picker("Show", selection: $side) {
+                    Text("Diff").tag(DiffSide.diff)
+                    Text("Before").tag(DiffSide.old)
+                    Text("After").tag(DiffSide.new)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize().controlSize(.small)
+                .help("The changes, the file before them, or the file after them")
+            }
             if let file {
                 Group {
-                    Button { openWindow(id: "file", value: file) } label: { Image(systemName: "person.text.rectangle") }
-                        .help("Blame: who last changed each line")
-                    Button { var f = file; f.mode = "history"; openWindow(id: "file", value: f) } label: { Image(systemName: "clock.arrow.circlepath") }
-                        .help("File History")
+                    // One panel at a time: a second click closes it, the other button switches to the other.
+                    panelButton(.blame, "person.text.rectangle", "Blame: who last changed each line")
+                    panelButton(.history, "clock.arrow.circlepath", "File History")
                 }
                 .buttonStyle(.borderless)
                 if !(Actions.self == EmptyView.self) { Divider().frame(height: 14) }
@@ -493,7 +563,17 @@ struct DiffHeader<Actions: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(.bar)
+        .background(.bar, ignoresSafeAreaEdges: [])
+    }
+
+    private func panelButton(_ p: FilePanel, _ icon: String, _ help: String) -> some View {
+        Button { panel = panel == p ? .none : p } label: {
+            Image(systemName: icon)
+                .foregroundStyle(panel == p ? Color.accentColor : .secondary)
+                .padding(3)
+                .background(panel == p ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 4))
+        }
+        .help(help)
     }
 }
 
@@ -606,5 +686,88 @@ struct CommitBox: View {
         let (m, u) = (stashMessage, stashUntracked)
         stashing = false; stashMessage = ""
         Task { await model.stash(message: m, untracked: u) }
+    }
+}
+
+// MARK: - Full mode: the worktree as an IDE
+
+/// Every file in the worktree; changed ones carry their status.
+struct WorktreeTree: View {
+    var model: WorktreeModel
+    @Bindable var browser: WorktreeBrowser
+
+    var body: some View {
+        Group {
+            if browser.tree.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+            else {
+                FileTreeList(paths: browser.tree, selection: $browser.selectedPath, collapsed: $browser.collapsed) { path in
+                    let c = browser.change(path)
+                    HStack(spacing: 6) {
+                        FileIcon(path: path)
+                        Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                            .foregroundStyle(c == nil ? .secondary : .primary)
+                        Spacer(minLength: 4)
+                        if let c { StatusIcon(kind: c.kind) }
+                    }
+                    .help(path)
+                } dirAccessory: { _ in EmptyView() }
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .task(id: "\(model.statusVersion) \(model.changeCount)") { await browser.loadTree() }
+    }
+}
+
+/// The open file in tabs: the whole file, its changes against HEAD inline, with code navigation.
+struct WorktreeFilePane: View {
+    var model: WorktreeModel
+    var browser: WorktreeBrowser
+    @Binding var confirmDiscard: [FileChange]?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if !browser.tabs.isEmpty {
+                FileTabBar(browser: browser)
+                Divider()
+            }
+            if let path = browser.selectedPath { file(path) }
+            else { ContentUnavailableView("No File Open", systemImage: "doc.text.magnifyingglass", description: Text("Open one from the tree, or ⌘-click a name to go to its definition.")) }
+        }
+        // ⌘W closes the open tab rather than the window; with no tab open it does nothing.
+        .background(CommandWInterceptor(action: { if let p = browser.selectedPath { browser.closeTab(p) } }))
+        // Opening in Full mode with nothing open: the change the list had selected.
+        .task(id: model.selectedFileID) { if browser.tabs.isEmpty, let f = model.selectedFile { browser.selectedPath = f.path } }
+    }
+
+    @ViewBuilder private func file(_ path: String) -> some View {
+        let c = browser.change(path), f = browser.files[path]
+        VStack(spacing: 0) {
+            DiffHeader(path: path, additions: f?.additions ?? 0, deletions: f?.deletions ?? 0,
+                       file: c?.kind == .untracked || c?.kind == .added ? nil : FileTarget(worktree: model.path, path: path),
+                       showCounts: c != nil) {
+                FileNavControls(browser: browser, path: path)
+                if let c {
+                    if c.staged { Button("Unstage File") { Task { await model.unstage([c]) } } }
+                    else {
+                        Button("Discard…") { confirmDiscard = [c] }
+                        Button("Stage File") { Task { await model.stage([c]) } }.buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            Divider()
+            WithFilePanel(file: c?.kind == .untracked || c?.kind == .added ? nil : FileTarget(worktree: model.path, path: path), version: f?.uid) {
+                if let f {
+                    if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                    else if f.lines.isEmpty { ContentUnavailableView("Empty File", systemImage: "doc") }
+                    else {
+                        DiffTableView(file: f, onNavigate: { word, action in Task { await browser.navigate(word, action, from: path) } },
+                                      reveal: browser.reveal, changeRuler: true)
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .task(id: path + " " + String(model.statusVersion)) { await browser.load(path) }
     }
 }

@@ -264,12 +264,6 @@ final class PullRequestModel {
 
     // MARK: Full mode — the whole repository at the PR head, whole files, code navigation
 
-    struct Location: Hashable { var path: String; var line: Int }
-    enum NavResults {
-        case definitions(String, [CodeSymbol])
-        case references(String, [CodeMatch], noDefinition: Bool)
-    }
-
     var fullMode = UserDefaults.standard.bool(forKey: "prFullMode") {
         didSet {
             if UserDefaults.standard.bool(forKey: "prFullMode") != fullMode { UserDefaults.standard.set(fullMode, forKey: "prFullMode") }
@@ -299,8 +293,8 @@ final class PullRequestModel {
     var fullFiles: [String: FileDiff] = [:]  // whole files at the head, with this PR's changes inline
     @ObservationIgnored private var fullSHA: String?
     var reveal: DiffReveal?
-    var back: [Location] = []
-    var forward: [Location] = []
+    var back: [CodeLocation] = []
+    var forward: [CodeLocation] = []
     var navResults: NavResults?
     var navBusy: String?                     // the word being looked up
 
@@ -392,41 +386,10 @@ final class PullRequestModel {
         return test
     }
 
-    func open(_ path: String, line: Int, record: Bool = true) {
-        if record, let cur = selectedPath, cur != path || reveal?.line != line {
-            back.append(Location(path: cur, line: reveal?.line ?? 1)); forward = []
-        }
-        selectedPath = path
-        reveal = DiffReveal(line: line)
-    }
-
     /// From the Overview: show a file (and a line, when known). A file this PR doesn't change needs Full mode.
     func reveal(_ path: String, line: Int?) {
         if file(path) == nil && !fullMode { fullMode = true }
         if let line { open(path, line: line) } else { selectedPath = path }
-    }
-
-    func closeTab(_ path: String) {
-        guard let i = tabs.firstIndex(of: path) else { return }
-        tabs.remove(at: i)
-        if selectedPath == path {
-            let next = tabs.isEmpty ? nil : tabs[min(i, tabs.count - 1)]
-            selectedPath = next
-        }
-    }
-
-    func closeOtherTabs(_ path: String) { tabs = tabs.filter { $0 == path }; if selectedPath != path { selectedPath = path } }
-
-    func goBack() {
-        guard let to = back.popLast() else { return }
-        if let cur = selectedPath { forward.append(Location(path: cur, line: reveal?.line ?? 1)) }
-        open(to.path, line: to.line, record: false)
-    }
-
-    func goForward() {
-        guard let to = forward.popLast() else { return }
-        if let cur = selectedPath { back.append(Location(path: cur, line: reveal?.line ?? 1)) }
-        open(to.path, line: to.line, record: false)
     }
 
     /// ⌘-click / Go to Definition / Find References on `word` in `path`.

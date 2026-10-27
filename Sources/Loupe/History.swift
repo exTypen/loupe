@@ -262,7 +262,6 @@ struct HistoryView: View {
     @Environment(AppModel.self) private var app
     var worktree: WorktreeModel
     @Bindable var model: HistoryModel
-    var layout: DiffLayout
     @State private var worktreeBase: String?
     @State private var dropping: Commit?
     @AppStorage("tab") private var tab = "changes"
@@ -303,7 +302,7 @@ struct HistoryView: View {
             }
             .frame(maxHeight: .infinity)
         } trailing: {
-            CommitDetailView(model: model, remote: worktree.remote, account: worktree.account, layout: layout) { c in AnyView(actions(c)) }
+            CommitDetailView(model: model, remote: worktree.remote, account: worktree.account) { c in AnyView(actions(c)) }
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -478,10 +477,12 @@ struct CommitDetailView: View {
     @Bindable var model: HistoryModel
     var remote: RemoteRepo?
     var account: ForgejoAccount?
-    var layout: DiffLayout
     var actions: (Commit) -> AnyView
     @AppStorage("commitOverview") private var overview = false
+    @AppStorage("prFullMode") private var fullMode = false
+    @AppStorage("diffSide") private var side = DiffSide.diff
     @State private var reveal: DiffReveal?
+    @State private var wholeFiles: [String: FileDiff] = [:]   // Full mode: whole files of the commit showing, by "sha path"
 
     var body: some View {
         if let c = model.selected {
@@ -514,9 +515,17 @@ struct CommitDetailView: View {
                                 DiffHeader(path: f.path, oldPath: f.oldPath != f.newPath ? f.oldPath : nil, additions: f.additions, deletions: f.deletions,
                                            file: f.newPath == nil || c.selector != nil ? nil : FileTarget(worktree: model.path, path: f.path, rev: c.sha)) { EmptyView() }
                                 Divider()
-                                if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
-                                else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
-                                else { DiffTableView(file: f, layout: layout, reveal: reveal) }
+                                WithFilePanel(file: f.newPath == nil || c.selector != nil ? nil : FileTarget(worktree: model.path, path: f.path, rev: c.sha)) {
+                                    if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                                    else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
+                                    else {
+                                        let key = c.sha + " " + f.path
+                                        // Before / After show the file itself, so they want it whole too.
+                                        let whole = fullMode || side != .diff
+                                        DiffTableView(file: whole ? wholeFiles[key] ?? f : f, reveal: reveal, changeRuler: fullMode)
+                                            .task(id: whole ? key : "") { if whole { await loadWhole(f, of: c, key: key) } }
+                                    }
+                                }
                             }
                         } else if model.detailLoading {
                             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -528,10 +537,25 @@ struct CommitDetailView: View {
                 }
                 }
             }
-            .preference(key: DiffControlsKey.self, value: DiffControls(layout: !(overview && c.selector == nil) && model.selectedPath != nil))
+            .preference(key: DiffControlsKey.self, value: DiffControls(
+                full: !(overview && c.selector == nil) && model.selectedPath != nil,
+                // A stash has no overview.
+                view: c.selector == nil ? ViewSwitch(modes: [.overview, .files], current: overview ? .overview : .files) { overview = $0 == .overview } : nil))
         } else {
             ContentUnavailableView("Select a Commit", systemImage: "clock.arrow.circlepath")
         }
+    }
+
+    /// The whole file at the commit with its changes inline. A new or deleted file's diff already is the whole file.
+    private func loadWhole(_ f: FileDiff, of c: Commit, key: String) async {
+        guard wholeFiles[key] == nil, !f.isBinary, let old = f.oldPath, let new = f.newPath else { return }
+        let args = c.selector.map { ["stash", "show", "-p", "--no-color", "--no-ext-diff", "-M", "-U1000000", $0, "--"] }
+            ?? ["show", "--format=", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent", "-U1000000", c.sha, "--"]
+        guard let data = try? await Git.run(args + Array(Set([old, new])), in: model.path) else { return }
+        let whole = await Task.detached { PullRequestModel.wholeFile(DiffParser.parse(data).first) }.value
+        guard let whole else { return }
+        wholeFiles = wholeFiles.filter { $0.key.hasPrefix(c.sha + " ") }   // only the commit showing
+        wholeFiles[key] = whole
     }
 
     private func header(_ c: Commit) -> some View {
@@ -545,7 +569,7 @@ struct CommitDetailView: View {
                 HStack(spacing: 6) { actions(c) }.controlSize(.small).fixedSize()
             }
             if !body.isEmpty {
-                ScrollView { Text(body).font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                ScrollView { MarkdownText(text: body).font(.callout) }   // commit bodies are usually Markdown (PR descriptions)
                     .frame(maxHeight: 120)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -564,13 +588,6 @@ struct CommitDetailView: View {
                     }
                 }
                 Spacer()
-                if c.selector == nil {
-                    Picker("", selection: $overview) {
-                        Text("Files").tag(false)
-                        Text("Overview").tag(true)
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize().controlSize(.small)
-                }
                 Text(model.files.count == 1 ? "1 file" : "\(String(model.files.count)) files").foregroundStyle(.secondary)
                 Text(verbatim: "+\(String(adds))").foregroundStyle(.green).monospacedDigit()
                 Text(verbatim: "−\(String(dels))").foregroundStyle(.red).monospacedDigit()
@@ -580,7 +597,7 @@ struct CommitDetailView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
+        .background(.bar, ignoresSafeAreaEdges: [])
     }
 
     private func copy(_ s: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string) }

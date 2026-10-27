@@ -94,13 +94,6 @@ struct LoupeApp: App {
             }
         }
 
-        // Blame and history of one file, beside the main window rather than inside it.
-        WindowGroup("File", id: "file", for: FileTarget.self) { $target in
-            if let t = target { FileInspector(target: t).environment(app) }
-        }
-        .defaultSize(width: 1100, height: 760)
-        .restorationBehavior(.disabled)
-
         Settings {
             SettingsView().environment(app)
         }

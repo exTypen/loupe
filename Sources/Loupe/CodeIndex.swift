@@ -124,16 +124,18 @@ struct CodeMatch: Hashable, Sendable {
 }
 
 enum CodeNavigator {
-    /// Definitions of `name` at `rev`: `git grep -w` narrows the files, tree-sitter decides which hits define it.
-    /// Ranked: the file you're in, then its directory, then the same language, then the rest.
-    static func definitions(of name: String, at rev: String, in dir: String, from path: String) async -> [CodeSymbol] {
+    /// Definitions of `name` at `rev` (nil: the worktree as it is): `git grep -w` narrows the files, tree-sitter decides
+    /// which hits define it. Ranked: the file you're in, then its directory, then the same language, then the rest.
+    static func definitions(of name: String, at rev: String?, in dir: String, from path: String) async -> [CodeSymbol] {
         let files = await grepFiles(name, at: rev, in: dir)
         let candidates = files.filter(CodeIndex.canNavigate).sorted { rank($0, from: path) < rank($1, from: path) }.prefix(80)
         var found: [CodeSymbol] = []
         await withTaskGroup(of: [CodeSymbol].self) { g in
             for f in candidates {
                 g.addTask {
-                    guard let text = try? await Git.string(["show", "\(rev):\(f)"], in: dir) else { return [] }
+                    let text = if let rev { try? await Git.string(["show", "\(rev):\(f)"], in: dir) }
+                               else { try? String(contentsOfFile: (dir as NSString).appendingPathComponent(f), encoding: .utf8) }
+                    guard let text else { return [] }
                     return CodeIndex.symbols(in: text, path: f).filter { $0.isDefinition && $0.name == name }
                 }
             }
@@ -142,15 +144,15 @@ enum CodeNavigator {
         return found.sorted { (rank($0.path, from: path), $0.path, $0.line) < (rank($1.path, from: path), $1.path, $1.line) }
     }
 
-    /// Every whole-word occurrence of `name` at `rev`.
-    static func references(of name: String, at rev: String, in dir: String, limit: Int = 2000) async -> [CodeMatch] {
-        guard let out = try? await Git.string(["grep", "-n", "-I", "-w", "--fixed-strings", "-e", name, rev, "--"], in: dir) else { return [] }
-        let prefix = rev + ":"
+    /// Every whole-word occurrence of `name` at `rev` (nil: the worktree, untracked files included).
+    static func references(of name: String, at rev: String?, in dir: String, limit: Int = 2000) async -> [CodeMatch] {
+        guard let out = try? await Git.string(["grep", "-n", "-I", "-w", "--fixed-strings", "-e", name] + scope(rev), in: dir) else { return [] }
+        let prefix = (rev ?? "") + ":"
         var matches: [CodeMatch] = []
         for line in out.split(separator: "\n") {
             // "<rev>:<path>:<line>:<text>"
             var rest = Substring(line)
-            if rest.hasPrefix(prefix) { rest = rest.dropFirst(prefix.count) }
+            if rev != nil, rest.hasPrefix(prefix) { rest = rest.dropFirst(prefix.count) }
             let f = rest.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
             guard f.count == 3, let n = Int(f[1]) else { continue }
             matches.append(CodeMatch(path: String(f[0]), line: n, text: f[2].trimmingCharacters(in: .whitespaces)))
@@ -159,11 +161,15 @@ enum CodeNavigator {
         return matches
     }
 
-    private static func grepFiles(_ name: String, at rev: String, in dir: String) async -> [String] {
-        guard let out = try? await Git.string(["grep", "-l", "-I", "-w", "--fixed-strings", "-e", name, rev, "--"], in: dir) else { return [] }
+    private static func grepFiles(_ name: String, at rev: String?, in dir: String) async -> [String] {
+        guard let out = try? await Git.string(["grep", "-l", "-I", "-w", "--fixed-strings", "-e", name] + scope(rev), in: dir) else { return [] }
+        guard let rev else { return out.split(separator: "\n").map(String.init) }
         let prefix = rev + ":"
         return out.split(separator: "\n").map { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : String($0) }
     }
+
+    /// What git grep searches: a revision, or the worktree with its untracked (not ignored) files.
+    private static func scope(_ rev: String?) -> [String] { rev.map { [$0, "--"] } ?? ["--untracked", "--"] }
 
     private static func rank(_ candidate: String, from path: String) -> Int {
         if candidate == path { return 0 }

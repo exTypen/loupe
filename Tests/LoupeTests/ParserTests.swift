@@ -230,11 +230,11 @@ import AppKit
     table.addTableColumn(NSTableColumn(identifier: .init("diff")))
     table.dataSource = c; table.delegate = c; table.coordinator = c
     c.table = table
-    c.rebuild(file: f, layout: .unified, comments: [], hunkActions: [])
+    c.rebuild(file: f, comments: [], hunkActions: [])
     table.tableColumns[0].width = 900
     table.reloadData()
     // rows: 0 hunk, 1 " let alpha", 2 "-let beta_two", 3 "+let gamma"
-    let x0 = c.textX(side: 1), cw = Theme.charWidth
+    let x0 = c.textX, cw = Theme.charWidth
     func pt(row: Int, col: Double) -> NSPoint { NSPoint(x: x0 + CGFloat(col) * cw, y: table.rect(ofRow: row).midY) }
 
     c.mouseDown(pt(row: 2, col: 6), clicks: 2)                 // inside "beta_two"
@@ -468,7 +468,8 @@ import AppKit
         let x = 1
         ```
         | a | b |
-        |---|---|
+        |---|:--:|
+        | `x \\| y` | 2 |
         <details>
         <summary>More</summary>
         ---
@@ -480,11 +481,11 @@ import AppKit
         case .list(let items): "list:" + items.map { "\($0.marker) \($0.text)" }.joined(separator: "|")
         case .quote(let t): "q:\(t)"
         case .code(let lang, let t): "code(\(lang)):\(t)"
-        case .table(let t): "table:\(t.split(separator: "\n").count)"
+        case .table(let rows): "table:" + rows.map { $0.joined(separator: ",") }.joined(separator: "/")
         case .rule: "rule"
         }
     }
-    #expect(kinds == ["h2:Summary", "p:Two lines\nof text.", "list:• one wrapped|1. first", "q:quoted", "code(swift):let x = 1", "table:2", "h4:More", "rule"])
+    #expect(kinds == ["h2:Summary", "p:Two lines\nof text.", "list:• one wrapped|1. first", "q:quoted", "code(swift):let x = 1", "table:a,b/`x | y`,2", "h4:More", "rule"])
 }
 
 @MainActor @Test func timelineJoinsCommentsUntilAPush() {

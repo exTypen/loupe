@@ -4,11 +4,10 @@ import ImageIO
 struct PullRequestsView: View {
     @Environment(AppModel.self) private var app
     var model: WorktreeModel
-    var layout: DiffLayout
 
     var body: some View {
         if let remote = model.remote, let client = model.client {
-            PullBrowser(model: model, list: model.pulls, client: client, remote: remote, me: model.account?.username, layout: layout)
+            PullBrowser(model: model, list: model.pulls, client: client, remote: remote, me: model.account?.username)
         } else if !model.remoteDetected || !app.tokensLoaded {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let remote = model.remote {
@@ -32,7 +31,6 @@ struct PullBrowser: View {
     var client: ForgejoClient
     var remote: RemoteRepo
     var me: String?
-    var layout: DiffLayout
     @State private var search = ""
 
     @Environment(AppModel.self) private var app
@@ -51,7 +49,7 @@ struct PullBrowser: View {
         Group {
             // A big PR needs every pixel: the detail replaces the list instead of sitting beside it.
             if let n = list.selected, let pr = list.pulls.first(where: { $0.number == n }) ?? list.details[n]?.pr {
-                PullDetailView(pull: list.detail(for: pr, client: client, repo: remote, local: LocalCheckout(dir: model.path, remote: model.remoteName, gitAuth: model.gitAuth)), worktree: model, layout: layout) { list.selected = nil }
+                PullDetailView(pull: list.detail(for: pr, client: client, repo: remote, local: LocalCheckout(dir: model.path, remote: model.remoteName, gitAuth: model.gitAuth)), worktree: model) { list.selected = nil }
                     .id(n)
             } else {
                 VStack(spacing: 0) {
@@ -225,18 +223,17 @@ struct PullDetailView: View {
     @Environment(AppModel.self) private var app
     @Bindable var pull: PullRequestModel
     var worktree: WorktreeModel
-    var layout: DiffLayout
     var back: () -> Void
     @State private var tab = "files"
 
     var body: some View {
         VStack(spacing: 0) {
-            PullHeader(pull: pull, worktree: worktree, tab: $tab, back: back)
+            PullHeader(pull: pull, worktree: worktree, back: back)
             Divider()
             switch tab {
             case "overview": PROverview(pull: pull) { path, line in tab = "files"; pull.reveal(path, line: line) }
             case "conversation": ConversationView(pull: pull) { path, line in tab = "files"; pull.reveal(path, line: line) }
-            default: PullFilesPane(pull: pull, layout: layout)
+            default: PullFilesPane(pull: pull)
             }
         }
         // Always refresh on open (cached content stays on screen meanwhile), then keep polling while it's open:
@@ -251,7 +248,7 @@ struct PullDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await pull.load() } }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in if let d = n.object as? Int { pull.move(d) } }
         .onReceive(NotificationCenter.default.publisher(for: .markViewed)) { _ in pull.markViewedAndAdvance() }
-        .background(FilesChrome(pull: pull, tab: tab))
+        .background(FilesChrome(pull: pull, tab: $tab))
         .alert("Forgejo", isPresented: Binding(get: { pull.error != nil }, set: { if !$0 { pull.error = nil } })) {
             Button("OK") { pull.error = nil }
         } message: { Text(pull.error ?? "") }
@@ -263,7 +260,6 @@ private struct PullHeader: View {
     @Environment(AppModel.self) private var app
     var pull: PullRequestModel
     var worktree: WorktreeModel
-    @Binding var tab: String
     var back: () -> Void
     @State private var showSubmit = false
 
@@ -330,12 +326,6 @@ private struct PullHeader: View {
                 }
                 .fixedSize()
                 Spacer()
-                Picker("", selection: $tab) {
-                    Text("Overview").tag("overview")
-                    Text("Files \(pull.files.count)").tag("files")
-                    Text("Conversation").tag("conversation")
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
             .controlSize(.small)
         }
@@ -373,7 +363,6 @@ private struct PullHeader: View {
 /// the part that reads it.
 private struct PullFilesPane: View {
     @Bindable var pull: PullRequestModel
-    var layout: DiffLayout
 
     var body: some View {
         ResizableSplit(key: "prTreeWidth", minWidth: 250, maxWidth: 460) {
@@ -398,7 +387,7 @@ private struct PullFilesPane: View {
             }
             .frame(maxHeight: .infinity)
         } trailing: {
-            PullFilePane(pull: pull, layout: layout)
+            PullFilePane(pull: pull)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: pull.fullMode) { if pull.fullMode { await pull.loadTree() } }
@@ -452,16 +441,17 @@ private struct PullTree: View {
 
 private struct PullFilePane: View {
     var pull: PullRequestModel
-    var layout: DiffLayout
+    @AppStorage("diffSide") private var side = DiffSide.diff
 
     var body: some View {
             VStack(spacing: 0) {
                 if pull.fullMode && !pull.tabs.isEmpty {
-                    FileTabBar(pull: pull)
+                    FileTabBar(browser: pull)
                     Divider()
                 }
                 Group {
-                    if pull.fullMode, let path = pull.selectedPath { fullFile(path) }
+                    // Before / After show the file itself: whole, as in Full mode.
+                    if pull.fullMode || side != .diff, let path = pull.selectedPath { fullFile(path) }
                     else if let f = pull.selectedFile { compactFile(f) }
                     else if pull.loading { ProgressView("Loading diff…").frame(maxWidth: .infinity, maxHeight: .infinity) }
                     else { ContentUnavailableView("No File Selected", systemImage: "doc.text.magnifyingglass") }
@@ -469,7 +459,7 @@ private struct PullFilePane: View {
                 .frame(maxHeight: .infinity)
                 if let r = pull.navResults {
                     Divider()
-                    NavResultsPanel(results: r, pull: pull).frame(height: 220)
+                    NavResultsPanel(results: r, browser: pull).frame(height: 220)
                 }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
@@ -484,7 +474,7 @@ private struct PullFilePane: View {
             if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
             else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
             else {
-                DiffTableView(file: f, layout: layout, comments: pull.inlineComments(for: f.path),
+                DiffTableView(file: f, comments: pull.inlineComments(for: f.path),
                               onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },
                               onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
                               reveal: pull.reveal)
@@ -497,7 +487,7 @@ private struct PullFilePane: View {
         VStack(spacing: 0) {
             DiffHeader(path: path, oldPath: changed.flatMap { $0.oldPath != $0.newPath ? $0.oldPath : nil },
                        additions: changed?.additions ?? 0, deletions: changed?.deletions ?? 0, showCounts: changed != nil) {
-                FileNavControls(pull: pull, path: path)
+                FileNavControls(browser: pull, path: path)
                 if let f = changed {
                     Toggle("Viewed", isOn: Binding(get: { pull.isViewed(f) }, set: { _ in pull.toggleViewed(f) })).toggleStyle(.checkbox)
                 } else {
@@ -509,7 +499,7 @@ private struct PullFilePane: View {
                 if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
                 else if f.lines.isEmpty { ContentUnavailableView("Empty File", systemImage: "doc") }
                 else {
-                    DiffTableView(file: f, layout: changed == nil ? .unified : layout, comments: changed == nil ? [] : pull.inlineComments(for: path),
+                    DiffTableView(file: f, comments: changed == nil ? [] : pull.inlineComments(for: path),
                                   onAddComment: changed == nil ? nil : { n, o, body in pull.drafts.append(DraftComment(path: path, newLine: n, oldLine: o, body: body)) },
                                   onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
                                   canComment: pull.commentable(path),
@@ -528,11 +518,13 @@ private struct PullFilePane: View {
 /// selection it reads doesn't re-render the whole detail view.
 private struct FilesChrome: View {
     var pull: PullRequestModel
-    var tab: String
+    @Binding var tab: String
     var body: some View {
+        let view = ViewSwitch(modes: [.overview, .files, .conversation], current: ViewSwitch.Mode(rawValue: tab) ?? .files) { tab = $0.rawValue }
         Color.clear
             .preference(key: DiffControlsKey.self, value: tab == "files"
-                        ? DiffControls(layout: pull.fullMode ? pull.selectedPath != nil : pull.selectedFile != nil, fullMode: pull) : DiffControls())
+                        ? DiffControls(full: true, view: view)
+                        : DiffControls(view: view))
             // ⌘W closes the open tab rather than the window; with no tab open it does nothing, so it never quits the app.
             .background(CommandWInterceptor(action: tab == "files" && pull.fullMode ? { if let p = pull.selectedPath { pull.closeTab(p) } } : nil))
     }
@@ -564,147 +556,6 @@ struct PROverview: View {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             } catch { self.error = error.localizedDescription }
         }
-    }
-}
-
-/// Full mode's open files. Changed files carry their status colour; the selected tab is the one shown.
-struct FileTabBar: View {
-    var pull: PullRequestModel
-    @State private var hovered: String?
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(pull.tabs, id: \.self) { path in tab(path).id(path) }
-                }
-            }
-            .onChange(of: pull.selectedPath) { _, p in if let p { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(p) } } }
-        }
-        .frame(height: 30)
-        .background(.bar)
-    }
-
-    private func tab(_ path: String) -> some View {
-        let active = pull.selectedPath == path
-        let name = (path as NSString).lastPathComponent
-        // Same file name twice (mod.rs, index.ts): add the parent directory.
-        let twin = pull.tabs.contains { $0 != path && ($0 as NSString).lastPathComponent == name }
-        let parent = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
-        let changed = pull.file(path)
-        return HStack(spacing: 5) {
-            FileIcon(path: path)
-            Text(name).lineLimit(1).foregroundStyle(active ? .primary : .secondary)
-            if twin, !parent.isEmpty { Text(parent).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
-            if let c = changed { Circle().fill(c.badge.color).frame(width: 6, height: 6).help("Changed in this pull request") }
-            Button { pull.closeTab(path) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
-                .buttonStyle(.borderless)
-                .opacity(active || hovered == path ? 1 : 0)
-                .help("Close Tab")
-        }
-        .font(.callout)
-        .padding(.horizontal, 10)
-        .frame(height: 30)
-        .background(active ? Color(nsColor: .textBackgroundColor) : Color.clear)
-        .overlay(alignment: .trailing) { Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1) }
-        .overlay(alignment: .top) { if active { Rectangle().fill(Color.accentColor).frame(height: 2) } }
-        .contentShape(Rectangle())
-        .onTapGesture { pull.selectedPath = path }
-        .onHover { hovered = $0 ? path : (hovered == path ? nil : hovered) }
-        .help(path)
-        .contextMenu {
-            Button("Close Tab") { pull.closeTab(path) }
-            Button("Close Other Tabs") { pull.closeOtherTabs(path) }.disabled(pull.tabs.count < 2)
-            Button("Close All Tabs") { pull.tabs = []; pull.selectedPath = nil }
-            Divider()
-            Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string) }
-        }
-    }
-}
-
-/// Back / forward through jumps, the file's outline, and what's being looked up.
-struct FileNavControls: View {
-    var pull: PullRequestModel
-    var path: String
-    @State private var outline: [CodeSymbol] = []
-
-    var body: some View {
-        HStack(spacing: 2) {
-            if let w = pull.navBusy {
-                ProgressView().controlSize(.mini)
-                Text(w).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Button { pull.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(pull.back.isEmpty).help("Back").shortcut(.navigateBack)
-            Button { pull.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(pull.forward.isEmpty).help("Forward").shortcut(.navigateForward)
-            if !outline.isEmpty {
-                Menu {
-                    ForEach(outline, id: \.self) { s in
-                        Button { pull.open(path, line: s.line) } label: { Text("\(s.name)  \(s.kind.rawValue) · \(s.line)") }
-                    }
-                } label: { Image(systemName: "list.bullet.indent") }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help("Outline: jump to a definition in this file")
-            }
-        }
-        .buttonStyle(.borderless)
-        .task(id: [path, pull.fullFiles[path] == nil ? "0" : "1"]) {
-            guard let text = pull.headText(path) else { outline = []; return }
-            let p = path
-            outline = await Task.detached(priority: .utility) { CodeIndex.outline(text, path: p) }.value
-        }
-    }
-}
-
-/// Under the file: the definitions to choose from, or every reference.
-struct NavResultsPanel: View {
-    var results: PullRequestModel.NavResults
-    var pull: PullRequestModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                switch results {
-                case .definitions(let w, let d): Text("\(d.count) definitions of ").foregroundStyle(.secondary) + Text(w).font(.body.monospaced())
-                case .references(let w, let r, let noDef):
-                    let n = r.count >= 2000 ? "2000+ references" : r.count == 1 ? "1 reference" : "\(r.count) references"
-                    Text(noDef ? "No definition found in this repository · " : "").foregroundStyle(.secondary)
-                        + Text("\(n) to ").foregroundStyle(.secondary) + Text(w).font(.body.monospaced())
-                }
-                Spacer()
-                Button { pull.navResults = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).keyboardShortcut(.cancelAction)
-            }
-            .font(.callout)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(.bar)
-            Divider()
-            List {
-                switch results {
-                case .definitions(_, let defs):
-                    ForEach(defs, id: \.self) { d in
-                        row(path: d.path, line: d.line, text: "\(d.kind.rawValue) \(d.name)")
-                    }
-                case .references(_, let refs, _):
-                    ForEach(refs, id: \.self) { r in row(path: r.path, line: r.line, text: r.text) }
-                }
-            }
-            .listStyle(.plain)
-        }
-    }
-
-    private func row(path: String, line: Int, text: String) -> some View {
-        Button { pull.open(path, line: line) } label: {
-            HStack(spacing: 8) {
-                FileIcon(path: path)
-                Text("\(path):\(line)").font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
-                    .frame(width: 260, alignment: .leading)
-                Text(text).font(.callout.monospaced()).lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 

@@ -102,7 +102,7 @@ struct FileTreeList<FileContent: View, DirAccessory: View>: View {
                         file(f)
                     }
                 }
-                .padding(.leading, CGFloat(r.depth) * 10)
+                .treeRow(depth: r.depth)
                 .tag(r.id)
                 // A directory isn't selectable: a click toggles it. Selected, a second click wouldn't reach the list.
                 .selectionDisabled(r.dirPath != nil)
@@ -131,6 +131,24 @@ struct FileTreeList<FileContent: View, DirAccessory: View>: View {
 
     private func toggle(_ dir: String) {
         if collapsed.contains(dir) { collapsed.remove(dir) } else { collapsed.insert(dir) }
+    }
+}
+
+extension View {
+    /// A tree row: indented by its depth, with indent guides instead of separators (one line per level, under its
+    /// folder's chevron).
+    func treeRow(depth: Int) -> some View {
+        padding(.leading, CGFloat(depth) * 10)
+            .padding(.vertical, 3)
+            .background(alignment: .leading) {
+                HStack(spacing: 0) {
+                    ForEach(0..<depth, id: \.self) { _ in
+                        Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1).padding(.leading, 6).frame(width: 10, alignment: .leading)
+                    }
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+            .listRowSeparator(.hidden)
     }
 }
 

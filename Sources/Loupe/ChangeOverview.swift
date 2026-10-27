@@ -205,7 +205,7 @@ enum HighlightCache {
 
     static func highlight(_ lines: [String], path: String) async -> [AttributedString] {
         if let c = cached(lines, path: path) { return c }
-        let out = await Task.detached(priority: .userInitiated) { BlameView.highlight(lines, path: path) }.value
+        let out = await Task.detached(priority: .userInitiated) { SnippetHighlight.lines(lines, path: path) }.value
         cache.setObject(Lines(out), forKey: key(lines, path), cost: lines.reduce(0) { $0 + $1.utf16.count } * 8)
         return out
     }

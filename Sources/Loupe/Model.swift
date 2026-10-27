@@ -213,7 +213,8 @@ final class WorktreeModel {
             staged = files.filter(\.staged)
             unstaged = files.filter { !$0.staged && $0.kind != .conflicted }
             conflicted = files.filter { $0.kind == .conflicted }
-            listed = conflicted + staged + unstaged
+            let order = { (a: FileChange, b: FileChange) in FileTree.treeOrder(a.path, b.path) }
+            listed = conflicted.sorted(by: order) + staged.sorted(by: order) + unstaged.sorted(by: order)
             changeCount = Set(files.map(\.path)).count
         }
     }
@@ -229,6 +230,7 @@ final class WorktreeModel {
     var selectedFileID: String?            // the file whose diff is shown
     var selectedFileIDs: Set<String> = []   // the file list's selection (⌘/⇧-click, ⌘A); bulk actions use it
     var diff: FileDiff?
+    @ObservationIgnored lazy var browser = WorktreeBrowser(model: self)   // Full mode: the worktree as an IDE
     var commitMessage = ""
     var amend = false
     var busy: String?                  // non-nil → an operation is running (label)
@@ -324,8 +326,15 @@ final class WorktreeModel {
     func loadDiff() {
         diffTask?.cancel()
         guard let f = selectedFile else { diff = nil; return }
+        // Full mode ("prFullMode", shared with pull requests): the whole file, its changes inline. A new or deleted
+        // file's diff is already the whole file.
+        // Before / After show the file itself, so they load it whole too.
+        let d = UserDefaults.standard
+        let full = (d.bool(forKey: "prFullMode") || (d.string(forKey: "diffSide") ?? "diff") != DiffSide.diff.rawValue)
+            && f.kind != .untracked && f.kind != .added && f.kind != .deleted
         diffTask = Task {
-            let d = try? await Git.diff(for: f, in: path)
+            var d = try? await Git.diff(for: f, in: path, context: full ? 1_000_000 : 3)
+            if full { d = PullRequestModel.wholeFile(d) }
             guard !Task.isCancelled else { return }
             // Avoid resetting the table (and its scroll/selection) when nothing changed on disk.
             if let d, let old = diff, old.path == d.path, old.lines.map(\.text) == d.lines.map(\.text), old.headerLines == d.headerLines { return }

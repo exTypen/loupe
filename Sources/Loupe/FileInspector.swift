@@ -1,12 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// A file in a worktree, optionally at a revision: what a File window shows.
-struct FileTarget: Codable, Hashable {
+/// A file in a worktree, optionally at a revision: what the Blame and History panel shows.
+struct FileTarget: Hashable {
     var worktree: String
     var path: String
     var rev: String? = nil
-    var mode = "blame"
 }
 
 // MARK: - Blame
@@ -48,182 +47,131 @@ extension Git {
     }
 }
 
-// MARK: - Window
+// MARK: - Blame and History, in the diff
 
-struct FileInspector: View {
-    @State var target: FileTarget
-    @AppStorage("layout") private var layout = DiffLayout.unified
-
-    var body: some View {
-        Group {
-            if target.mode == "history" { FileHistoryView(target: target, layout: layout) }
-            else { BlameView(target: $target) }
-        }
-        .navigationTitle((target.path as NSString).lastPathComponent)
-        .navigationSubtitle(subtitle)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("Mode", selection: $target.mode) {
-                    Text("Blame").tag("blame")
-                    Text("History").tag("history")
-                }
-                .pickerStyle(.segmented)
-            }
-        }
-        .frame(minWidth: 700, minHeight: 400)
-    }
-
-    private var subtitle: String {
-        let dir = (target.path as NSString).deletingLastPathComponent
-        let base = ((target.worktree as NSString).lastPathComponent as NSString).appendingPathComponent(dir)
-        return target.mode == "blame" && target.rev != nil ? "\(base) · at \(String(target.rev!.prefix(8)))" : base
-    }
+/// Blame for a diff's new side: the commit of each line (index 0 is line 1). The diff draws it beside the line numbers.
+struct DiffBlame: Equatable {
+    var id = UUID()
+    var shas: [String]
+    var commits: [String: BlameCommit]
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
 }
 
-/// The file with, beside each run of lines, the commit that last changed them.
-struct BlameView: View {
-    @Binding var target: FileTarget
-    @State private var lines: [BlameLine] = []
-    @State private var oddRun: [Bool] = []   // per line: in an odd-numbered commit run (for the block shade)
-    @State private var commits: [String: BlameCommit] = [:]
-    @State private var highlighted: [AttributedString] = []
-    @State private var error: String?
-    @State private var loading = true
-    @State private var picked: String?   // sha whose popover is open
+extension EnvironmentValues {
+    @Entry var diffBlame: DiffBlame? = nil
+}
+
+/// Blame or History for the file showing. At most one is on.
+enum FilePanel: String { case none = "", blame, history }
+
+/// The diff, with what the Blame and History buttons turn on. Blame annotates the diff itself; History lists the file's
+/// commits on the left, and the one picked shows its change to the file in the diff's place.
+struct WithFilePanel<Content: View>: View {
+    var file: FileTarget?
+    var version: AnyHashable? = nil   // changes when the diff does, so blame follows edits
+    @ViewBuilder var content: Content
+    @AppStorage("filePanel") private var panel = FilePanel.none
+    @AppStorage("filePanelWidth") private var width = 340.0
+    @AppStorage("prFullMode") private var fullMode = false
+    @AppStorage("diffSide") private var side = DiffSide.diff
+    @State private var dragStart: Double?
+    @State private var blame: DiffBlame?
+    @State private var picked: FileCommit?
+    @State private var pickedDiff: FileDiff?
 
     var body: some View {
-        Group {
-            if let error {
-                ContentUnavailableView("Can't Blame This File", systemImage: "exclamationmark.triangle", description: Text(error))
-            } else if loading && lines.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                // A two-axis ScrollView centres content smaller than itself; pin it to the top left instead.
-                GeometryReader { geo in
-                    ScrollView([.vertical, .horizontal]) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(lines.indices, id: \.self) { i in row(i) }
-                        }
-                        .padding(.vertical, 4)
-                        .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .topLeading)
+        HStack(spacing: 0) {
+            // On the left, like blame: the commits, then the code they changed.
+            if let file, panel == .history {
+                FileHistoryList(target: file, picked: $picked, close: { panel = .none }).frame(width: width).id(file)
+                Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+                    .overlay {
+                        Color.clear.frame(width: 9).contentShape(Rectangle())
+                            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { v in
+                                    let start = dragStart ?? width
+                                    dragStart = start
+                                    width = min(max(start + v.translation.width, 260), 700)
+                                }
+                                .onEnded { _ in dragStart = nil })
+                            .onTapGesture(count: 2) { width = 340 }   // double-click: back to default
                     }
-                }
-                .background(Color(nsColor: Theme.background))
             }
-        }
-        .task(id: [target.path, target.rev ?? ""]) { await load() }
-    }
-
-    private func row(_ i: Int) -> some View {
-        let l = lines[i]
-        let first = i == 0 || lines[i - 1].sha != l.sha
-        let c = commits[l.sha]
-        let uncommitted = l.sha.allSatisfy { $0 == "0" }
-        let button = Button { picked = l.sha } label: {
-                HStack(spacing: 8) {
-                    if first {
-                        Text(uncommitted ? "Not committed" : String(l.sha.prefix(7))).font(.caption.monospaced()).foregroundStyle(.secondary)
-                        Text(uncommitted ? "" : c?.author ?? "").font(.caption).lineLimit(1)
-                        Spacer(minLength: 4)
-                        if let d = c?.date, !uncommitted { Text(d, format: .relative(presentation: .numeric)).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
-                    } else { Spacer() }
-                }
-                .padding(.horizontal, 8)
-                .frame(width: 250, height: 18)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(uncommitted)
-        return HStack(spacing: 0) {
-            // Only a run's first row can show the card.
             Group {
-                if first { button.popover(isPresented: Binding(get: { picked == l.sha }, set: { if !$0 { picked = nil } })) { commitCard(l.sha) } }
-                else { button }
+                if let p = picked, panel == .history { commitDiff(p) }
+                else { content.environment(\.diffBlame, panel == .blame ? blame : nil) }
             }
-            .background(blockShade(i))
-            Text(String(i + 1)).font(.caption.monospacedDigit()).foregroundStyle(Color(nsColor: Theme.lineNumber))
-                .frame(width: 46, alignment: .trailing).padding(.trailing, 10)
-            Text(i < highlighted.count ? highlighted[i] : AttributedString(l.text))
-                .font(.editor(EditorSettings.shared.fontSize))
-                .foregroundStyle(Color(nsColor: Theme.foreground))
-                .fixedSize()
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .overlay(alignment: .top) { if first && i > 0 { Divider() } }
-    }
-
-    /// Alternate a faint shade per commit run, so runs read as blocks.
-    private func blockShade(_ i: Int) -> Color {
-        i < oddRun.count && oddRun[i] ? Color.primary.opacity(0.07) : Color.primary.opacity(0.03)
-    }
-
-    nonisolated static func oddRuns(_ lines: [BlameLine]) -> [Bool] {
-        var odd = false
-        return lines.indices.map { i in
-            if i > 0, lines[i].sha != lines[i - 1].sha { odd.toggle() }
-            return odd
+        .onChange(of: file) { picked = nil }
+        .task(id: [AnyHashable(file), AnyHashable(panel == .blame), version]) {
+            guard panel == .blame, let file else { blame = nil; return }
+            guard let r = try? await Git.blame(file.path, rev: file.rev, in: file.worktree) else { blame = nil; return }
+            blame = DiffBlame(shas: r.lines.map(\.sha), commits: r.commits)
         }
+        .task(id: [AnyHashable(picked?.commit.sha), AnyHashable(fullMode || side != .diff)]) { await loadPicked() }
     }
 
-    private func commitCard(_ sha: String) -> some View {
-        let c = commits[sha]
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(c?.summary ?? "").font(.headline).textSelection(.enabled).frame(maxWidth: 360, alignment: .leading)
+    /// The picked commit's change to the file, where the diff was, under a bar that says so and goes back.
+    @ViewBuilder private func commitDiff(_ p: FileCommit) -> some View {
+        VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(String(sha.prefix(10))).font(.callout.monospaced()).textSelection(.enabled)
-                Text(c?.author ?? "")
-                if let d = c?.date { Text(d.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary) }
+                Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+                Text(p.commit.short).font(.callout.monospaced()).foregroundStyle(.secondary)
+                Text(p.commit.subject).lineLimit(1).truncationMode(.tail)
+                Text("\(p.commit.author) · \(p.commit.date.formatted(.relative(presentation: .named)))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Back to the Change") { picked = nil }.controlSize(.small)
             }
-            .font(.callout)
-            HStack {
-                Button("Copy SHA") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(sha, forType: .string) }
-                Button("Blame Before This Commit") { picked = nil; target.rev = sha + "^" }
-                    .help("See who wrote these lines before this commit changed them")
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.08))
+            Divider()
+            if let d = pickedDiff, d.path == p.path || d.oldPath == p.path || d.newPath == p.path {
+                if d.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                else { DiffTableView(file: d, changeRuler: fullMode) }
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .controlSize(.small)
         }
-        .padding(14)
     }
 
-    private func load() async {
-        loading = true; defer { loading = false }
-        do {
-            let r = try await Git.blame(target.path, rev: target.rev, in: target.worktree)
-            lines = r.lines; oddRun = Self.oddRuns(r.lines); commits = r.commits; error = nil
-            let texts = r.lines.map(\.text), path = target.path
-            highlighted = await Task.detached(priority: .userInitiated) { Self.highlight(texts, path: path) }.value
-        } catch { self.error = error.localizedDescription; lines = []; oddRun = [] }
-    }
-
-    nonisolated static func highlight(_ texts: [String], path: String) -> [AttributedString] {
-        guard let lang = Language.forPath(path) else { return texts.map { AttributedString($0) } }
-        var state = Syntax.State()
-        return texts.map { t in
-            var a = AttributedString(t)
-            let chars = Array(t.utf16)
-            for span in Syntax.tokenize(t, lang, &state) {
-                let lo = Int(span.start), hi = min(chars.count, lo + Int(span.length))
-                guard lo < hi, let r = Range(NSRange(location: lo, length: hi - lo), in: t), let ar = Range(r, in: a) else { continue }
-                a[ar].foregroundColor = Color(nsColor: Syntax.color(span.kind))
-            }
-            return a
-        }
+    private func loadPicked() async {
+        guard let p = picked, let file else { pickedDiff = nil; return }
+        let data = try? await Git.run(["show", "--format=", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent"]
+                                      + (fullMode || side != .diff ? ["-U1000000"] : []) + [p.commit.sha, "--", p.path], in: file.worktree)
+        guard picked?.commit.sha == p.commit.sha else { return }
+        let full = fullMode || side != .diff
+        pickedDiff = await Task.detached {
+            let d = data.flatMap { DiffParser.parse($0).first }
+            return full ? PullRequestModel.wholeFile(d) : d
+        }.value
     }
 }
 
-/// Every commit that touched the file, and the file's diff in the one picked.
-struct FileHistoryView: View {
+/// A commit that touched a file, with the file's path in it (renames are followed).
+struct FileCommit: Equatable { var commit: Commit; var path: String }
+
+/// The History panel: the file's commits, newest first. Picking one shows its change in the diff.
+private struct FileHistoryList: View {
     var target: FileTarget
-    var layout: DiffLayout
-    @State private var entries: [(commit: Commit, path: String)] = []
-    @State private var selected: String?
-    @State private var diff: FileDiff?
+    @Binding var picked: FileCommit?
+    var close: () -> Void
+    @State private var entries: [FileCommit] = []
     @State private var loading = true
 
     var body: some View {
-        ResizableSplit(key: "fileHistoryListWidth", minWidth: 260, maxWidth: 440, defaultFraction: 340/440) {
-            List(selection: Binding(get: { selected }, set: { selected = $0; loadDiff() })) {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text("History").font(.callout.weight(.semibold))
+                Text((target.path as NSString).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Close")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(.bar, ignoresSafeAreaEdges: [])
+            Divider()
+            List(selection: Binding(get: { picked?.commit.sha }, set: { sha in picked = entries.first { $0.commit.sha == sha } })) {
                 ForEach(entries, id: \.commit.sha) { e in
                     VStack(alignment: .leading, spacing: 2) {
                         CommitRow(commit: e.commit, isHead: false)
@@ -235,37 +183,33 @@ struct FileHistoryView: View {
                 }
             }
             .listStyle(.inset)
-            .frame(maxHeight: .infinity)
-            .overlay { if entries.isEmpty && !loading { ContentUnavailableView("No History", systemImage: "clock") } }
-        } trailing: {
-
-            Group {
-                if let diff {
-                    VStack(spacing: 0) {
-                        DiffHeader(path: diff.path, oldPath: diff.oldPath != diff.newPath ? diff.oldPath : nil, additions: diff.additions, deletions: diff.deletions) { EmptyView() }
-                        Divider()
-                        if diff.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
-                        else { DiffTableView(file: diff, layout: layout) }
-                    }
-                } else if selected != nil { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-                else { ContentUnavailableView("Select a Commit", systemImage: "clock.arrow.circlepath") }
+            .overlay {
+                if loading { ProgressView() }
+                else if entries.isEmpty { ContentUnavailableView("No History", systemImage: "clock") }
             }
-            .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
-            entries = (try? await Git.fileLog(target.path, in: target.worktree)) ?? []
+            entries = ((try? await Git.fileLog(target.path, in: target.worktree)) ?? []).map { FileCommit(commit: $0.commit, path: $0.path) }
             loading = false
-            selected = entries.first?.commit.sha
-            loadDiff()
         }
     }
+}
 
-    private func loadDiff() {
-        guard let sha = selected, let e = entries.first(where: { $0.commit.sha == sha }) else { diff = nil; return }
-        diff = nil
-        Task {
-            let data = try? await Git.run(["show", "--format=", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent", sha, "--", e.path], in: target.worktree)
-            if selected == sha { diff = data.flatMap { DiffParser.parse($0).first } }
+// MARK: - Highlighting snippets
+
+enum SnippetHighlight {
+    nonisolated static func lines(_ texts: [String], path: String) -> [AttributedString] {
+        guard let lang = Language.forPath(path) else { return texts.map { AttributedString($0) } }
+        var state = Syntax.State()
+        return texts.map { t in
+            var a = AttributedString(t)
+            let chars = Array(t.utf16)
+            for span in Syntax.tokenize(t, lang, &state) {
+                let lo = Int(span.start), hi = min(chars.count, lo + Int(span.length))
+                guard lo < hi, let r = Range(NSRange(location: lo, length: hi - lo), in: t), let ar = Range(r, in: a) else { continue }
+                a[ar].foregroundColor = Color(nsColor: Syntax.color(span.kind))
+            }
+            return a
         }
     }
 }

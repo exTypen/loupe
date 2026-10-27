@@ -70,7 +70,7 @@ struct CodeTheme: Identifiable, Hashable {
 
 /// Every color the code views draw, resolved once per theme change: dynamic colors only index into it.
 final class CodePalette {
-    let background, foreground, metaForeground, lineNumber, addMark, delMark, addBG, delBG, addHL, delHL, gutterBG, hunkBG, emptyBG: NSColor
+    let background, foreground, metaForeground, lineNumber, addMark, delMark, addBG, delBG, addHL, delHL, gutterBG, hunkBG: NSColor
     let tokens: [NSColor]
 
     init(_ t: CodeTheme) {
@@ -79,7 +79,7 @@ final class CodePalette {
         lineNumber = rgb(t.lineNumber, 1); addMark = rgb(t.added, 1); delMark = rgb(t.removed, 1)
         addBG = rgb(t.added, t.dark ? 0.17 : 0.12); delBG = rgb(t.removed, t.dark ? 0.17 : 0.11)
         addHL = rgb(t.added, t.dark ? 0.4 : 0.3); delHL = rgb(t.removed, t.dark ? 0.4 : 0.28)
-        gutterBG = rgb(t.foreground, 0.03); emptyBG = rgb(t.foreground, 0.03)
+        gutterBG = rgb(t.foreground, 0.03)
         hunkBG = rgb(t.tokens[Int(TokenKind.function.rawValue)], t.dark ? 0.14 : 0.09)
         tokens = t.tokens.map { rgb($0, 1) }
     }

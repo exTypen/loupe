@@ -509,17 +509,17 @@ private struct HunkTail: View {
 // MARK: - Markdown
 
 /// Block-level Markdown, enough for review comments and bot reports: headings, paragraphs, lists, quotes, fenced
-/// code, tables (as monospaced text) and rules. Inline styling comes from AttributedString; HTML tags are dropped,
+/// code, tables and rules. Inline styling comes from AttributedString; HTML tags are dropped,
 /// keeping their text (a `<summary>` reads as a bold line).
 struct MarkdownText: View {
     var text: String
 
-    enum Block { case paragraph(String), heading(Int, String), list([(indent: Int, marker: String, text: String)]), quote(String), code(String, String), table(String), rule }
+    enum Block { case paragraph(String), heading(Int, String), list([(indent: Int, marker: String, text: String)]), quote(String), code(String, String), table([[String]]), rule }
 
     /// A block with its inline Markdown already turned into AttributedStrings.
     enum Rendered {
         case paragraph(AttributedString), heading(Int, AttributedString), list([(indent: Int, marker: String, text: AttributedString)])
-        case quote(AttributedString), code(String, String), table(String), rule
+        case quote(AttributedString), code(String, String), table([[AttributedString]]), rule   // a table's first row is its header
     }
     private final class Blocks { let value: [Rendered]; init(_ v: [Rendered]) { value = v } }
     /// Parsing and AttributedString(markdown:) are slow, and a lazy stack recreates a card each time it scrolls back
@@ -537,7 +537,7 @@ struct MarkdownText: View {
             case .list(let items): .list(items.map { ($0.indent, $0.marker, inline($0.text)) })
             case .quote(let s): .quote(inline(s))
             case .code(let lang, let s): .code(lang, s)
-            case .table(let s): .table(s)
+            case .table(let rows): .table(rows.map { $0.map(inline) })
             case .rule: .rule
             }
         }
@@ -574,8 +574,26 @@ struct MarkdownText: View {
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.2)).frame(width: 3) }
         case .code(let lang, let s): CodeBlock(text: s, path: "x." + (lang.isEmpty ? "txt" : lang), maxLines: 30)
-        case .table(let s):
-            ScrollView(.horizontal, showsIndicators: false) { Text(s).font(.editor(11)).fixedSize() }
+        case .table(let rows):
+            let width = rows.map(\.count).max() ?? 0
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
+                    GridRow {
+                        ForEach(0..<width, id: \.self) { k in
+                            Text(k < row.count ? row[k] : "")
+                                .fontWeight(i == 0 ? .semibold : nil)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                                .background(i == 0 ? Color.primary.opacity(0.07) : i % 2 == 0 ? Color.primary.opacity(0.03) : .clear)
+                                .overlay(alignment: .leading) { if k > 0 { Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1) } }
+                        }
+                    }
+                    if i == 0 { Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1).gridCellUnsizedAxes(.horizontal) }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.12)))
         case .rule: Divider()
         }
     }
@@ -584,13 +602,33 @@ struct MarkdownText: View {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
 
+    /// A table's lines as cells, without the |---|:--:| line under the header.
+    static func rows(_ lines: [String]) -> [[String]] {
+        lines.map { line in
+            var l = Substring(line.trimmingCharacters(in: .whitespaces))
+            if l.hasPrefix("|") { l = l.dropFirst() }
+            if l.hasSuffix("|") && !l.hasSuffix("\\|") { l = l.dropLast() }
+            // Split on | but not on \| (a pipe inside a cell).
+            var cells: [String] = [], cur = "", escaped = false
+            for ch in l {
+                if escaped { cur.append(ch == "|" ? "|" : "\\" + String(ch)); escaped = false }
+                else if ch == "\\" { escaped = true }
+                else if ch == "|" { cells.append(cur.trimmingCharacters(in: .whitespaces)); cur = "" }
+                else { cur.append(ch) }
+            }
+            cells.append(cur.trimmingCharacters(in: .whitespaces))
+            return cells
+        }
+        .filter { row in !row.allSatisfy { $0.range(of: #"^:?-+:?$"#, options: .regularExpression) != nil } }
+    }
+
     static func parse(_ text: String) -> [Block] {
         var out: [Block] = [], para: [String] = [], list: [(indent: Int, marker: String, text: String)] = [], quote: [String] = [], table: [String] = []
         func flush() {
             if !para.isEmpty { out.append(.paragraph(para.joined(separator: "\n"))); para = [] }
             if !list.isEmpty { out.append(.list(list)); list = [] }
             if !quote.isEmpty { out.append(.quote(quote.joined(separator: "\n"))); quote = [] }
-            if !table.isEmpty { out.append(.table(table.joined(separator: "\n"))); table = [] }
+            if !table.isEmpty { out.append(.table(Self.rows(table))); table = [] }
         }
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var i = 0

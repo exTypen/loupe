@@ -187,7 +187,7 @@ struct ConflictPane: View {
             .controlSize(.small)
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
-        .background(.bar)
+        .background(.bar, ignoresSafeAreaEdges: [])
     }
 
     private func load() {
@@ -209,7 +209,7 @@ struct ConflictPane: View {
         }
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                chunks.map { $0.map { BlameView.highlight($0, path: path) } }
+                chunks.map { $0.map { SnippetHighlight.lines($0, path: path) } }
             }.value
             guard text?.segments.count == result.count else { return }
             colors = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.offset, $0.element) })

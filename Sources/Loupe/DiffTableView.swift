@@ -10,8 +10,6 @@ struct InlineComment: Hashable {
     var draftID: UUID?           // non-nil → pending, deletable
 }
 
-enum DiffLayout: String, CaseIterable { case unified = "Unified", split = "Split" }
-
 enum HunkAction { case stage, unstage, discard }
 
 /// Virtualized diff renderer. NSTableView only materializes visible rows and each row draws itself
@@ -21,9 +19,13 @@ enum CodeAction { case definition, references }
 /// A request to bring a new-side line into view; a new `id` repeats it.
 struct DiffReveal: Equatable { var line: Int; var id = UUID() }
 
+/// What a diff shows: both sides with the changes marked, or one side alone (the file before, or after).
+enum DiffSide: String { case diff, old, new }
+
 struct DiffTableView: NSViewRepresentable {
     var file: FileDiff
-    var layout: DiffLayout = .unified
+    @AppStorage("diffSide") private var side = DiffSide.diff
+    @Environment(\.diffBlame) private var blame
     var comments: [InlineComment] = []
     var hunkActions: [HunkAction] = []                       // empty → no hunk buttons (review mode)
     var onHunkAction: ((HunkAction, _ lines: Set<Int>) -> Void)?   // lines: indices into file.lines (a hunk or a selection)
@@ -72,6 +74,7 @@ struct DiffTableView: NSViewRepresentable {
                                                name: NSView.frameDidChangeNotification, object: scroll.contentView)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.styleChanged(_:)),
                                                name: .editorStyleChanged, object: nil)
+        context.coordinator.installFind()
         return scroll
     }
 
@@ -79,20 +82,42 @@ struct DiffTableView: NSViewRepresentable {
         let c = context.coordinator
         c.parent = self
         let fileChanged = c.fileUID != file.uid
-        if fileChanged || c.layout != layout || c.comments != comments || c.hunkActions != hunkActions {
+        // The change ruler comes and goes with Full mode, on a view that stays.
+        let swapRuler = changeRuler != (scroll.verticalScroller is ChangeScroller)
+        if swapRuler { scroll.verticalScroller = changeRuler ? ChangeScroller() : NSScroller() }
+        // A file with only one side (new, deleted, or only additions or removals) always shows as a diff: the header
+        // hides Before / After for it.
+        let side = file.additions > 0 && file.deletions > 0 ? self.side : .diff
+        let rebuilt = fileChanged || c.side != side || c.blame != blame || c.comments != comments || c.hunkActions != hunkActions
+        if rebuilt {
             let samePath = c.path == file.path
-            let keepScroll = samePath ? scroll.contentView.bounds.origin : .zero
-            c.rebuild(file: file, layout: layout, comments: comments, hunkActions: hunkActions)
+            var keepScroll = samePath ? scroll.contentView.bounds.origin : .zero
+            // Diff / Before / After on the same file: keep the code at the top of the view in place. The same scroll
+            // offset would land elsewhere, since the lines between come and go.
+            // Also when the same file reloads (Before / After load it whole): anchored by line number, not row.
+            let anchor = samePath && (fileChanged || c.side != side) ? c.topLine() : nil
+            c.side = side; c.blame = blame
+            c.rebuild(file: file, comments: comments, hunkActions: hunkActions)
             c.fitColumn()
             c.table.reloadData()
             if !samePath { c.clearSelection() }
+            if let anchor, let r = c.rows.indices.first(where: { r in
+                guard let i = c.line(row: r) else { return false }
+                let l = c.file.lines[i]
+                if let n = anchor.new, let ln = l.newLine { return ln >= n }
+                if let o = anchor.old, let lo = l.oldLine { return lo >= o }
+                return false
+            }) {
+                keepScroll.y = max(0, c.table.rect(ofRow: r).minY - anchor.offset)
+            }
             scroll.contentView.scroll(to: keepScroll)
             scroll.reflectScrolledClipView(scroll.contentView)
-            if let ruler = scroll.verticalScroller as? ChangeScroller {
-                ruler.table = c.table
-                ruler.onJump = { [weak c] row in c?.show(row: row) }
-                ruler.marks = c.changeMarks()
-            }
+            c.refreshFind()
+        }
+        if rebuilt || swapRuler, let ruler = scroll.verticalScroller as? ChangeScroller {
+            ruler.table = c.table
+            ruler.onJump = { [weak c] row in c?.show(row: row) }
+            ruler.marks = c.changeMarks()
         }
         if let r = reveal, r.id != c.revealed {
             c.revealed = r.id
@@ -104,7 +129,7 @@ struct DiffTableView: NSViewRepresentable {
     // MARK: Coordinator
 
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
-        enum Row { case line(Int), split(Int?, Int?), hunk(Int, Int), comment(InlineComment) }   // hunk(lineIndex, hunkIndex)
+        enum Row { case line(Int), hunk(Int, Int), comment(InlineComment) }   // hunk(lineIndex, hunkIndex)
 
         var parent: DiffTableView!
         weak var table: DiffTable!
@@ -112,16 +137,20 @@ struct DiffTableView: NSViewRepresentable {
         var file = FileDiff()
         var fileUID = UUID()
         var path = ""
-        var layout = DiffLayout.unified
         var comments: [InlineComment] = []
         var hunkActions: [HunkAction] = []
+        var side = DiffSide.diff
+        var blame: DiffBlame?
+        var blameRows: [Int: (label: String?, odd: Bool)] = [:]   // per row showing a new-side line
+        var blameWidth: CGFloat { blame == nil ? 0 : 210 }
+        var lineCacheSide = DiffSide.diff
         var highlights: [Int: NSRange] = [:]     // line index → changed span (intra-line diff)
         var syntax: [[SyntaxSpan]] = []          // per line; empty until the background pass finishes
         private var syntaxTask: Task<Void, Never>?
         var contentWidth: CGFloat = 0
         var numberWidth: CGFloat = 0
         var revealed: UUID?
-        var hover: (row: Int, side: Int, cols: Range<Int>)?   // the identifier under the mouse while ⌘ is held
+        var hover: (row: Int, cols: Range<Int>)?   // the identifier under the mouse while ⌘ is held
         private var commentHeights: [InlineComment: CGFloat] = [:]
         /// Lines as drawn, by line index. Colors stay dynamic, so an appearance change needs no rebuild.
         private let lineCache: NSCache<NSNumber, NSAttributedString> = {
@@ -131,6 +160,7 @@ struct DiffTableView: NSViewRepresentable {
         }()
         // Line numbers and +/− markers, measured per font. The small font's digits are fixed-width, so a number's width follows its digit count.
         private(set) var numAttrs: [NSAttributedString.Key: Any] = [:]
+        private(set) var blameAttrs: [NSAttributedString.Key: Any] = [:]
         private(set) var numHeight: CGFloat = 0
         private var numWidths: [Int: CGFloat] = [:]
         private(set) var addMarker = NSAttributedString(), delMarker = NSAttributedString()
@@ -144,6 +174,7 @@ struct DiffTableView: NSViewRepresentable {
 
         private func measureStyle() {
             numAttrs = [.font: Theme.smallFont, .foregroundColor: Theme.lineNumber]
+            blameAttrs = [.font: NSFont.systemFont(ofSize: Theme.smallFont.pointSize), .foregroundColor: Theme.lineNumber]
             numHeight = ("0" as NSString).size(withAttributes: numAttrs).height
             numWidths = [:]
             addMarker = NSAttributedString(string: "+", attributes: [.font: Theme.font, .foregroundColor: Theme.addMark])
@@ -162,7 +193,7 @@ struct DiffTableView: NSViewRepresentable {
                     s.addAttribute(.foregroundColor, value: Syntax.color(sp.kind), range: NSRange(location: Int(sp.start), length: Int(sp.length)))
                 }
             }
-            if let r = highlights[i], NSMaxRange(r) <= s.length, !l.text.contains("\t") {
+            if side == .diff, let r = highlights[i], NSMaxRange(r) <= s.length, !l.text.contains("\t") {
                 s.addAttribute(.backgroundColor, value: l.kind == .added ? Theme.addHL : Theme.delHL, range: r)
             }
             lineCache.setObject(s, forKey: i as NSNumber, cost: s.length)
@@ -171,9 +202,9 @@ struct DiffTableView: NSViewRepresentable {
 
         /// ⌘ held over an identifier: underline it and show the link cursor, as an IDE does.
         func updateHover(at p: NSPoint?, command: Bool) {
-            var next: (row: Int, side: Int, cols: Range<Int>)?
-            if command, parent.onNavigate != nil, let p, table.bounds.contains(p), let w = identifier(at: p) { next = (w.row, w.side, w.cols) }
-            let changed = next?.row != hover?.row || next?.cols != hover?.cols || next?.side != hover?.side
+            var next: (row: Int, cols: Range<Int>)?
+            if command, parent.onNavigate != nil, let p, table.bounds.contains(p), let w = identifier(at: p) { next = (w.row, w.cols) }
+            let changed = next?.row != hover?.row || next?.cols != hover?.cols
             let oldRow = hover?.row
             hover = next
             let cursor = next == nil ? NSCursor.iBeam : NSCursor.pointingHand
@@ -186,7 +217,6 @@ struct DiffTableView: NSViewRepresentable {
         func reveal(line: Int) {
             guard table != nil, let r = rows.firstIndex(where: { row in
                 if case .line(let i) = row { return file.lines[i].newLine == line && file.lines[i].kind != .removed }
-                if case .split(_, let b?) = row { return file.lines[b].newLine == line }
                 return false
             }) else { return }
             show(row: r)
@@ -197,15 +227,16 @@ struct DiffTableView: NSViewRepresentable {
             let rect = table.rect(ofRow: r)
             let y = max(0, rect.minY - table.visibleRect.height / 3)
             table.scroll(NSPoint(x: 0, y: y))
-            selSide = 1
-            anchor = TextPos(row: r, col: 0); head = TextPos(row: r, col: length(row: r, side: 1))
+            anchor = TextPos(row: r, col: 0); head = TextPos(row: r, col: length(row: r))
             redrawVisible()
         }
 
-        func rebuild(file: FileDiff, layout: DiffLayout, comments: [InlineComment], hunkActions: [HunkAction]) {
-            if fileUID != file.uid { highlights = DiffTableView.intraLineHighlights(file); lineCache.removeAllObjects() }
+        func rebuild(file: FileDiff, comments: [InlineComment], hunkActions: [HunkAction]) {
+            if fileUID != file.uid { highlights = DiffTableView.intraLineHighlights(file); lineCache.removeAllObjects(); searchTexts = nil }
+            // Before / After draw plain code: no intra-line highlight in the cached lines.
+            if lineCacheSide != side { lineCache.removeAllObjects(); lineCacheSide = side }
             self.file = file; fileUID = file.uid; path = file.path
-            self.layout = layout; self.comments = comments; self.hunkActions = hunkActions
+            self.comments = comments; self.hunkActions = hunkActions
             measureStyle()
             let heights = commentHeights
             commentHeights = Dictionary(comments.map { ($0, heights[$0] ?? CommentRowView.height(for: $0)) }, uniquingKeysWith: { a, _ in a })
@@ -215,8 +246,7 @@ struct DiffTableView: NSViewRepresentable {
             for c in comments {
                 if let n = c.newLine, n > 0 { byNew[n, default: []].append(c) } else if let o = c.oldLine { byOld[o, default: []].append(c) }
             }
-            func commentsFor(_ i: Int?) -> [InlineComment] {
-                guard let i else { return [] }
+            func commentsFor(_ i: Int) -> [InlineComment] {
                 let l = file.lines[i]
                 switch l.kind {
                 case .added: return byNew.removeValue(forKey: l.newLine!) ?? []
@@ -229,36 +259,42 @@ struct DiffTableView: NSViewRepresentable {
             var out: [Row] = []
             out.reserveCapacity(file.lines.count + comments.count)
             var maxLen = 0, maxNo = 0
-            var i = 0
-            let lines = file.lines
-            while i < lines.count {
-                let l = lines[i]
+            for (i, l) in file.lines.enumerated() {
                 maxLen = max(maxLen, l.text.utf16.count)
                 maxNo = max(maxNo, l.oldLine ?? 0, l.newLine ?? 0)
-                if l.kind == .hunk { out.append(.hunk(i, l.hunkIndex)); i += 1; continue }
-                if layout == .unified || l.kind == .context || l.kind == .meta {
-                    out.append(layout == .unified ? .line(i) : .split(i, i))
-                    out += commentsFor(i).map(Row.comment)
-                    i += 1; continue
-                }
-                // Split: pair a run of removals with the following run of additions.
-                var dels: [Int] = [], adds: [Int] = []
-                while i < lines.count, lines[i].kind == .removed { dels.append(i); maxLen = max(maxLen, lines[i].text.utf16.count); i += 1 }
-                while i < lines.count, lines[i].kind == .added { adds.append(i); maxLen = max(maxLen, lines[i].text.utf16.count); i += 1 }
-                for k in 0..<max(dels.count, adds.count) {
-                    let d = k < dels.count ? dels[k] : nil, a = k < adds.count ? adds[k] : nil
-                    out.append(.split(d, a))
-                    out += (commentsFor(d) + commentsFor(a)).map(Row.comment)
-                }
+                if l.kind == .hunk { if side == .diff { out.append(.hunk(i, l.hunkIndex)) }; continue }   // Before / After: just the file
+                if side == .old && l.kind == .added || side == .new && l.kind == .removed { continue }
+                out.append(.line(i))
+                out += commentsFor(i).map(Row.comment)
             }
             // Comments whose line isn't in the diff anymore (outdated) go to the end rather than vanish.
-            for c in (byNew.values.flatMap { $0 } + byOld.values.flatMap { $0 }) { out.append(.comment(c)) }
+            // (One side alone leaves out the other side's lines and their comments, which aren't outdated.)
+            if side == .diff { for c in (byNew.values.flatMap { $0 } + byOld.values.flatMap { $0 }) { out.append(.comment(c)) } }
             rows = out
 
             let cw = Theme.charWidth
             numberWidth = CGFloat(max(3, String(maxNo).count)) * cw + 12
             let textWidth = CGFloat(min(maxLen, Theme.maxDrawnChars)) * cw + 24
-            contentWidth = layout == .unified ? numberWidth * 2 + 16 + textWidth : (numberWidth + 16 + textWidth) * 2
+            contentWidth = textX + textWidth
+            blameRows = blame.map(blameLabels) ?? [:]
+        }
+
+        /// Blame beside each new-side line: the commit, its author and age on the first line of each run of lines from
+        /// one commit, and a shade that alternates per run.
+        private func blameLabels(_ b: DiffBlame) -> [Int: (label: String?, odd: Bool)] {
+            let ago = RelativeDateTimeFormatter(); ago.unitsStyle = .abbreviated
+            var out: [Int: (label: String?, odd: Bool)] = [:], last: String?, odd = false
+            for (r, row) in rows.enumerated() {
+                guard case .line(let i) = row, let n = file.lines[i].newLine, file.lines[i].kind != .removed, n - 1 < b.shas.count else { continue }
+                let sha = b.shas[n - 1]
+                guard sha != last else { out[r] = (nil, odd); continue }
+                if last != nil { odd.toggle() }
+                last = sha
+                if sha.allSatisfy({ $0 == "0" }) { out[r] = ("Not committed", odd); continue }
+                let c = b.commits[sha]
+                out[r] = ("\(sha.prefix(7))  \(c?.author ?? "")  · \(c.map { ago.localizedString(for: $0.date, relativeTo: Date()) } ?? "")", odd)
+            }
+            return out
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -295,7 +331,7 @@ struct DiffTableView: NSViewRepresentable {
         @objc func styleChanged(_ n: Notification) {
             guard let table else { return }
             lineCache.removeAllObjects()
-            rebuild(file: file, layout: layout, comments: comments, hunkActions: hunkActions)
+            rebuild(file: file, comments: comments, hunkActions: hunkActions)
             fitColumn()
             table.reloadData()
             table.enclosingScrollView?.verticalScroller?.needsDisplay = true
@@ -303,20 +339,13 @@ struct DiffTableView: NSViewRepresentable {
 
         /// Runs of changed rows, for the change ruler. Comments inside a run don't break it.
         func changeMarks() -> [ChangeScroller.Mark] {
+            guard side == .diff else { return [] }   // Before / After are plain code
             var out: [ChangeScroller.Mark] = []
             for (r, row) in rows.enumerated() {
-                var added = 0, removed = 0, first: Int?
-                func count(_ i: Int?) {
-                    guard let i else { return }
-                    if first == nil { first = i }
-                    switch file.lines[i].kind { case .added: added += 1; case .removed: removed += 1; default: break }
-                }
-                switch row {
-                case .line(let i): count(i)
-                case .split(let a, let b): count(a); if a != b { count(b) }
-                default: continue
-                }
-                guard added + removed > 0, let first else { continue }
+                guard case .line(let first) = row else { continue }
+                let kind = file.lines[first].kind
+                let added = kind == .added ? 1 : 0, removed = kind == .removed ? 1 : 0
+                guard added + removed > 0 else { continue }
                 if let last = out.last, rows[(last.rows.upperBound + 1)..<r].allSatisfy({ if case .comment = $0 { true } else { false } }) {
                     out[out.count - 1].rows = last.rows.lowerBound...r
                     out[out.count - 1].added += added; out[out.count - 1].removed += removed
@@ -363,17 +392,19 @@ struct DiffTableView: NSViewRepresentable {
 
         // MARK: Interaction
 
-        /// Which diff line a click hit; in split view the half under the mouse decides.
-        func lineIndex(row: Int, x: CGFloat?) -> Int? {
-            guard row >= 0, row < rows.count else { return nil }
-            switch rows[row] {
-            case .line(let i): return i
-            case .split(let l, let r):
-                let half = (table.tableColumns[0].width / 2).rounded()
-                if let x, x < half { return l ?? r }
-                return r ?? l
-            default: return nil
-            }
+        /// The first diff line in view, and how far below the top of the view its row starts.
+        func topLine() -> (old: Int?, new: Int?, offset: CGFloat)? {
+            guard let table else { return nil }
+            let visible = table.visibleRect, top = table.rows(in: visible).location
+            guard top >= 0, let r = (top..<rows.count).first(where: { line(row: $0) != nil }), let i = line(row: r) else { return nil }
+            let l = file.lines[i]
+            return (l.kind == .added ? nil : l.oldLine, l.kind == .removed ? nil : l.newLine, table.rect(ofRow: r).minY - visible.minY)
+        }
+
+        /// Which diff line a row shows, if it shows one.
+        func line(row: Int) -> Int? {
+            guard row >= 0, row < rows.count, case .line(let i) = rows[row] else { return nil }
+            return i
         }
 
         // MARK: Text selection
@@ -384,7 +415,6 @@ struct DiffTableView: NSViewRepresentable {
             var row: Int, col: Int
             static func < (a: TextPos, b: TextPos) -> Bool { (a.row, a.col) < (b.row, b.col) }
         }
-        var selSide = 1                     // 0 = left (old) half in split view, 1 = right / unified
         var anchor: TextPos?
         var head: TextPos?
 
@@ -393,25 +423,122 @@ struct DiffTableView: NSViewRepresentable {
             return (min(a, h), max(a, h))
         }
 
-        func textX(side: Int) -> CGFloat {
-            layout == .unified ? numberWidth * 2 + 16 : (side == 0 ? 0 : (table.tableColumns[0].width / 2).rounded()) + numberWidth + 16
-        }
+        // MARK: Find
 
-        func line(row: Int, side: Int) -> Int? {
-            guard row >= 0, row < rows.count else { return nil }
-            switch rows[row] {
-            case .line(let i): return i
-            case .split(let l, let r): return side == 0 ? l : r
-            default: return nil
+        struct Match { var row: Int; var range: NSRange }
+        var findBar: FindBar?
+        var matches: [Match] = []
+        var matchIndex = 0
+        var matchesByRow: [Int: [Int]] = [:]
+        private var searchTexts: [NSString]?   // each line as drawn; built on the first search, dropped with the file
+        private var findMonitor: Any?
+
+        deinit { if let findMonitor { NSEvent.removeMonitor(findMonitor) } }
+
+        /// ⌘F anywhere in this table's window opens the find bar, even while the file tree has the focus; ⌘G and ⇧⌘G
+        /// step through the matches while it's open.
+        func installFind() {
+            findMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+                let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask), key = e.charactersIgnoringModifiers?.lowercased()
+                guard key == "f" && mods == .command || key == "g" && (mods == .command || mods == [.command, .shift]) else { return e }
+                let windowNumber = e.windowNumber
+                // Local monitors run on the main thread.
+                let handled = MainActor.assumeIsolated { () -> Bool in
+                    guard let self, let table = self.table, table.window?.windowNumber == windowNumber, !table.isHiddenOrHasHiddenAncestor else { return false }
+                    if key == "f" { self.openFind(); return true }
+                    guard self.findBar?.superview != nil, table.enclosingScrollView?.isFindBarVisible == true else { return false }
+                    self.step(mods.contains(.shift) ? -1 : 1)
+                    return true
+                }
+                return handled ? nil : e
             }
         }
 
-        func text(row: Int, side: Int) -> [UInt16] {
-            line(row: row, side: side).map { Array(Syntax.displayText(file.lines[$0].text).utf16) } ?? []
+        func openFind() {
+            guard let scroll = table.enclosingScrollView else { return }
+            if findBar == nil {
+                let bar = FindBar()
+                bar.onChange = { [weak self] q in self?.search(q) }
+                bar.onStep = { [weak self] d in self?.step(d) }
+                bar.onClose = { [weak self] in self?.closeFind() }
+                findBar = bar
+                scroll.findBarPosition = .aboveContent
+                scroll.findBarView = bar
+            }
+            scroll.isFindBarVisible = true
+            findBar?.focus()
+            if let q = findBar?.query, !q.isEmpty { search(q) }
         }
 
-        /// The drawn length of a row's side, without copying its text.
-        func length(row: Int, side: Int) -> Int { line(row: row, side: side).map { attributed(line: $0).length } ?? 0 }
+        func closeFind() {
+            table.enclosingScrollView?.isFindBarVisible = false
+            matches = []; matchesByRow = [:]; searchTexts = nil
+            redrawVisible()
+            table.window?.makeFirstResponder(table)
+        }
+
+        /// After the file or layout changed under an open find bar.
+        func refreshFind() {
+            guard table.enclosingScrollView?.isFindBarVisible == true, let q = findBar?.query, !q.isEmpty else { return }
+            search(q, scroll: false)
+        }
+
+        func search(_ q: String, scroll: Bool = true) {
+            var found: [Match] = []
+            if !q.isEmpty {
+                if searchTexts == nil { searchTexts = file.lines.map { Syntax.displayText($0.text) as NSString } }
+                let texts = searchTexts!
+                for (r, row) in rows.enumerated() {
+                    guard case .line(let i) = row else { continue }
+                    let t = texts[i]
+                    var range = NSRange(location: 0, length: t.length)
+                    while range.length > 0 {
+                        let f = t.range(of: q, options: [.caseInsensitive, .diacriticInsensitive], range: range)
+                        if f.location == NSNotFound { break }
+                        found.append(Match(row: r, range: f))
+                        range = NSRange(location: NSMaxRange(f), length: t.length - NSMaxRange(f))
+                    }
+                }
+            }
+            matches = found
+            matchesByRow = Dictionary(grouping: found.indices) { found[$0].row }
+            // Start at the first match from the top of the view down, as an editor does.
+            let top = table.rows(in: table.visibleRect).location
+            matchIndex = found.firstIndex { $0.row >= top } ?? 0
+            findBar?.setCount(found.isEmpty ? (q.isEmpty ? nil : 0) : matchIndex + 1, of: found.count)
+            redrawVisible()
+            if scroll, !found.isEmpty { scrollToMatch() }
+        }
+
+        func step(_ d: Int) {
+            guard !matches.isEmpty else { return }
+            let old = matches[matchIndex].row
+            matchIndex = (matchIndex + d + matches.count) % matches.count
+            findBar?.setCount(matchIndex + 1, of: matches.count)
+            let new = matches[matchIndex].row
+            redrawVisible { $0 == old || $0 == new }
+            scrollToMatch()
+        }
+
+        /// Brings the current match into view: centred vertically when it's off screen, and sideways when it's past the edge.
+        private func scrollToMatch() {
+            let m = matches[matchIndex]
+            let rowRect = table.rect(ofRow: m.row), visible = table.visibleRect
+            let x = textX + CGFloat(m.range.location) * Theme.charWidth, w = CGFloat(m.range.length) * Theme.charWidth
+            let y = rowRect.minY >= visible.minY && rowRect.maxY <= visible.maxY ? visible.minY : max(0, rowRect.midY - visible.height / 2)
+            let left = x >= visible.minX && x + w <= visible.maxX ? visible.minX : max(0, x - visible.width / 3)
+            if y != visible.minY || left != visible.minX { table.scroll(NSPoint(x: left, y: y)) }
+        }
+
+        /// Where a row's text starts: after both line numbers.
+        var textX: CGFloat { blameWidth + numberWidth * (side == .diff ? 2 : 1) + 16 }
+
+        func text(row: Int) -> [UInt16] {
+            line(row: row).map { Array(Syntax.displayText(file.lines[$0].text).utf16) } ?? []
+        }
+
+        /// The drawn length of a row, without copying its text.
+        func length(row: Int) -> Int { line(row: row).map { attributed(line: $0).length } ?? 0 }
 
         private func hitRow(_ p: NSPoint) -> Int {
             let row = table.row(at: p)
@@ -420,13 +547,13 @@ struct DiffTableView: NSViewRepresentable {
 
         func pos(_ p: NSPoint) -> TextPos {
             let row = hitRow(p)
-            let len = length(row: row, side: selSide)
-            let col = Int(((p.x - textX(side: selSide)) / Theme.charWidth).rounded())
+            let len = length(row: row)
+            let col = Int(((p.x - textX) / Theme.charWidth).rounded())
             return TextPos(row: row, col: max(0, min(len, col)))
         }
 
         /// The identifier around a text position, as a column range (empty when there's none).
-        func wordRange(at: TextPos, side: Int) -> Range<Int> { wordRange(in: text(row: at.row, side: side), col: at.col) }
+        func wordRange(at: TextPos) -> Range<Int> { wordRange(in: text(row: at.row), col: at.col) }
 
         private func wordRange(in u: [UInt16], col: Int) -> Range<Int> {
             // Left of the text (over the line numbers) the column is negative: no word there.
@@ -442,19 +569,17 @@ struct DiffTableView: NSViewRepresentable {
         }
 
         /// The identifier under a point, if it is one (not a number or punctuation), with where it is.
-        func identifier(at p: NSPoint) -> (row: Int, side: Int, cols: Range<Int>, word: String)? {
-            let side = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
+        func identifier(at p: NSPoint) -> (row: Int, cols: Range<Int>, word: String)? {
             let row = hitRow(p)
-            let u = text(row: row, side: side)
-            let r = wordRange(in: u, col: Int(((p.x - textX(side: side)) / Theme.charWidth).rounded(.down)))
+            let u = text(row: row)
+            let r = wordRange(in: u, col: Int(((p.x - textX) / Theme.charWidth).rounded(.down)))
             guard !r.isEmpty, !(u[r.lowerBound] >= 48 && u[r.lowerBound] <= 57) else { return nil }
-            return (row, side, r, String(utf16CodeUnits: Array(u[r]), count: r.count))
+            return (row, r, String(utf16CodeUnits: Array(u[r]), count: r.count))
         }
 
         func word(at p: NSPoint) -> String? { identifier(at: p)?.word }
 
         func mouseDown(_ p: NSPoint, clicks: Int, command: Bool = false) {
-            selSide = layout == .split && p.x < (table.tableColumns[0].width / 2).rounded() ? 0 : 1
             if command, clicks == 1, let nav = parent.onNavigate, let w = identifier(at: p) {   // ⌘-click: go to definition
                 anchor = TextPos(row: w.row, col: w.cols.lowerBound); head = TextPos(row: w.row, col: w.cols.upperBound)
                 redrawVisible()
@@ -464,11 +589,11 @@ struct DiffTableView: NSViewRepresentable {
             let at = pos(p)
             switch clicks {
             case 2:   // word
-                var r = wordRange(at: at, side: selSide)
-                if r.isEmpty, r.lowerBound < length(row: at.row, side: selSide) { r = r.lowerBound..<(r.lowerBound + 1) }
+                var r = wordRange(at: at)
+                if r.isEmpty, r.lowerBound < length(row: at.row) { r = r.lowerBound..<(r.lowerBound + 1) }
                 anchor = TextPos(row: at.row, col: r.lowerBound); head = TextPos(row: at.row, col: r.upperBound)
             case 3...:  // line
-                anchor = TextPos(row: at.row, col: 0); head = TextPos(row: at.row, col: length(row: at.row, side: selSide))
+                anchor = TextPos(row: at.row, col: 0); head = TextPos(row: at.row, col: length(row: at.row))
             default:
                 anchor = at; head = at
             }
@@ -487,16 +612,16 @@ struct DiffTableView: NSViewRepresentable {
         func selectAll() {
             guard !rows.isEmpty else { return }
             anchor = TextPos(row: 0, col: 0)
-            head = TextPos(row: rows.count - 1, col: length(row: rows.count - 1, side: selSide))
+            head = TextPos(row: rows.count - 1, col: length(row: rows.count - 1))
             redrawVisible()
         }
 
         func clearSelection() { anchor = nil; head = nil; redrawVisible() }
 
-        /// Selected column range on a row/side, if any.
-        func selectedColumns(row: Int, side: Int) -> Range<Int>? {
-            guard side == selSide, let (s, e) = selection, row >= s.row, row <= e.row, line(row: row, side: side) != nil else { return nil }
-            let len = length(row: row, side: side)
+        /// Selected column range on a row, if any.
+        func selectedColumns(row: Int) -> Range<Int>? {
+            guard let (s, e) = selection, row >= s.row, row <= e.row, line(row: row) != nil else { return nil }
+            let len = length(row: row)
             let a = row == s.row ? s.col : 0
             let b = row == e.row ? e.col : len + 1   // +1: a full-line selection shows its newline
             return a < b ? a..<b : nil
@@ -535,7 +660,7 @@ struct DiffTableView: NSViewRepresentable {
                 menu.addItem(ClosureMenuItem("Find References to “\(w)”") { nav(w, .references) })
                 menu.addItem(.separator())
             }
-            if let i = lineIndex(row: row, x: p?.x) {
+            if let i = line(row: row) {
                 if parent.onAddComment != nil, parent.canComment?(file.lines[i]) ?? true {
                     menu.addItem(ClosureMenuItem("Add Comment…") { [weak self] in self?.beginComment(lineIndex: i, row: row) })
                 }
@@ -558,12 +683,10 @@ struct DiffTableView: NSViewRepresentable {
             menu.addItem(ClosureMenuItem("Copy") { [weak self] in self?.table.copy(nil) })
         }
 
-        /// Diff lines on the selected rows; in split view both halves of a row count.
+        /// Diff lines on the selected rows.
         func selectedLines() -> Set<Int> {
             guard let (s, e) = selection else { return [] }
-            var out = Set<Int>()
-            for r in s.row...e.row { for side in [0, 1] { if let l = line(row: r, side: side) { out.insert(l) } } }
-            return out
+            return Set((s.row...e.row).compactMap { line(row: $0) })
         }
 
         func copySelection() {
@@ -575,8 +698,8 @@ struct DiffTableView: NSViewRepresentable {
         func selectedText() -> String? {
             guard let (s, e) = selection else { return nil }
             var out: [String] = []
-            for r in s.row...e.row where line(row: r, side: selSide) != nil {
-                let u = text(row: r, side: selSide)
+            for r in s.row...e.row where line(row: r) != nil {
+                let u = text(row: r)
                 let a = min(r == s.row ? s.col : 0, u.count), b = min(r == e.row ? e.col : u.count, u.count)
                 // ponytail: copies the displayed text, so tabs come out as four spaces
                 out.append(a < b ? String(utf16CodeUnits: Array(u[a..<b]), count: b - a) : "")
@@ -591,7 +714,6 @@ struct DiffTableView: NSViewRepresentable {
                 switch rows[r] {
                 case .hunk: return true
                 case .line(let i): return file.lines[i].kind == .added || file.lines[i].kind == .removed
-                case .split(let a, let b): return [a, b].contains { $0.map { file.lines[$0].kind == .added || file.lines[$0].kind == .removed } ?? false }
                 case .comment: return false
                 }
             }
@@ -793,7 +915,6 @@ enum Theme {
     static let delHL = themed { $0.delHL }
     static let gutterBG = themed { $0.gutterBG }
     static let hunkBG = themed { $0.hunkBG }
-    static let emptyBG = themed { $0.emptyBG }
 }
 
 extension NSAppearance {
@@ -820,30 +941,33 @@ final class LineRowView: NSView {
         switch row {
         case .line(let i):
             let l = c.file.lines[i]
-            drawSide(l, index: i, x: 0, numbers: [l.oldLine, l.newLine], nw: nw, width: bounds.width, c: c)
-        case .split(let a, let b):
-            let half = (bounds.width / 2).rounded()
-            if let a { let l = c.file.lines[a]; drawSide(l, index: a, x: 0, numbers: [l.oldLine], nw: nw, width: half, c: c, splitLeft: true) }
-            else { Theme.emptyBG.setFill(); NSRect(x: 0, y: 0, width: half, height: bounds.height).fill() }
-            if let b { let l = c.file.lines[b]; drawSide(l, index: b, x: half, numbers: [l.newLine], nw: nw, width: bounds.width - half, c: c, splitLeft: false) }
-            else { Theme.emptyBG.setFill(); NSRect(x: half, y: 0, width: bounds.width - half, height: bounds.height).fill() }
-            NSColor.separatorColor.setFill(); NSRect(x: half - 0.5, y: 0, width: 1, height: bounds.height).fill()
+            // Before and After show their own side's numbers only.
+            let nums: [Int?] = c.side == .old ? [l.oldLine] : c.side == .new ? [l.newLine] : [l.oldLine, l.newLine]
+            drawLine(l, index: i, numbers: nums, nw: nw, width: bounds.width, c: c)
         default: break
         }
         if let h = c.hover, h.row == rowIndex, !h.cols.isEmpty {   // ⌘-hover link
-            let x = c.textX(side: h.side) + CGFloat(h.cols.lowerBound) * Theme.charWidth
+            let x = c.textX + CGFloat(h.cols.lowerBound) * Theme.charWidth
             NSColor.linkColor.setFill()
             NSRect(x: x, y: bounds.height - 2.5, width: CGFloat(h.cols.count) * Theme.charWidth, height: 1.2).fill()
         }
     }
 
-    private func drawSide(_ l: DiffLine, index: Int, x: CGFloat, numbers: [Int?], nw: CGFloat, width: CGFloat, c: DiffTableView.Coordinator, splitLeft: Bool? = nil) {
-        let h = bounds.height
-        // In split view a context line shows its old number left and new number right.
-        var nums = numbers
-        if let left = splitLeft, l.kind == .context { nums = [left ? l.oldLine : l.newLine] }
-        let bg: NSColor? = l.kind == .added ? Theme.addBG : l.kind == .removed ? Theme.delBG : nil
-        if let bg { bg.setFill(); NSRect(x: x, y: 0, width: width, height: h).fill() }
+    private func drawLine(_ l: DiffLine, index: Int, numbers nums: [Int?], nw: CGFloat, width: CGFloat, c: DiffTableView.Coordinator) {
+        let h = bounds.height, x = c.blameWidth, diff = c.side == .diff
+        if c.blame != nil {
+            let b = c.blameRows[rowIndex]
+            NSColor.labelColor.withAlphaComponent(b?.odd == true ? 0.07 : 0.035).setFill(); NSRect(x: 0, y: 0, width: x, height: h).fill()
+            if let label = b?.label {
+                NSGraphicsContext.saveGraphicsState()
+                NSRect(x: 0, y: 0, width: x - 6, height: h).clip()
+                (label as NSString).draw(at: NSPoint(x: 8, y: (h - c.numHeight) / 2), withAttributes: c.blameAttrs)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        // Red and green only in the diff; Before and After are plain code.
+        let bg: NSColor? = !diff ? nil : l.kind == .added ? Theme.addBG : l.kind == .removed ? Theme.delBG : nil
+        if let bg { bg.setFill(); NSRect(x: x, y: 0, width: width - x, height: h).fill() }
         let gutterW = nw * CGFloat(nums.count)
         Theme.gutterBG.setFill(); NSRect(x: x, y: 0, width: gutterW, height: h).fill()
 
@@ -853,19 +977,89 @@ final class LineRowView: NSView {
             s.draw(at: NSPoint(x: x + nw * CGFloat(k + 1) - c.digitsWidth(s) - 6, y: (h - c.numHeight) / 2), withAttributes: c.numAttrs)
         }
         let tx = x + gutterW + 4
-        if let cols = c.selectedColumns(row: rowIndex, side: splitLeft == true ? 0 : 1) {
+        if let cols = c.selectedColumns(row: rowIndex) {
             let focused = window?.firstResponder === c.table && window?.isKeyWindow == true
             (focused ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor).setFill()
             NSRect(x: tx + 12 + CGFloat(cols.lowerBound) * Theme.charWidth, y: 0,
                    width: CGFloat(cols.count) * Theme.charWidth, height: h).fill()
         }
-        if let marker = l.kind == .added ? c.addMarker : l.kind == .removed ? c.delMarker : nil { marker.draw(at: NSPoint(x: tx, y: Theme.textY)) }
+        if let ms = c.matchesByRow[rowIndex] {
+            for k in ms {
+                let m = c.matches[k].range
+                (k == c.matchIndex ? NSColor.systemOrange.withAlphaComponent(0.6) : NSColor.systemYellow.withAlphaComponent(0.3)).setFill()
+                NSBezierPath(roundedRect: NSRect(x: tx + 12 + CGFloat(m.location) * Theme.charWidth - 1, y: 1,
+                                                 width: CGFloat(m.length) * Theme.charWidth + 2, height: h - 2), xRadius: 2, yRadius: 2).fill()
+            }
+        }
+        if diff, let marker = l.kind == .added ? c.addMarker : l.kind == .removed ? c.delMarker : nil { marker.draw(at: NSPoint(x: tx, y: Theme.textY)) }
 
         NSGraphicsContext.saveGraphicsState()
         NSRect(x: x, y: 0, width: width, height: h).clip()
         c.attributed(line: index).draw(at: NSPoint(x: tx + 12, y: Theme.textY))
         NSGraphicsContext.restoreGraphicsState()
     }
+}
+
+/// The find bar above a diff: a search field, how many matches, previous and next, Done.
+final class FindBar: NSView, NSSearchFieldDelegate {
+    var onChange: ((String) -> Void)?
+    var onStep: ((Int) -> Void)?
+    var onClose: (() -> Void)?
+    private let field = NSSearchField()
+    private let count = NSTextField(labelWithString: "")
+    var query: String { field.stringValue }
+
+    override init(frame: NSRect) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        field.placeholderString = "Find in file"
+        field.delegate = self
+        field.sendsWholeSearchString = false
+        count.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        count.textColor = .secondaryLabelColor
+        let nav = NSSegmentedControl(images: [NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Previous")!,
+                                              NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Next")!],
+                                     trackingMode: .momentary, target: self, action: #selector(navigate(_:)))
+        nav.controlSize = .small
+        nav.setToolTip("Previous (⇧⌘G)", forSegment: 0); nav.setToolTip("Next (⌘G)", forSegment: 1)
+        let done = NSButton(title: "Done", target: self, action: #selector(close))
+        done.controlSize = .small
+        field.controlSize = .small
+        let stack = NSStackView(views: [field, count, nav, NSView(), done])
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            field.widthAnchor.constraint(equalToConstant: 260),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill(); bounds.fill()
+        NSColor.separatorColor.setFill(); NSRect(x: 0, y: isFlipped ? bounds.maxY - 1 : 0, width: bounds.width, height: 1).fill()
+    }
+
+    func focus() {
+        DispatchQueue.main.async { [self] in window?.makeFirstResponder(field); field.currentEditor()?.selectAll(nil) }
+    }
+
+    func setCount(_ i: Int?, of n: Int) { count.stringValue = i == nil ? "" : n == 0 ? "No results" : "\(i!) of \(n)" }
+
+    func controlTextDidChange(_ n: Notification) { onChange?(field.stringValue) }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)): onStep?(NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? -1 : 1); return true
+        case #selector(NSResponder.cancelOperation(_:)): onClose?(); return true
+        default: return false
+        }
+    }
+
+    @objc private func navigate(_ s: NSSegmentedControl) { onStep?(s.selectedSegment == 0 ? -1 : 1) }
+    @objc private func close() { onClose?() }
 }
 
 final class HunkRowView: NSView {
