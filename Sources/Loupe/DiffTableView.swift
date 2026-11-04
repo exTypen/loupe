@@ -72,6 +72,9 @@ struct DiffTableView: NSViewRepresentable {
         scroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.viewportResized(_:)),
                                                name: NSView.frameDidChangeNotification, object: scroll.contentView)
+        table.postsFrameChangedNotifications = true   // the file's height: a shorter one must not leave the view past its end
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.viewportResized(_:)),
+                                               name: NSView.frameDidChangeNotification, object: table)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.styleChanged(_:)),
                                                name: .editorStyleChanged, object: nil)
         context.coordinator.installFind()
@@ -112,6 +115,7 @@ struct DiffTableView: NSViewRepresentable {
             }
             scroll.contentView.scroll(to: keepScroll)
             scroll.reflectScrolledClipView(scroll.contentView)
+            DispatchQueue.main.async { c.clampScroll() }   // after this layout pass settles the pane's and the table's heights
             c.refreshFind()
         }
         if rebuilt || swapRuler, let ruler = scroll.verticalScroller as? ChangeScroller {
@@ -325,7 +329,19 @@ struct DiffTableView: NSViewRepresentable {
             if table.tableColumns[0].width != w { table.tableColumns[0].width = w }
         }
 
-        @objc func viewportResized(_ n: Notification) { fitColumn() }
+        @objc func viewportResized(_ n: Notification) { fitColumn(); clampScroll() }
+
+        /// Keeps the viewport inside the file. When the pane or the file's height changes (the header above grows or
+        /// shrinks on a commit switch, a shorter file loads), the clip view kept its old offset and left the rows
+        /// hanging at the bottom, or past the end, until the next scroll pulled them back.
+        func clampScroll() {
+            guard let table, let scroll = table.enclosingScrollView else { return }
+            let clip = scroll.contentView
+            let fixed = clip.constrainBoundsRect(clip.bounds).origin
+            guard fixed != clip.bounds.origin else { return }
+            clip.scroll(to: fixed)
+            scroll.reflectScrolledClipView(clip)
+        }
 
         /// A new font or theme: widths and row heights follow the font, every row redraws.
         @objc func styleChanged(_ n: Notification) {

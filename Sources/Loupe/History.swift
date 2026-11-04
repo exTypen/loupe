@@ -524,6 +524,7 @@ struct CommitDetailView: View {
                                         let whole = fullMode || side != .diff
                                         DiffTableView(file: whole ? wholeFiles[key] ?? f : f, reveal: reveal, changeRuler: fullMode)
                                             .task(id: whole ? key : "") { if whole { await loadWhole(f, of: c, key: key) } }
+                                            .markdownPreview(f) { [path = model.path] in try? await Git.string(["show", "\(c.sha):\(f.path)"], in: path) }
                                     }
                                 }
                             }

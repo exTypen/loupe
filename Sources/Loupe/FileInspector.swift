@@ -129,7 +129,10 @@ struct WithFilePanel<Content: View>: View {
             Divider()
             if let d = pickedDiff, d.path == p.path || d.oldPath == p.path || d.newPath == p.path {
                 if d.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
-                else { DiffTableView(file: d, changeRuler: fullMode) }
+                else {
+                    DiffTableView(file: d, changeRuler: fullMode)
+                        .markdownPreview(d) { [dir = file?.worktree ?? ""] in try? await Git.string(["show", "\(p.commit.sha):\(p.path)"], in: dir) }
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }

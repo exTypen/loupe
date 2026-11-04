@@ -269,6 +269,60 @@ struct CodeBlock: View {
     }
 }
 
+/// Two versions of a short text (a constraint, a function) as one diff: lines matched ignoring their indentation, so
+/// re-nesting doesn't paint everything; the new version's lines shown, the old one's where they're gone.
+struct LineDiff: View {
+    let rows: [(mark: Character, text: String)]
+    @State private var colored: [AttributedString]
+
+    init(before: String, after: String) {
+        let a = before.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let b = after.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let ka = a.map { $0.trimmingCharacters(in: .whitespaces) }, kb = b.map { $0.trimmingCharacters(in: .whitespaces) }
+        // Longest common subsequence over the trimmed lines; these texts are a few dozen lines.
+        var l = Array(repeating: Array(repeating: 0, count: kb.count + 1), count: ka.count + 1)
+        for i in stride(from: ka.count - 1, through: 0, by: -1) {
+            for j in stride(from: kb.count - 1, through: 0, by: -1) {
+                l[i][j] = ka[i] == kb[j] ? l[i + 1][j + 1] + 1 : max(l[i + 1][j], l[i][j + 1])
+            }
+        }
+        var out: [(Character, String)] = [], i = 0, j = 0
+        while i < ka.count || j < kb.count {
+            if i < ka.count, j < kb.count, ka[i] == kb[j] { out.append((" ", b[j])); i += 1; j += 1 }
+            else if j < kb.count, i == ka.count || l[i][j + 1] >= l[i + 1][j] { out.append(("+", b[j])); j += 1 }
+            else { out.append(("-", a[i])); i += 1 }
+        }
+        rows = out
+        _colored = State(initialValue: HighlightCache.cached(out.map(\.1), path: "x.sql") ?? [])
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { k, r in
+                    HStack(spacing: 6) {
+                        Text(r.mark == "+" ? "+" : r.mark == "-" ? "−" : " ").foregroundStyle(r.mark == "+" ? .green : .red).frame(width: 8)
+                        Text(k < colored.count ? colored[k] : AttributedString(r.text)).fixedSize()
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 0.5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(r.mark == "+" ? Color(nsColor: Theme.addBG) : r.mark == "-" ? Color(nsColor: Theme.delBG) : .clear)
+                }
+            }
+            .font(.editor(11))
+            .foregroundStyle(Color(nsColor: Theme.foreground))
+            .textSelection(.enabled)
+            .padding(.vertical, 6)
+        }
+        .background(Color(nsColor: Theme.background), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.08)))
+        .task {
+            guard colored.isEmpty else { return }
+            colored = await HighlightCache.highlight(rows.map(\.text), path: "x.sql")
+        }
+    }
+}
+
 /// Cards in as many columns as fit, each one under the currently shortest column.
 private struct Masonry: Layout {
     var minWidth: CGFloat = 300
@@ -614,7 +668,15 @@ private struct ExtraRow: View {
                     Text(fact.title).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                     Text(fact.tag ?? "").font(.caption).foregroundStyle(.tertiary)
                 }
-                if let v = fact.after ?? fact.before, fact.tag != "trigger" {
+                // A short definition reads on one line; a long one (a CHECK, say) as the SQL it was, before above after.
+                if fact.tag != "trigger", (fact.before ?? "").count + (fact.after ?? "").count > 90 || (fact.before ?? fact.after ?? "").contains("\n") {
+                    Group {
+                        if let b = fact.before, let a = fact.after { LineDiff(before: b, after: a) }
+                        else if let b = fact.before { CodeBlock(text: b, path: "x.sql", kind: .removed, maxLines: 14) }
+                        else if let a = fact.after { CodeBlock(text: a, path: "x.sql", kind: .added, maxLines: 14) }
+                    }
+                    .padding(.top, 3)
+                } else if let v = fact.after ?? fact.before, fact.tag != "trigger" {
                     Text(fact.before.map { b in fact.after != nil ? "\(b) → \(v)" : v } ?? v)
                         .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
                 }

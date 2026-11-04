@@ -509,3 +509,19 @@ import AppKit
     }
     #expect(shape == ["opened", "comments2", "commits2", "comments1"])
 }
+
+@Test func constraintRecreatedWithAnotherDefinition() {
+    let create = "CREATE TABLE t (id int, role text CHECK (role IN ('a')), CONSTRAINT t_x_check CHECK (id > 0), UNIQUE (role));"
+    let a = SQL.replay([("1.sql", create)])
+    let b = SQL.replay([("1.sql", create),
+                        ("2.sql", "ALTER TABLE t DROP CONSTRAINT t_role_check; ALTER TABLE t ADD CONSTRAINT t_role_check CHECK (role IN ('a', 'b'));")])
+    #expect(Set(a.tables["t"]!.constraints.keys) == ["t_role_check", "t_x_check", "t_role_key"])
+    #expect(a.tables["t"]!.constraints["t_role_check"]!.definition != b.tables["t"]!.constraints["t_role_check"]!.definition)
+    #expect(a.tables["t"]!.constraints["t_x_check"]!.definition == b.tables["t"]!.constraints["t_x_check"]!.definition)
+}
+
+@Test func lineDiffIgnoresReindentation() {
+    let d = LineDiff(before: "CHECK (\n    a\n    AND b\n)", after: "CHECK (\n    (\n        a\n        AND b\n    )\n    OR c\n)")
+    #expect(d.rows.filter { $0.mark == "-" }.isEmpty)
+    #expect(d.rows.filter { $0.mark == "+" }.map { $0.text.trimmingCharacters(in: .whitespaces) }.sorted() == ["(", ")", "OR c"])
+}

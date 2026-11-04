@@ -478,6 +478,11 @@ private struct PullFilePane: View {
                               onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },
                               onDeleteDraft: { id in pull.drafts.removeAll { $0.id == id } },
                               reveal: pull.reveal)
+                .markdownPreview(f) { [pull] in
+                    // The diff holds only the changed lines; the file is at the head.
+                    try? await pull.fetchHead()
+                    return try? await Git.string(["show", "\(pull.pr.head.sha):\(f.path)"], in: pull.local.dir)
+                }
             }
         }
     }
@@ -505,6 +510,7 @@ private struct PullFilePane: View {
                                   canComment: pull.commentable(path),
                                   onNavigate: { word, action in Task { await pull.navigate(word, action, from: path) } },
                                   reveal: pull.reveal, changeRuler: true)
+                        .markdownPreview(f)
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

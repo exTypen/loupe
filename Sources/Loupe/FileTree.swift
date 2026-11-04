@@ -120,6 +120,9 @@ struct FileTreeList<FileContent: View, DirAccessory: View>: View {
             }
         }
         .listStyle(.inset)
+        // One file at a time: ⌘A has nothing to select, and the list's own Select All walks every row of the tree
+        // (the whole repository in Full mode), which hung the app.
+        .onCommand(#selector(NSResponder.selectAll(_:))) {}
     }
 
     private var allDirs: [String] {

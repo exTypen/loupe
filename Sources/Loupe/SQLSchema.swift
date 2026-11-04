@@ -146,10 +146,42 @@ enum SQL {
     struct Table {
         var name: String
         var columns: [Column] = []
-        var constraints: [String: Location?] = [:]
+        var constraints: [String: Constraint] = [:]
         var primaryKey: [String] = []
         var at: Location?
         func column(_ n: String) -> Int? { columns.firstIndex { $0.name == n } }
+    }
+
+    /// A named table constraint: its definition (normalised, to tell a changed one from a re-created one) and the
+    /// lines it's written on.
+    struct Constraint {
+        var definition: String
+        var at: Location
+        var endLine: Int
+    }
+
+    /// The constraint a table-element or ALTER TABLE ADD's tokens define, named as Postgres names it when unnamed.
+    static func constraint(_ part: ArraySlice<Token>, table: String, file: String) -> (name: String, Constraint)? {
+        guard let head = part.first else { return nil }
+        var body = part
+        var name = ""
+        if head.is("constraint"), part.count > 2 { name = part[part.startIndex + 1].ident ?? ""; body = part.dropFirst(2) }
+        guard let kind = body.first?.text else { return nil }
+        if name.isEmpty {
+            let tokens = Array(body)
+            var j = tokens.firstIndex { $0.text == "(" } ?? tokens.count
+            let cols = parenList(tokens, &j).compactMap { $0.first?.ident }
+            name = switch kind {
+            case "primary": "\(table)_pkey"
+            case "unique": "\(table)_\(cols.joined(separator: "_"))_key"
+            case "foreign": "\(table)_\(cols.joined(separator: "_"))_fkey"
+            case "check": "\(table)_check"
+            case "exclude": "\(table)_excl"
+            default: ""
+            }
+        }
+        guard !name.isEmpty else { return nil }
+        return (name, Constraint(definition: render(body), at: Location(file: file, line: head.line), endLine: part.last?.line ?? head.line))
     }
 
     struct Index: Equatable {
@@ -320,10 +352,15 @@ enum SQL {
                             for k in table.primaryKey { if let ci = table.column(k) { table.columns[ci].notNull = true } }
                             if cname.isEmpty { cname = "\(n)_pkey" }
                         }
-                        if !cname.isEmpty { table.constraints[cname] = at }
+                        if let (name, c) = constraint(part[...], table: n, file: file) { table.constraints[cname.isEmpty ? name : cname] = c }
                         continue
                     }
                     if let c = column(part, at: Location(file: file, line: head.line)) {
+                        // A column's own CHECK is a table constraint too: <table>_<column>_check unless named.
+                        if let k = part.firstIndex(where: { $0.is("check") }) {
+                            let named = k >= 2 && part[k - 2].is("constraint") ? part[k - 1].ident : nil
+                            if let (_, con) = constraint(part[k...], table: n, file: file) { table.constraints[named ?? "\(n)_\(c.name)_check"] = con }
+                        }
                         table.columns.append(c)
                         if part.contains(where: { $0.is("primary") }) { table.primaryKey = [c.name] }
                     }
@@ -456,7 +493,7 @@ enum SQL {
                     for k in table.primaryKey { if let ci = table.column(k) { table.columns[ci].notNull = true } }
                     if cname.isEmpty { cname = "\(n)_pkey" }
                 }
-                if !cname.isEmpty { table.constraints[cname] = colAt }
+                if let (name, c) = constraint(a[i...], table: n, file: at.file) { table.constraints[cname.isEmpty ? name : cname] = c }
             } else {
                 skip(a, &i, "column")
                 let exists = ifClause(a, &i)

@@ -506,6 +506,7 @@ struct DiffPane: View {
                                   // A jump's line, once this is the file it landed in.
                                   reveal: model.browser.selectedPath == d.path ? model.browser.reveal : nil,
                                   changeRuler: fullMode)
+                    .markdownPreview(d) { try? String(contentsOfFile: (model.path as NSString).appendingPathComponent(d.path), encoding: .utf8) }
                 }
                 }
             }
@@ -529,8 +530,10 @@ struct DiffHeader<Actions: View>: View {
     @ViewBuilder var actions: Actions
     @AppStorage("diffSide") private var side = DiffSide.diff
     @AppStorage("filePanel") private var panel = FilePanel.none
+    @AppStorage("markdownPreview") private var preview = false
 
     var body: some View {
+        let markdown = MarkdownPreview.applies(path)
         HStack(spacing: 8) {
             FileIcon(path: path)
             if let oldPath { Text(oldPath).foregroundStyle(.secondary).lineLimit(1); Image(systemName: "arrow.right").font(.caption) }
@@ -541,7 +544,7 @@ struct DiffHeader<Actions: View>: View {
             }
             Spacer()
             // Before / After only mean something when the file has both: a new or deleted file is one side.
-            if additions > 0 && deletions > 0 {
+            if additions > 0 && deletions > 0 && !(markdown && preview) {
                 Picker("Show", selection: $side) {
                     Text("Diff").tag(DiffSide.diff)
                     Text("Before").tag(DiffSide.old)
@@ -559,6 +562,8 @@ struct DiffHeader<Actions: View>: View {
                 .buttonStyle(.borderless)
                 if !(Actions.self == EmptyView.self) { Divider().frame(height: 14) }
             }
+            // Markdown: the file rendered instead of its diff.
+            if markdown { Toggle("Preview", isOn: $preview).toggleStyle(.checkbox).controlSize(.small).help("Show the file rendered") }
             actions.controlSize(.small)
         }
         .padding(.horizontal, 12)
@@ -762,6 +767,7 @@ struct WorktreeFilePane: View {
                     else {
                         DiffTableView(file: f, onNavigate: { word, action in Task { await browser.navigate(word, action, from: path) } },
                                       reveal: browser.reveal, changeRuler: true)
+                            .markdownPreview(f)
                     }
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

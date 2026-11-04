@@ -14,7 +14,11 @@ struct ConversationView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        // Not lazy: cards differ wildly in height (a one-line comment, a bot report with tables), and a
+                        // lazy stack anchored at the bottom kept re-estimating them, moving the scroll and measuring
+                        // again, a loop that pinned the CPU and drew cards over each other. Rows are cached, so measuring
+                        // them all once is cheap.
+                        VStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(entries.enumerated()), id: \.element.id) { i, e in
                                 if newDay[i] { DayMarker(date: e.date) }
                                 row(e).id(e.id)
@@ -508,11 +512,99 @@ private struct HunkTail: View {
 
 // MARK: - Markdown
 
+extension View {
+    /// A Markdown file's diff, or with Preview on (the checkbox in its header), the file rendered. `load` gets the whole
+    /// file when the diff has only the changed lines; without it, or when it fails, the diff's new side is rendered.
+    func markdownPreview(_ file: FileDiff, load: (() async -> String?)? = nil) -> some View {
+        modifier(MarkdownPreview(file: file, load: load))
+    }
+}
+
+struct MarkdownPreview: ViewModifier {
+    var file: FileDiff
+    var load: (() async -> String?)?
+    @AppStorage("markdownPreview") private var on = false
+    @State private var text: (uid: UUID, text: String)?
+
+    static func applies(_ path: String) -> Bool { ["md", "markdown", "mdx"].contains((path as NSString).pathExtension.lowercased()) }
+
+    func body(content: Content) -> some View {
+        if on, Self.applies(file.path), file.newPath != nil {
+            ScrollView {
+                MarkdownText(text: text?.uid == file.uid ? text!.text : WorktreeBrowser.newSide(file) ?? "", document: true)
+                    .padding(.horizontal, 28).padding(.vertical, 22)
+                    .frame(maxWidth: 860, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .task(id: file.uid) {
+                guard let load, let t = await load() else { return }
+                text = (file.uid, t)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// A Markdown table: cells in rows of `columns`. Measuring and placing use the same column widths, so the height it
+/// reports is the height it draws (SwiftUI's Grid measured wrapping cells at one width and drew them at another, and
+/// what followed the table drew over it). Narrow columns keep their width; the wide ones share what's left.
+struct TableLayout: Layout {
+    var columns: Int
+
+    private func widths(_ subviews: Subviews, total: CGFloat?) -> [CGFloat] {
+        var natural = [CGFloat](repeating: 0, count: columns)
+        for (k, v) in subviews.enumerated() { natural[k % columns] = max(natural[k % columns], v.sizeThatFits(.unspecified).width) }
+        guard let total, natural.reduce(0, +) > total else { return natural }
+        // Columns narrower than an even share of what's left keep their width, until none are; the rest split what
+        // remains in proportion to how wide they'd like to be.
+        var w = natural, rest = Array(0..<columns), free = total
+        while true {
+            let share = free / CGFloat(max(1, rest.count))
+            let narrow = rest.filter { natural[$0] <= share }
+            if narrow.isEmpty || narrow.count == rest.count { break }
+            free -= narrow.reduce(0) { $0 + natural[$1] }
+            rest.removeAll { narrow.contains($0) }
+        }
+        let wanted = max(1, rest.reduce(0) { $0 + natural[$1] })
+        for c in rest { w[c] = max(0, free) * natural[c] / wanted }
+        return w
+    }
+
+    private func frames(_ subviews: Subviews, total: CGFloat?) -> (cells: [CGRect], size: CGSize) {
+        guard columns > 0 else { return ([], .zero) }
+        let w = widths(subviews, total: total)
+        var cells: [CGRect] = [], y: CGFloat = 0
+        for start in stride(from: 0, to: subviews.count, by: columns) {
+            let row = start..<min(start + columns, subviews.count)
+            let h = row.map { subviews[$0].sizeThatFits(ProposedViewSize(width: w[$0 - start], height: nil)).height }.max() ?? 0
+            var x: CGFloat = 0
+            for k in row { cells.append(CGRect(x: x, y: y, width: w[k - start], height: h)); x += w[k - start] }
+            y += h
+        }
+        return (cells, CGSize(width: w.reduce(0, +), height: y))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        frames(subviews, total: proposal.width.flatMap { $0.isFinite ? $0 : nil }).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (v, f) in zip(subviews, frames(subviews, total: bounds.width).cells) {
+            v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY), proposal: ProposedViewSize(f.size))
+        }
+    }
+}
+
 /// Block-level Markdown, enough for review comments and bot reports: headings, paragraphs, lists, quotes, fenced
 /// code, tables and rules. Inline styling comes from AttributedString; HTML tags are dropped,
 /// keeping their text (a `<summary>` reads as a bold line).
 struct MarkdownText: View {
     var text: String
+    /// A Markdown file rather than a comment: a single line break inside a paragraph is a space (comments keep it as a
+    /// break, as GitHub and Forgejo do), and headings are document-sized.
+    var document = false
 
     enum Block { case paragraph(String), heading(Int, String), list([(indent: Int, marker: String, text: String)]), quote(String), code(String, String), table([[String]]), rule }
 
@@ -528,9 +620,10 @@ struct MarkdownText: View {
         let c = NSCache<NSString, Blocks>(); c.countLimit = 500; c.totalCostLimit = 8 << 20; return c
     }()
 
-    static func rendered(_ text: String) -> [Rendered] {
-        if let b = cache.object(forKey: text as NSString) { return b.value }
-        let out: [Rendered] = parse(text).map { b in
+    static func rendered(_ text: String, document: Bool = false) -> [Rendered] {
+        let key = ((document ? "d\u{0}" : "c\u{0}") + text) as NSString
+        if let b = cache.object(forKey: key) { return b.value }
+        let out: [Rendered] = parse(text, softBreaks: document).map { b in
             switch b {
             case .paragraph(let s): .paragraph(inline(s))
             case .heading(let l, let s): .heading(l, inline(s))
@@ -541,13 +634,13 @@ struct MarkdownText: View {
             case .rule: .rule
             }
         }
-        cache.setObject(Blocks(out), forKey: text as NSString, cost: text.utf16.count * 6)
+        cache.setObject(Blocks(out), forKey: key, cost: text.utf16.count * 6)
         return out
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(Self.rendered(text).enumerated()), id: \.offset) { _, b in block(b) }
+            ForEach(Array(Self.rendered(text, document: document).enumerated()), id: \.offset) { _, b in block(b) }
         }
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -557,8 +650,9 @@ struct MarkdownText: View {
         switch b {
         case .paragraph(let s): Text(s).fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let s):
-            Text(s).font(level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
-                .padding(.top, 2)
+            Text(s).font(document ? [Font.title.bold(), .title2.weight(.semibold), .title3.weight(.semibold), .headline][min(level, 4) - 1]
+                         : level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
+                .padding(.top, document && level <= 2 ? 10 : 2)
         case .list(let items):
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
@@ -576,23 +670,17 @@ struct MarkdownText: View {
         case .code(let lang, let s): CodeBlock(text: s, path: "x." + (lang.isEmpty ? "txt" : lang), maxLines: 30)
         case .table(let rows):
             let width = rows.map(\.count).max() ?? 0
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            TableLayout(columns: width) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
-                    GridRow {
-                        ForEach(0..<width, id: \.self) { k in
-                            Text(k < row.count ? row[k] : "")
-                                .fontWeight(i == 0 ? .semibold : nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                                .background(i == 0 ? Color.primary.opacity(0.07) : i % 2 == 0 ? Color.primary.opacity(0.03) : .clear)
-                                .overlay(alignment: .leading) { if k > 0 { Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1) } }
-                        }
+                    ForEach(0..<width, id: \.self) { k in
+                        Text(k < row.count ? row[k] : "")
+                            .fontWeight(i == 0 ? .semibold : nil)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .overlay(alignment: .top) { if i > 0 { Rectangle().fill(Color.primary.opacity(i == 1 ? 0.25 : 0.1)).frame(height: 1) } }
                     }
-                    if i == 0 { Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1).gridCellUnsizedAxes(.horizontal) }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.12)))
         case .rule: Divider()
         }
@@ -622,10 +710,13 @@ struct MarkdownText: View {
         .filter { row in !row.allSatisfy { $0.range(of: #"^:?-+:?$"#, options: .regularExpression) != nil } }
     }
 
-    static func parse(_ text: String) -> [Block] {
+    static func parse(_ text: String, softBreaks: Bool = false) -> [Block] {
         var out: [Block] = [], para: [String] = [], list: [(indent: Int, marker: String, text: String)] = [], quote: [String] = [], table: [String] = []
         func flush() {
-            if !para.isEmpty { out.append(.paragraph(para.joined(separator: "\n"))); para = [] }
+            if !para.isEmpty {
+                out.append(.paragraph(softBreaks ? para.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ") : para.joined(separator: "\n")))
+                para = []
+            }
             if !list.isEmpty { out.append(.list(list)); list = [] }
             if !quote.isEmpty { out.append(.quote(quote.joined(separator: "\n"))); quote = [] }
             if !table.isEmpty { out.append(.table(Self.rows(table))); table = [] }

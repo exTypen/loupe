@@ -366,6 +366,18 @@ enum SQLLens {
             let p = parsed[key]!
             return p.statements.first { $0.line == at.line }?.source(p.lines)
         }
+        /// A constraint as written: its lines from the migration, without the indentation they share.
+        func written(_ c: SQL.Constraint, old: Bool) -> String {
+            guard let t = (old ? textA : textB)[c.at.file] else { return c.definition }
+            let lines = t.split(separator: "\n", omittingEmptySubsequences: false)
+            guard c.at.line >= 1, c.endLine <= lines.count, c.at.line <= c.endLine else { return c.definition }
+            var ls = lines[(c.at.line - 1)...(c.endLine - 1)].map(String.init)
+            // Just the constraint: not the ALTER TABLE … ADD or CONSTRAINT <name> it was written after.
+            ls[0] = ls[0].replacingOccurrences(of: #"(?i)^(\s*)(ALTER\s+TABLE\s+(ONLY\s+)?\S+\s+ADD\s+)?(CONSTRAINT\s+\S+\s+)?"#, with: "$1", options: .regularExpression)
+            let indent = ls.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map { $0.prefix { $0 == " " }.count }.min() ?? 0
+            return ls.map { String($0.dropFirst(min(indent, $0.prefix { $0 == " " }.count))) }.joined(separator: "\n")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",;").union(.whitespacesAndNewlines))
+        }
         func col(_ c: SQL.Column, _ t: SQL.Table, _ kind: LensFact.Kind) -> DBColumn {
             DBColumn(name: c.name, type: c.type, notNull: c.notNull, defaultValue: c.defaultValue, references: c.references,
                      primary: t.primaryKey.contains(c.name), kind: kind, path: c.at?.file, line: c.at?.line)
@@ -416,12 +428,19 @@ enum SQLLens {
                 extras[n, default: []].append(LensFact(kind: .changed, title: "primary key", path: tb.at?.file, line: tb.at?.line, tag: "key",
                                                        before: "(\(ta.primaryKey.joined(separator: ", ")))", after: "(\(tb.primaryKey.joined(separator: ", ")))"))
             }
-            for c in Set(tb.constraints.keys).subtracting(ta.constraints.keys).sorted() {
-                let at = tb.constraints[c] ?? nil
-                extras[n, default: []].append(LensFact(kind: .added, title: c, detail: "constraint added", path: at?.file, line: at?.line, tag: "constraint"))
+            // Constraints by name: added, dropped, or re-created with another definition (DROP + ADD of one name).
+            for (c, con) in tb.constraints.sorted(by: { $0.key < $1.key }) {
+                if let o = ta.constraints[c] {
+                    guard o.definition != con.definition else { continue }
+                    extras[n, default: []].append(LensFact(kind: .changed, title: c, detail: "constraint changed", path: con.at.file, line: con.at.line,
+                                                           tag: "constraint", before: written(o, old: true), after: written(con, old: false)))
+                } else {
+                    extras[n, default: []].append(LensFact(kind: .added, title: c, detail: "constraint added", path: con.at.file, line: con.at.line,
+                                                           tag: "constraint", after: written(con, old: false)))
+                }
             }
-            for c in Set(ta.constraints.keys).subtracting(tb.constraints.keys).sorted() {
-                extras[n, default: []].append(LensFact(kind: .removed, title: c, detail: "constraint dropped", tag: "constraint"))
+            for (c, con) in ta.constraints.sorted(by: { $0.key < $1.key }) where tb.constraints[c] == nil {
+                extras[n, default: []].append(LensFact(kind: .removed, title: c, detail: "constraint dropped", tag: "constraint", before: written(con, old: true)))
             }
             let t = DBTable(name: n, kind: .changed, columns: cols, path: tb.at?.file, line: tb.at?.line)
             if changed { tables[n] = t } else { context[n] = t }
