@@ -395,7 +395,8 @@ struct SpacePager<Page: View>: View {
                     .offset(x: (CGFloat(i) - p) * width)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // minWidth 0: without it the pages' fixed width became the pager's minimum, so the sidebar could widen but never narrow.
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .overlay(SwipePager(index: index, count: count,
