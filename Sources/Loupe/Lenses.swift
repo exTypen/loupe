@@ -172,7 +172,7 @@ enum ConfigLens {
 
     static func isConfig(_ p: String) -> Bool {
         let name = (p as NSString).lastPathComponent, ext = (p as NSString).pathExtension.lowercased()
-        if handledElsewhere.contains(name) { return false }
+        if handledElsewhere.contains(name) || ["Assets", "Tests", "Generated"].contains(FilesLens.category(p)) { return false }
         return ["json", "toml", "yaml", "yml", "properties"].contains(ext) || name.hasPrefix(".env") || ext == "env"
     }
 

@@ -432,8 +432,7 @@ private struct SummaryTile: View {
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).opacity(hover && report.kind != .files ? 1 : 0)
             }
-            HStack(alignment: .bottom, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
+            let number = VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text("\(m.value)").font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
                         Text(m.unit).font(.callout).foregroundStyle(.secondary).lineLimit(1)
@@ -446,8 +445,15 @@ private struct SummaryTile: View {
                     .frame(height: 13, alignment: .leading)
                 }
                 .fixedSize(horizontal: report.kind == .files, vertical: false)
-                if report.kind == .files { FileKinds(facts: report.sections.first?.facts ?? [], kinds: report.kinds, onOpen: onOpen) }
-            }
+            if report.kind == .files {
+                let kinds = FileKinds(facts: report.sections.first?.facts ?? [], kinds: report.kinds, onOpen: onOpen)
+                // Beside the number while the breakdown has room for a line or two; under it in a narrow tile, where
+                // the chips would otherwise stack one per line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .bottom, spacing: 16) { number; kinds.frame(minWidth: 300) }
+                    VStack(alignment: .leading, spacing: 10) { number; kinds }
+                }
+            } else { number }
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -524,6 +530,7 @@ private struct FileKinds: View {
 
 /// "● 2 SQL": its files in a popover.
 private struct KindChip: View {
+    static let singular = ["Tests": "test", "Dependencies": "dependency", "Docs": "doc", "Assets": "asset"]
     var fact: LensFact
     var color: Color
     var files: [ChangedPath]
@@ -535,7 +542,7 @@ private struct KindChip: View {
         Button { shown = true } label: {
             HStack(spacing: 4) {
                 Circle().fill(color).frame(width: 7, height: 7)
-                Text("\(fact.count ?? 0) \(fact.title == "SQL" ? "SQL" : fact.title.lowercased())")
+                Text("\(fact.count ?? 0) \(fact.title == "SQL" ? "SQL" : fact.count == 1 ? Self.singular[fact.title, default: fact.title.lowercased()] : fact.title.lowercased())")
                     .foregroundStyle(hover || shown ? .primary : .secondary)
             }
             .font(.caption)

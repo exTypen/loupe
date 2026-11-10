@@ -455,6 +455,7 @@ struct GraphCell: View {
 
 struct RefBadge: View {
     var ref: String   // from --decorate=full: "HEAD -> refs/heads/x", "refs/remotes/origin/x", "tag: refs/tags/v1", "HEAD"
+    @Environment(\.backgroundProminence) private var prominence   // .increased on a selected row's accent fill
     var body: some View {
         let (name, icon, tint): (String, String, Color) = {
             if ref.hasPrefix("HEAD -> ") { return (String(ref.dropFirst(8)).replacingOccurrences(of: "refs/heads/", with: ""), "arrow.triangle.branch", .accentColor) }
@@ -468,8 +469,8 @@ struct RefBadge: View {
             .font(.caption2.weight(.medium))
             .lineLimit(1)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .foregroundStyle(tint)
-            .background(tint.opacity(0.12), in: Capsule())
+            .foregroundStyle(prominence == .increased ? .white : tint)
+            .background((prominence == .increased ? Color.white.opacity(0.2) : tint.opacity(0.12)), in: Capsule())
     }
 }
 

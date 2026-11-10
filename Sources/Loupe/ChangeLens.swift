@@ -152,6 +152,8 @@ enum FilesLens {
         if ext == "sql" { return "SQL" }
         if ["cargo.toml", "package.json", "go.mod", "package.swift", "pyproject.toml", "requirements.txt", "flake.nix", "gemfile", "composer.json"].contains(name) { return "Dependencies" }
         if l.hasPrefix(".github/") || l.hasPrefix(".forgejo/") || l.hasPrefix(".gitea/") || name == "dockerfile" || name.hasPrefix("dockerfile.") || name.hasSuffix(".nix") { return "Build & CI" }
+        // An animation's JSON under assets/ is content the app ships, not configuration.
+        if ["json", "xml"].contains(ext), dirs.contains(where: { ["assets", "public", "static", "res", "resources"].contains($0) }) { return "Assets" }
         if ["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "plist", "xml", "properties"].contains(ext) || name.hasPrefix(".env") { return "Config" }
         if ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "pdf", "ttf", "otf", "woff", "woff2", "mp4", "mov", "zip"].contains(ext) { return "Assets" }
         return "Code"
