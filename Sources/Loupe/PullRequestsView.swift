@@ -184,6 +184,43 @@ struct PullRow: View {
 }
 
 /// Forgejo avatar with an initials fallback while loading or when it can't be fetched.
+/// "✓ 3 approved": who, in a popover.
+private struct ReviewBadge: View {
+    var label: String
+    var icon: String
+    var color: Color
+    var users: [FUser]
+    @State private var shown = false
+    @State private var hover = false
+
+    var body: some View {
+        Button { shown = true } label: {
+            Label { Text("\(users.count) \(label)").foregroundStyle(hover || shown ? .primary : .secondary) }
+                  icon: { Image(systemName: icon).foregroundStyle(color) }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .fixedSize()
+        .onHover { hover = $0 }
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label.prefix(1).uppercased() + label.dropFirst()).font(.headline).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
+                ForEach(users, id: \.login) { u in
+                    HStack(spacing: 8) {
+                        Avatar(user: u, size: 20)
+                        Text(u.login).lineLimit(1)
+                    }
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                }
+            }
+            .padding(.bottom, 8)
+            .frame(minWidth: 200, alignment: .leading)
+        }
+    }
+}
+
 struct Avatar: View {
     var user: FUser
     var size: CGFloat = 20
@@ -334,17 +371,16 @@ private struct PullHeader: View {
         .background(.bar)
     }
 
-    /// One mark per state, with the count; the names are in the tooltip.
+    /// One mark per state, with the count; a click lists who.
     @ViewBuilder private var reviewBadges: some View {
         let states = pull.reviewerStates
+        let users = Dictionary(((pull.pr.requested_reviewers ?? []) + pull.reviews.compactMap(\.user)).map { ($0.login, $0) }) { a, b in a.avatar_url == nil ? b : a }
         ForEach([(PullRequestModel.ReviewerState.approved, "approved", "checkmark.circle.fill", Color.green),
                  (.changesRequested, "requested changes", "exclamationmark.circle.fill", .red),
                  (.pending, "pending", "circle.fill", .orange)], id: \.1) { state, label, icon, color in
             let names = states.filter { $0.state == state }.map(\.login)
             if !names.isEmpty {
-                Label { Text("\(names.count) \(label)").foregroundStyle(.secondary) } icon: { Image(systemName: icon).foregroundStyle(color) }
-                    .fixedSize()
-                    .help(names.joined(separator: ", "))
+                ReviewBadge(label: label, icon: icon, color: color, users: names.map { users[$0] ?? FUser(login: $0) })
             }
         }
         .font(.caption)
