@@ -55,6 +55,42 @@ import AppKit
     #expect(RemoteRepo(remoteURL: "http://localhost:3300/loupe/demo.git")?.host == "localhost:3300")
 }
 
+@Test func tellsMergedBranchesFromNewOnes() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-\(UUID().uuidString)").path
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    func git(_ args: String...) async throws { try await Git.run(["-c", "user.name=t", "-c", "user.email=t@t"] + args, in: dir) }
+    func commit(_ name: String) async throws {
+        try name.write(toFile: dir + "/" + name, atomically: true, encoding: .utf8)
+        try await git("add", ".")
+        try await git("commit", "-qm", name)
+    }
+    try await git("init", "-q", "-b", "main")
+    try await commit("base")
+    try await git("branch", "fresh")
+    try await git("switch", "-qc", "squashed")
+    try await commit("s1")
+    try await commit("s2")
+    try await git("switch", "-q", "main")
+    try await git("switch", "-qc", "fastForwarded")
+    try await commit("ff")
+    try await git("switch", "-q", "main")
+    try await git("switch", "-qc", "open")
+    try await commit("o")
+    try await git("switch", "-q", "main")
+    try await git("merge", "-q", "--squash", "squashed")
+    try await git("commit", "-qm", "squash")
+    try await commit("later")          // target moved on after the squash
+    try await git("merge", "-q", "--no-edit", "fastForwarded")
+
+    let target = try #require(await Git.integrationTarget(remote: "origin", in: dir))
+    #expect(target.name == "main")
+    #expect(await Git.isMerged(branch: "squashed", into: target.name, in: dir))
+    #expect(await Git.isMerged(branch: "fastForwarded", into: target.name, in: dir))
+    #expect(!(await Git.isMerged(branch: "fresh", into: target.name, in: dir)))
+    #expect(!(await Git.isMerged(branch: "open", into: target.name, in: dir)))
+}
+
 @Test func stagesSingleHunkAgainstRealRepo() async throws {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-\(UUID().uuidString)").path
     try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

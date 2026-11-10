@@ -573,13 +573,18 @@ struct WorktreeRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: isMain ? "folder" : "arrow.triangle.branch")
-                .foregroundStyle(isMain ? Color.secondary : Color.accentColor)
+            Image(systemName: isMain ? "folder" : model.isMerged ? "arrow.triangle.merge" : "arrow.triangle.branch")
+                .foregroundStyle(isMain ? Color.secondary : model.isMerged ? Color.purple : Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).lineLimit(1)
                 Text(wt.branch ?? "detached @ \(wt.head.prefix(7))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
+            if model.isMerged {
+                Text("Merged").font(.caption2.weight(.medium)).foregroundStyle(.purple).fixedSize()
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color.purple.opacity(0.15), in: Capsule())
+            }
             if model.ahead > 0 { Text(verbatim: "↑\(String(model.ahead))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             if model.behind > 0 { Text(verbatim: "↓\(String(model.behind))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             if model.changeCount > 0 {

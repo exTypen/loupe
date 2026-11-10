@@ -103,6 +103,31 @@ extension Git {
         if let c = cur { result.append(c) }
         return result
     }
+
+    /// The branch finished work lands on, and its tip. The remote's view first: a local main is often behind it.
+    static func integrationTarget(remote: String, in dir: String) async -> (name: String, oid: String)? {
+        for ref in ["\(remote)/HEAD", "\(remote)/main", "\(remote)/master", "main", "master"] {
+            let f = (try? await string(["rev-parse", ref, "--abbrev-ref", ref], in: dir))?.split(separator: "\n") ?? []
+            if f.count == 2 { return (String(f[1]), String(f[0])) }
+        }
+        return nil
+    }
+
+    /// Whether the branch's work is already on `target`, however it got there.
+    static func isMerged(branch: String, into target: String, in dir: String) async -> Bool {
+        func out(_ args: [String]) async -> String? {
+            (try? await string(args, in: dir))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let ahead = await out(["rev-list", "--count", "\(target)..\(branch)"]) else { return false }
+        if ahead != "0" {
+            // Squashed or rebased: its commits aren't on target, but merging them would change nothing.
+            guard let merged = await out(["merge-tree", "--write-tree", "--no-messages", target, branch]) else { return false }   // conflicts throw
+            return merged == (await out(["rev-parse", "\(target)^{tree}"]))
+        }
+        // No commits of its own: a branch just cut from target looks the same as one merged, unless it was ever committed on.
+        // ponytail: a PR checked out and merged with a merge commit, never committed on locally, reads as not merged; reflog is the only local signal.
+        return (await out(["reflog", "show", "--format=%gs", "refs/heads/\(branch)"]))?.split(separator: "\n").contains { $0.hasPrefix("commit") } ?? false
+    }
 }
 
 // MARK: - Status

@@ -224,7 +224,9 @@ final class WorktreeModel {
     private(set) var listed: [FileChange] = []   // file list order
     private(set) var changeCount = 0
     var stashCount = 0
-    var operation: GitOperation?       // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
+    var isMerged = false               // the branch's work is already on the default branch
+    @ObservationIgnored private var mergedKey = ""
+    var operation: GitOperation?      // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
     var operationSubject = ""          // the commit it's applying
     @ObservationIgnored private var gitDir: String?
     var selectedFileID: String?            // the file whose diff is shown
@@ -275,7 +277,23 @@ final class WorktreeModel {
             selectedFileIDs = selectedFileIDs.intersection(files.map(\.id))   // in place would notify every refresh
             if selectedFileIDs.isEmpty, let id = selectedFileID { selectedFileIDs = [id] }
             loadDiff()
+            await detectMerged(branch: s.branch, head: s.oid)
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// Runs on every status refresh, so the check itself only happens when the branch or its target moved.
+    private func detectMerged(branch: String?, head: String) async {
+        guard let branch, let target = await Git.integrationTarget(remote: remoteName, in: path),
+              target.name != branch, target.name != "\(remoteName)/\(branch)" else {
+            mergedKey = ""
+            if isMerged { isMerged = false }
+            return
+        }
+        let key = head + target.oid
+        guard key != mergedKey else { return }
+        mergedKey = key
+        let merged = await Git.isMerged(branch: branch, into: target.name, in: path)
+        if merged != isMerged { isMerged = merged }
     }
 
     private func detectOperation() async {
