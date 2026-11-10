@@ -47,7 +47,9 @@ struct ChangeOverview: View {
     }
 
     @ViewBuilder private func content(_ reports: [LensReport], _ proxy: ScrollViewProxy) -> some View {
-        LazyVStack(alignment: .leading, spacing: 28) {
+        // Not lazy: a handful of very tall sections whose heights differ from the estimates kept LazyVStack
+        // re-placing them forever while scrolling (main thread pinned at 100%), and laziness saves nothing at this count.
+        VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 10) {
                 Summary(reports: reports, onOpen: onOpen) { id in withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) } }
                 if let branch { BranchRow(status: branch, onOpen: onOpen) }
