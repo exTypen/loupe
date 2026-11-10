@@ -541,6 +541,7 @@ struct PROverview: View {
     var pull: PullRequestModel
     var onOpen: (String, Int?) -> Void
     @State private var base: String?
+    @State private var target: (ref: String, name: String)?
     @State private var error: String?
 
     var body: some View {
@@ -548,7 +549,7 @@ struct PROverview: View {
             if let base {
                 ChangeOverview(dir: pull.local.dir, a: .rev(base), b: .rev(pull.pr.head.sha),
                                changes: pull.files.map { ChangedPath(old: $0.oldPath, new: $0.newPath) },
-                               key: "\(base) \(pull.pr.head.sha) \(pull.files.count)", onOpen: onOpen)
+                               key: "\(base) \(pull.pr.head.sha) \(pull.files.count) \(target?.ref ?? "")", target: target, onOpen: onOpen)
             } else if let error {
                 ContentUnavailableView("Can't Read the Pull Request", systemImage: "exclamationmark.triangle", description: Text(error))
             } else {
@@ -558,6 +559,10 @@ struct PROverview: View {
         .task(id: pull.pr.head.sha) {
             do {
                 try await pull.fetchHead()
+                // The base branch as last fetched, which may be further on than the PR's own record of it.
+                let tracking = "refs/remotes/\(pull.local.remote)/\(pull.pr.base.ref)^{commit}"
+                let tip = (try? await Git.string(["rev-parse", "--verify", "-q", tracking], in: pull.local.dir))?.trimmingCharacters(in: .whitespacesAndNewlines)
+                target = (tip?.isEmpty == false ? tip! : pull.pr.base.sha, pull.pr.base.ref)
                 base = try await Git.string(["merge-base", pull.pr.base.sha, pull.pr.head.sha], in: pull.local.dir)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             } catch { self.error = error.localizedDescription }

@@ -9,10 +9,11 @@ struct LoupeApp: App {
     init() {
         // Dev aid: `Loupe --api /repos/o/r/pulls/1/reviews` prints a Forgejo response using the app's own Keychain
         // access (the terminal's `security` tool gets an ACL prompt for Loupe's item).
-        // Dev aid: `Loupe --lens <repo> <revA> <revB|worktree>` prints the change lenses' report.
+        // Dev aid: `Loupe --lens <repo> <revA> <revB|worktree> [<upstream>]` prints the change lenses' report.
         if let i = CommandLine.arguments.firstIndex(of: "--lens"), i + 3 < CommandLine.arguments.count {
             let a = CommandLine.arguments
             let (dir, ra, rb) = (a[i + 1], a[i + 2], a[i + 3])
+            let up = i + 4 < a.count && !a[i + 4].hasPrefix("-") ? a[i + 4] : nil
             let sem = DispatchSemaphore(value: 0)
             Task.detached {
                 let b: Snapshot = rb == "worktree" ? .worktree : .rev(rb)
@@ -27,13 +28,17 @@ struct LoupeApp: App {
                     else { changes.append(ChangedPath(old: f[k + 1], new: f[k + 1])); k += 2 }
                 }
                 let start = Date()
-                for r in await ChangeLens.analyze(changes, a: .rev(ra), b: b, in: dir) {
+                if let up, let s = await BranchLens.status(head: rb, upstream: up, target: up, paths: changes.map(\.path), in: dir) {
+                    print("■ \(s.behind) behind \(s.target), \(s.touching.count) touching, conflicts: \(s.conflicts.map { $0.isEmpty ? "none" : $0.joined(separator: ", ") } ?? "unknown")")
+                }
+                for r in await ChangeLens.analyze(changes, a: .rev(ra), b: b, upstream: up, in: dir) {
                     print("■ \(r.title): \(r.summary)")
                     for s in r.sections {
                         print("  \(s.title)")
                         for x in s.facts.prefix(40) {
                             let g = switch x.kind { case .added: "+"; case .removed: "−"; case .changed: "~"; case .renamed: "→"; case .info: "·"; case .warning: "!" }
                             print("    \(g) \(x.title)\(x.detail.map { "  — \($0)" } ?? "")\(x.path.map { "  @\($0)\(x.line.map { ":\($0)" } ?? "")" } ?? "")")
+                            for n in x.notes { print("        \(n)") }
                         }
                         if s.facts.count > 40 { print("    … \(s.facts.count - 40) more") }
                     }

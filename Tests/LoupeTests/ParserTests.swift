@@ -525,3 +525,61 @@ import AppKit
     #expect(d.rows.filter { $0.mark == "-" }.isEmpty)
     #expect(d.rows.filter { $0.mark == "+" }.map { $0.text.trimmingCharacters(in: .whitespaces) }.sorted() == ["(", ")", "OR c"])
 }
+
+@Test func classifiesFilesByKind() {
+    #expect(FilesLens.category("src/latest.rs") == "Code")
+    #expect(FilesLens.category("Sources/Loupe/FileInspector.swift") == "Code")
+    #expect(FilesLens.category("src/block_storage.rs") == "Code")
+    #expect(FilesLens.category("ecp/src/infra_e2e.rs") == "Tests")
+    #expect(FilesLens.category("pkg/net/conn_test.go") == "Tests")
+    #expect(FilesLens.category("web/src/a.test.ts") == "Tests")
+    #expect(FilesLens.category("features/network.feature") == "Tests")
+    #expect(FilesLens.category("integration/src/acceptance/steps/x.rs") == "Tests")
+    #expect(FilesLens.category("Tests/LoupeTests/ParserTests.swift") == "Tests")
+    #expect(FilesLens.category("docs/spec.md") == "Docs")
+    #expect(FilesLens.category("Cargo.lock") == "Generated")
+    #expect(FilesLens.category("web/pnpm-lock.yaml") == "Generated")
+    #expect(FilesLens.category("Cargo.toml") == "Dependencies")
+    #expect(FilesLens.category("src/x.rs", generated: true) == "Generated")
+}
+
+@Test func flagsRiskyMigrationStatements() {
+    let sql = """
+    ALTER TABLE users ADD COLUMN plan text NOT NULL;
+    ALTER TABLE users ADD COLUMN note text NOT NULL DEFAULT '';
+    ALTER TABLE users ALTER COLUMN age TYPE bigint, DROP COLUMN email;
+    CREATE INDEX users_plan ON users (plan);
+    CREATE INDEX CONCURRENTLY users_note ON users (note);
+    CREATE INDEX fresh_x ON fresh (x);
+    UPDATE users SET plan = 'free';
+    DROP TABLE legacy;
+    """
+    let risks = SQL.statements(sql).flatMap { SQL.risks($0, existing: ["users", "legacy"], migration: true).map(\.title) }
+    #expect(risks == ["NOT NULL column without a default: users.plan", "Changes the type of users.age", "Drops column users.email",
+                      "Index on users built without CONCURRENTLY", "Updates rows in users", "Drops table legacy"])
+}
+
+@Test func describesTriggersAndWhatTheyRaise() {
+    let s = SQL.replay([("1.sql", """
+    CREATE TABLE networks (id int, cidr_block text);
+    CREATE FUNCTION lock_cidr() RETURNS TRIGGER AS $$ BEGIN
+        RAISE NOTICE 'hi';
+        RAISE EXCEPTION 'the CIDR can''t change' USING ERRCODE = 'check_violation';
+        RETURN NEW;
+    END; $$ LANGUAGE plpgsql;
+    CREATE TRIGGER lock_cidr_trg BEFORE UPDATE OF cidr_block ON networks FOR EACH ROW EXECUTE FUNCTION lock_cidr();
+    """)])
+    #expect(s.triggers["lock_cidr_trg"]?.detail == "BEFORE UPDATE OF cidr_block · each row → lock_cidr()")
+    #expect(SQL.raises(s.functions["lock_cidr"]!.body) == ["“the CIDR can't change” · check_violation"])
+}
+
+@Test func readsMigrationVersionsAndFollowUps() {
+    #expect(SQLLens.version("2026-11-03-100000_lock") == [2026, 11, 3, 100000])
+    #expect(SQLLens.version("V2_1__init.sql") == [2, 1])
+    #expect(SQLLens.version("0042_add.up.sql") == [42])
+    #expect(SQLLens.version("init.sql") == nil)
+    let lines = ["// TODO: retry", "model.fit(x)", "it.skip('flaky', () => {})", "#[allow(dead_code)]", "let latest = 1"]
+        .enumerated().map { AddedLines.Line(path: "a.ts", line: $0.offset + 1, text: $0.element) }
+    let r = FollowUpLens.report(lines, skip: { _ in false })
+    #expect(r?.sections.map { $0.facts.map(\.line) } == [[1], [3], [4]])
+}

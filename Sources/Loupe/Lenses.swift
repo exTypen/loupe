@@ -333,3 +333,101 @@ enum ConfigLens {
                                              removed: all.filter { $0.kind == .removed }.count, changed: all.filter { $0.kind == .changed }.count))
     }
 }
+
+// MARK: - Lines a change adds
+
+enum AddedLines {
+    struct Line: Sendable { var path: String; var line: Int; var text: String }
+
+    /// Every line the change adds, with where it is: the diff from A to B without context, and the whole of each new
+    /// file the diff doesn't cover (untracked, or all of them when A is empty).
+    static func read(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> [Line] {
+        let revs: [String]? = switch (a, b) {
+        case (.rev(let x), .rev(let y)): [x, y]
+        case (.rev(let x), .worktree): [x]
+        default: nil
+        }
+        var out: [Line] = [], seen = Set<String>()
+        if let revs, let data = try? await Git.run(["diff", "-U0", "-M", "--no-color", "--no-ext-diff"] + revs, in: dir) {
+            (out, seen) = await Task.detached {
+                var out: [Line] = [], seen = Set<String>()
+                for f in DiffParser.parse(data) {
+                    seen.insert(f.path)
+                    guard !FilesLens.generatedName(f.path.lowercased()) else { continue }
+                    for l in f.lines where l.kind == .added { out.append(Line(path: f.path, line: l.newLine ?? 1, text: String(l.text))) }
+                }
+                return (out, seen)
+            }.value
+        }
+        let rest = changes.filter { $0.old == nil || revs == nil }.compactMap(\.new)
+            .filter { !seen.contains($0) && !FilesLens.generatedName($0.lowercased()) }
+        for (p, t) in await b.read(Array(rest.prefix(300)), in: dir) {
+            for (i, l) in t.split(separator: "\n", omittingEmptySubsequences: false).enumerated() { out.append(Line(path: p, line: i + 1, text: String(l))) }
+        }
+        return out
+    }
+}
+
+// MARK: - Follow-ups: what a change leaves for later or switches off
+
+enum FollowUpLens {
+    static let kinds: [(title: String, noun: String, pattern: String)] = [
+        ("To Do", "to-do", #"\b(TODO|FIXME|XXX|HACK)\b"#),
+        ("Skipped and Focused Tests", "skipped test", #"#\[ignore\b|\b(it|test|describe|context)\.(skip|only)\(|\b(xit|xdescribe|xtest)\(|@(Disabled|Ignore)\b|\bt\.Skip(Now|f)?\(|\b(pytest\.mark|unittest)\.skip|\bXCTSkip"#),
+        ("Silenced Checks", "silenced check", #"@ts-(ignore|expect-error|nocheck)|eslint-disable|biome-ignore|#!?\[allow\(|\bnoqa\b|type:\s*ignore|\bnolint\b|NOLINT|swiftlint:disable|rubocop:disable|pylint:\s*disable|#pragma warning disable|@SuppressWarnings"#),
+    ]
+
+    /// The added lines that match, per kind; `skip` leaves out files not worth it (generated code, docs).
+    static func report(_ lines: [AddedLines.Line], skip: (String) -> Bool) -> LensReport? {
+        var skipped: [String: Bool] = [:], sections: [LensSection] = [], counts: [String] = []
+        for k in kinds {
+            let re = try! NSRegularExpression(pattern: k.pattern)
+            var facts: [LensFact] = []
+            for l in lines {
+                let ns = l.text as NSString
+                guard let m = re.firstMatch(in: l.text, range: NSRange(location: 0, length: ns.length)) else { continue }
+                if skipped[l.path] == nil { skipped[l.path] = skip(l.path) }
+                guard skipped[l.path] == false else { continue }
+                // The line from a little before the match, so a long one still shows it.
+                let from = m.range.location > 60 ? m.range.location - 20 : 0
+                let text = (from > 0 ? "…" : "") + ns.substring(from: from).trimmingCharacters(in: .whitespaces)
+                facts.append(LensFact(kind: .warning, title: text, path: l.path, line: l.line, tag: ns.substring(with: m.range)))
+                if facts.count == 200 { break }
+            }
+            if !facts.isEmpty { sections.append(LensSection(title: k.title, facts: facts)); counts.append(plural(facts.count, k.noun)) }
+        }
+        guard !sections.isEmpty else { return nil }
+        let total = sections.reduce(0) { $0 + $1.facts.count }
+        return LensReport(kind: .followUps, title: "Follow-ups", icon: "checklist", summary: counts.joined(separator: " · "), sections: sections,
+                          metric: LensMetric(value: total, unit: total == 1 ? "follow-up" : "follow-ups"))
+    }
+}
+
+// MARK: - Branch: the change's base against the branch it goes into
+
+struct BranchStatus: Sendable {
+    struct Commit: Sendable, Identifiable { var id: String; var subject: String; var author: String; var date: String; var files: [String] }
+    var target: String
+    var behind: Int
+    var touching: [Commit]      // commits on the target since the change branched off that change the same files
+    var conflicts: [String]?    // nil when git can't tell (before 2.38); empty: it merges cleanly
+}
+
+enum BranchLens {
+    /// nil when `head` already has everything on `upstream`.
+    static func status(head: String, upstream: String, target: String, paths: [String], in dir: String) async -> BranchStatus? {
+        guard let n = Int((try? await Git.string(["rev-list", "--count", "\(head)..\(upstream)"], in: dir))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""), n > 0
+        else { return nil }
+        async let log = Git.string(["--literal-pathspecs", "log", "--format=%x1e%h%x1f%an%x1f%ar%x1f%s", "--name-only", "\(head)..\(upstream)", "--"] + paths.prefix(500), in: dir)
+        async let merge = Git.run(["merge-tree", "--write-tree", "--name-only", "--no-messages", upstream, head], in: dir, allowFailure: true)
+        let touching = ((try? await log) ?? "").split(separator: "\u{1e}").compactMap { rec -> BranchStatus.Commit? in
+            let lines = rec.split(separator: "\n")
+            guard let f = lines.first?.split(separator: "\u{1f}", omittingEmptySubsequences: false), f.count == 4 else { return nil }
+            return BranchStatus.Commit(id: String(f[0]), subject: String(f[3]), author: String(f[1]), date: String(f[2]), files: lines.dropFirst().map(String.init))
+        }
+        // merge-tree prints the merged tree, then the conflicted paths; an older git prints its usage instead.
+        let out = String(decoding: (try? await merge) ?? Data(), as: UTF8.self).split(separator: "\n").map(String.init)
+        let conflicts = out.first.map { $0.count >= 40 && $0.allSatisfy(\.isHexDigit) } == true ? Array(out.dropFirst()) : nil
+        return BranchStatus(target: target, behind: n, touching: touching, conflicts: conflicts)
+    }
+}

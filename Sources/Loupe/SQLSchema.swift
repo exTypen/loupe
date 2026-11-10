@@ -193,6 +193,13 @@ enum SQL {
         static func == (a: Index, b: Index) -> Bool { a.table == b.table && a.definition == b.definition && a.unique == b.unique }
     }
 
+    struct Trigger {
+        var table: String
+        var at: Location
+        var detail = ""            // when it fires and what it runs: "BEFORE UPDATE OF cidr_block · each row → f()"
+        var function: String?
+    }
+
     struct Schema {
         var tables: [String: Table] = [:]
         var indexes: [String: Index] = [:]
@@ -200,7 +207,7 @@ enum SQL {
         var enumAt: [String: Location] = [:]
         var views: [String: (body: String, at: Location)] = [:]
         var functions: [String: (body: String, at: Location)] = [:]
-        var triggers: [String: (table: String, at: Location)] = [:]
+        var triggers: [String: Trigger] = [:]
         /// Statements the reader skipped, by kind ("DO block", "CREATE POLICY"…), with where they are.
         var skipped: [(kind: String, at: Location)] = []
     }
@@ -403,9 +410,16 @@ enum SQL {
                 s.functions[n] = (st.text, at)
             } else if t[i].is("trigger") || (t[i].is("constraint") && i + 1 < t.count && t[i + 1].is("trigger")) {
                 i += t[i].is("constraint") ? 2 : 1
-                guard let n = name(t, &i), let on = t.firstIndex(where: { $0.is("on") }) else { return }
+                guard let n = name(t, &i), let on = t.firstIndex(where: { $0.is("on") }), on >= i else { return }
                 var j = on + 1
-                s.triggers[n] = (name(t, &j) ?? "", at)
+                let table = name(t, &j) ?? ""
+                // The timing and events as Postgres prints them; the rest in words.
+                let keywords: Set<String> = ["before", "after", "instead", "of", "insert", "update", "delete", "truncate", "or"]
+                var parts = [render(t[i..<on].map { k in var k = k; if k.isWord, keywords.contains(k.text) { k.text = k.text.uppercased() }; return k })]
+                if let e = t.firstIndex(where: { $0.is("each") }), e + 1 < t.count { parts.append("each \(t[e + 1].text)") }
+                var fn: String?
+                if let e = t.firstIndex(where: { $0.is("execute") }) { var k = e + 2; fn = name(t, &k) }   // EXECUTE FUNCTION|PROCEDURE f(…)
+                s.triggers[n] = Trigger(table: table, at: at, detail: parts.joined(separator: " · ") + (fn.map { " → \($0)()" } ?? ""), function: fn)
             } else if !t[i].is("extension") && !t[i].is("schema") && !t[i].is("sequence") {
                 s.skipped.append(("CREATE " + t[i].text.uppercased(), at))
             }
@@ -552,5 +566,80 @@ enum SQL {
             break   // OWNER TO, ENABLE TRIGGER, SET (…): no shape change
         }
         s.tables[n] = table
+    }
+
+    // MARK: Reading what a statement does
+
+    /// The errors a function body raises — RAISE [EXCEPTION] 'message' [USING ERRCODE = 'code'] — as "“message” · code".
+    static func raises(_ body: String) -> [String] {
+        body.matches(of: #/(?i)\braise\s+(?:exception\s+)?'((?:[^']|'')*)'([^;]*)/#).map { m in
+            let code = m.2.firstMatch(of: #/(?i)errcode\s*=\s*'([^']+)'/#).map { " · \($0.1)" } ?? ""
+            return "“\(m.1.replacingOccurrences(of: "''", with: "'"))”\(code)"
+        }
+    }
+
+    /// What running a statement on a live database costs beyond its effect: data lost, rows rewritten, writes blocked.
+    /// `existing`: the tables there before the change (an index on a new, empty table blocks nobody). `migration`: data
+    /// statements run on every database, not just a seeded one.
+    static func risks(_ st: Statement, existing: Set<String>, migration: Bool) -> [(title: String, detail: String)] {
+        let t = st.tokens
+        guard let first = t.first, first.isWord else { return [] }
+        var i = 1, out: [(title: String, detail: String)] = []
+        switch first.text {
+        case "drop":
+            guard i < t.count, t[i].is("table") else { return [] }
+            i += 1; _ = ifClause(t, &i)
+            for part in commaSplit(t[i...]) {
+                var j = 0
+                if let n = name(part, &j), existing.contains(n) { out.append(("Drops table \(n)", "Its rows are gone once this runs.")) }
+            }
+        case "alter":
+            guard i < t.count, t[i].is("table") else { return [] }
+            i += 1; _ = ifClause(t, &i); skip(t, &i, "only")
+            guard let n = name(t, &i), existing.contains(n) else { return [] }
+            for a in commaSplit(t[i...]) {
+                guard let verb = a.first else { continue }
+                var j = 1
+                switch verb.text {
+                case "drop":
+                    guard j < a.count, !a[j].is("constraint") else { continue }
+                    skip(a, &j, "column"); _ = ifClause(a, &j)
+                    if j < a.count, let c = a[j].ident { out.append(("Drops column \(n).\(c)", "Its values are gone once this runs.")) }
+                case "add":
+                    guard j < a.count, !["constraint", "primary", "unique", "foreign", "check", "exclude"].contains(a[j].text) else { continue }
+                    skip(a, &j, "column"); _ = ifClause(a, &j)
+                    let notNull = zip(a, a.dropFirst()).contains { $0.is("not") && $1.is("null") }
+                    if j < a.count, let c = a[j].ident, notNull, !a.contains(where: { $0.is("default") || $0.is("generated") }) {
+                        out.append(("NOT NULL column without a default: \(n).\(c)", "Fails on a table that has rows."))
+                    }
+                case "alter":
+                    skip(a, &j, "column")
+                    guard j + 1 < a.count, let c = a[j].ident else { continue }
+                    j += 1
+                    if a[j].is("type") || (a[j].is("set") && j + 1 < a.count && a[j + 1].is("data")) {
+                        out.append(("Changes the type of \(n).\(c)", "Usually rewrites the table under an exclusive lock."))
+                    } else if a[j].is("set"), j + 2 < a.count, a[j + 1].is("not"), a[j + 2].is("null") {
+                        out.append(("Makes \(n).\(c) NOT NULL", "Scans the table under an exclusive lock, and fails on any null."))
+                    }
+                default: break
+                }
+            }
+        case "create":
+            skip(t, &i, "unique")
+            guard i < t.count, t[i].is("index"), !(i + 1 < t.count && t[i + 1].is("concurrently")),
+                  let on = t.firstIndex(where: { $0.is("on") }) else { return [] }
+            var j = on + 1
+            skip(t, &j, "only")
+            if let n = name(t, &j), existing.contains(n) { out.append(("Index on \(n) built without CONCURRENTLY", "Blocks writes to \(n) until it's built.")) }
+        case "update", "delete":
+            guard migration else { return [] }
+            skip(t, &i, "from", "only")
+            guard let n = name(t, &i) else { return [] }
+            let every = !t.contains { $0.is("where") }
+            out.append((first.is("update") ? "Updates rows in \(n)" : "Deletes rows from \(n)",
+                        every ? "Every row: there's no WHERE clause." : "Runs with the migration, on every database."))
+        default: break
+        }
+        return out
     }
 }

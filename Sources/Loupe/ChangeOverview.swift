@@ -7,8 +7,11 @@ struct ChangeOverview: View {
     var b: Snapshot
     var changes: [ChangedPath]
     var key: String                       // recompute when this changes (head sha, file list…)
+    /// The branch the change goes into, when its tip is further on than `a`: a pull request's base branch.
+    var target: (ref: String, name: String)? = nil
     var onOpen: (String, Int?) -> Void
     @State private var reports: [LensReport]?
+    @State private var branch: BranchStatus?
     @State private var computedFor: String?
 
     var body: some View {
@@ -31,16 +34,25 @@ struct ChangeOverview: View {
         }
         .task(id: key) {
             guard computedFor != key else { return }
-            let r = await ChangeLens.analyze(changes, a: a, b: b, in: dir)
+            async let r = ChangeLens.analyze(changes, a: a, b: b, upstream: target?.ref, in: dir)
+            var status: BranchStatus?
+            if let target, case .rev(let head) = b {
+                let paths = Array(Set(changes.flatMap { [$0.old, $0.new].compactMap { $0 } }))
+                status = await BranchLens.status(head: head, upstream: target.ref, target: target.name, paths: paths, in: dir)
+            }
+            let reports = await r
             guard !Task.isCancelled else { return }
-            reports = r; computedFor = key
+            self.reports = reports; branch = status; computedFor = key
         }
     }
 
     @ViewBuilder private func content(_ reports: [LensReport], _ proxy: ScrollViewProxy) -> some View {
         LazyVStack(alignment: .leading, spacing: 28) {
-            Summary(reports: reports) { id in withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) } }
-            if reports.count == 1 {
+            VStack(alignment: .leading, spacing: 10) {
+                Summary(reports: reports, onOpen: onOpen) { id in withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) } }
+                if let branch { BranchRow(status: branch, onOpen: onOpen) }
+            }
+            if !reports.contains(where: { $0.kind != .files && $0.kind != .followUps }) {
                 Text("Nothing structural beyond the files: no schema, dependency or configuration changes.")
                     .font(.callout).foregroundStyle(.secondary)
             }
@@ -94,6 +106,7 @@ private extension LensReport.Kind {
         case .database: .orange
         case .dependencies: .brown
         case .configuration: .gray
+        case .followUps: .purple
         }
     }
 }
@@ -326,6 +339,7 @@ struct LineDiff: View {
 /// Cards in as many columns as fit, each one under the currently shortest column.
 private struct Masonry: Layout {
     var minWidth: CGFloat = 300
+    var maxWidth: CGFloat = 640           // a few cards on a wide window stay readable instead of stretching
     var spacing: CGFloat = 12
 
     /// The frames sizeThatFits measured, reused by the placeSubviews that follows instead of measuring every card again.
@@ -335,8 +349,9 @@ private struct Masonry: Layout {
 
     private func frames(_ width: CGFloat, _ subviews: Subviews, _ cache: inout Cache, reuse: Bool) -> [CGRect] {
         if reuse, cache.width == width, cache.frames.count == subviews.count { return cache.frames }
-        let n = max(1, Int((width + spacing) / (minWidth + spacing)))
-        let w = (width - CGFloat(n - 1) * spacing) / CGFloat(n)
+        // As many columns as fit, but no more than there are cards; a full row never reaches maxWidth.
+        let n = max(1, min(subviews.count, Int((width + spacing) / (minWidth + spacing))))
+        let w = min(maxWidth, (width - CGFloat(n - 1) * spacing) / CGFloat(n))
         var heights = [CGFloat](repeating: 0, count: n)
         let out = subviews.map { v in
             let c = heights.firstIndex(of: heights.min()!)!
@@ -382,10 +397,15 @@ private struct CappedRows<Item: Identifiable, Row: View>: View {
 /// One tile per lens: its headline number and what moved; a tile scrolls to its section.
 private struct Summary: View {
     var reports: [LensReport]
+    var onOpen: (String, Int?) -> Void
     var onSelect: (String) -> Void
     var body: some View {
+        // A lens gets a tile only beside another: alone, its tile would repeat its section's heading.
+        let others = reports.filter { $0.kind != .files }
         HStack(alignment: .top, spacing: 10) {
-            ForEach(reports) { r in SummaryTile(report: r).onTapGesture { if r.kind != .files { onSelect(r.id) } } }
+            ForEach(reports.filter { $0.kind == .files } + (others.count > 1 ? others : [])) { r in
+                SummaryTile(report: r, onOpen: onOpen).onTapGesture { if r.kind != .files { onSelect(r.id) } }
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -393,9 +413,13 @@ private struct Summary: View {
 
 private struct SummaryTile: View {
     var report: LensReport
+    var onOpen: (String, Int?) -> Void
     @State private var hover = false
     var body: some View {
         let m = report.metric
+        // "1 table ~1" says the same thing twice: then the summary says what happened instead.
+        let restates = report.kind != .files && [m.added, m.removed, m.changed].filter { $0 > 0 }.count <= 1
+        let generated = report.kinds["Generated"]?.count ?? 0
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
                 Image(systemName: report.icon).font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
@@ -411,10 +435,15 @@ private struct SummaryTile: View {
                         Text("\(m.value)").font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
                         Text(m.unit).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Deltas(added: m.added, removed: m.removed, changed: m.changed).frame(height: 13, alignment: .leading)
+                    HStack(spacing: 6) {
+                        if restates { Text(report.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        else { Deltas(added: m.added, removed: m.removed, changed: m.changed) }
+                        if generated > 0 { Text("\(m.value - generated) to read").font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .frame(height: 13, alignment: .leading)
                 }
-                .fixedSize()
-                if report.kind == .files { FileKinds(facts: report.sections.first?.facts ?? []) }
+                .fixedSize(horizontal: report.kind == .files, vertical: false)
+                if report.kind == .files { FileKinds(facts: report.sections.first?.facts ?? [], kinds: report.kinds, onOpen: onOpen) }
             }
         }
         .padding(12)
@@ -441,6 +470,7 @@ private struct LensSectionView: View {
                     Text(report.title).font(.title3.weight(.semibold))
                     Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(collapsed ? -90 : 0))
+                    Text(report.summary).font(.callout).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 4)
                     Spacer()
                 }
                 .contentShape(Rectangle())
@@ -452,6 +482,7 @@ private struct LensSectionView: View {
                 case .database: DatabaseBody(groups: report.database, onOpen: onOpen)
                 case .dependencies: DependencyBody(report: report, onOpen: onOpen)
                 case .configuration: ConfigBody(report: report, onOpen: onOpen)
+                case .followUps: FollowUpBody(report: report, onOpen: onOpen)
                 }
             }
         }
@@ -463,8 +494,10 @@ private struct LensSectionView: View {
 /// How the changed files split by kind: a thin bar, and the counts in one wrapping line.
 private struct FileKinds: View {
     var facts: [LensFact]
+    var kinds: [String: [ChangedPath]]
+    var onOpen: (String, Int?) -> Void
     static let colors: [String: Color] = ["Code": .blue, "Tests": .teal, "SQL": .orange, "Dependencies": .brown, "Config": .gray,
-                                          "Build & CI": .indigo, "Docs": .mint, "Assets": .pink]
+                                          "Build & CI": .indigo, "Docs": .mint, "Assets": .pink, "Generated": .gray.opacity(0.45)]
     var body: some View {
         let total = max(1, facts.reduce(0) { $0 + ($1.count ?? 0) })
         VStack(alignment: .leading, spacing: 6) {
@@ -478,13 +511,92 @@ private struct FileKinds: View {
             }
             .frame(height: 4)
             .clipShape(Capsule())
-            facts.enumerated().reduce(Text("")) { t, e in
-                let dot = Text("●").foregroundStyle(Self.colors[e.element.title, default: .gray])
-                return Text("\(t)\(e.offset == 0 ? "" : "   ")\(dot) \(e.element.count ?? 0) \(e.element.title == "SQL" ? "SQL" : e.element.title.lowercased())")
+            Flow(spacing: 12, lineSpacing: 3) {
+                ForEach(facts) { f in KindChip(fact: f, color: Self.colors[f.title, default: .gray], files: kinds[f.title] ?? [], onOpen: onOpen) }
             }
-            .font(.caption).foregroundStyle(.secondary)
-            .help(facts.map { "\($0.title): \($0.detail ?? "")" }.joined(separator: "\n"))
         }
+    }
+}
+
+/// "● 2 SQL": its files in a popover.
+private struct KindChip: View {
+    var fact: LensFact
+    var color: Color
+    var files: [ChangedPath]
+    var onOpen: (String, Int?) -> Void
+    @State private var shown = false
+    @State private var hover = false
+
+    var body: some View {
+        Button { shown = true } label: {
+            HStack(spacing: 4) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text("\(fact.count ?? 0) \(fact.title == "SQL" ? "SQL" : fact.title.lowercased())")
+                    .foregroundStyle(hover || shown ? .primary : .secondary)
+            }
+            .font(.caption)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hover = $0 }
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            KindFiles(kind: fact.title, files: files) { p in shown = false; onOpen(p, nil) }
+        }
+    }
+}
+
+/// Views in rows, wrapping to the next row where one doesn't fit.
+private struct Flow: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    private func frames(_ width: CGFloat, _ subviews: Subviews) -> [CGRect] {
+        var out: [CGRect] = [], x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0, x + s.width > width { x = 0; y += row + lineSpacing; row = 0 }
+            out.append(CGRect(origin: CGPoint(x: x, y: y), size: s))
+            x += s.width + spacing; row = max(row, s.height)
+        }
+        return out
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let f = frames(proposal.width ?? .infinity, subviews)
+        return CGSize(width: f.map(\.maxX).max() ?? 0, height: f.map(\.maxY).max() ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (v, f) in zip(subviews, frames(bounds.width, subviews)) {
+            v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY), proposal: ProposedViewSize(f.size))
+        }
+    }
+}
+
+/// The files of one kind, each opening in Files.
+private struct KindFiles: View {
+    var kind: String
+    var files: [ChangedPath]
+    var open: (String) -> Void
+
+    var body: some View {
+        let list = VStack(alignment: .leading, spacing: 0) {
+            Text(kind).font(.headline).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
+            ForEach(files, id: \.self) { c in
+                let k: LensFact.Kind = c.old == nil ? .added : c.new == nil ? .removed : c.old != c.new ? .renamed : .changed
+                HStack(spacing: 7) {
+                    FileIcon(path: c.path, size: 14)
+                    Text((c.path as NSString).lastPathComponent).lineLimit(1)
+                    Text((c.path as NSString).deletingLastPathComponent).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    Spacer(minLength: 6)
+                    StatusSymbol(kind: k, size: 10)
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                .openable(c.path, nil) { p, _ in open(p) }
+            }
+        }
+        .padding(.bottom, 8)
+        Group { if files.count > 16 { ScrollView { list }.frame(height: 460) } else { list } }.frame(width: 400)
     }
 }
 
@@ -500,7 +612,7 @@ private struct DatabaseBody: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Label(g.root, systemImage: "folder").font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     if !g.warnings.isEmpty {
-                        Grouped { Rows(items: g.warnings) { WarningRow(fact: $0, onOpen: onOpen) } }
+                        Grouped { CappedRows(items: g.warnings, limit: 6, noun: "Warnings", inset: 36) { WarningRow(fact: $0, onOpen: onOpen) } }
                     }
                     if !g.tables.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
@@ -557,6 +669,8 @@ private struct TableBox: View {
     var body: some View {
         let r = rows
         let limit = table.kind == .changed || showAll ? Int.max : 12
+        // Only a key, index or trigger changed: the columns say nothing.
+        let untouched = table.kind == .changed && !showAll && !table.extras.isEmpty && table.columns.allSatisfy { $0.kind == .info }
         Grouped {
             HStack(spacing: 8) {
                 Image(systemName: "tablecells").foregroundStyle(.secondary)
@@ -572,29 +686,31 @@ private struct TableBox: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .openable(table.path, table.line, onOpen)
-            Divider()
-            VStack(spacing: 0) {
-                ForEach(r.prefix(limit)) { row in
-                    switch row {
-                    case .column(let c): ColumnRow(column: c, tableKind: table.kind).openable(c.path, c.line, onOpen)
-                    case .gap(_, let n):
-                        Button { withAnimation(.easeOut(duration: 0.15)) { showAll = true } } label: {
-                            Text("\(n) unchanged columns").font(.caption).foregroundStyle(.tertiary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.leading, 40).padding(.vertical, 3)
-                                .contentShape(Rectangle())
+            if !untouched {
+                Divider()
+                VStack(spacing: 0) {
+                    ForEach(r.prefix(limit)) { row in
+                        switch row {
+                        case .column(let c): ColumnRow(column: c, tableKind: table.kind).openable(c.path, c.line, onOpen)
+                        case .gap(_, let n):
+                            Button { withAnimation(.easeOut(duration: 0.15)) { showAll = true } } label: {
+                                Text("\(n) unchanged columns").font(.caption).foregroundStyle(.tertiary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 40).padding(.vertical, 3)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    }
+                    if r.count > limit {
+                        Button("Show \(r.count - limit) More Columns") { withAnimation(.easeOut(duration: 0.15)) { showAll = true } }
+                            .buttonStyle(.link).font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 40).padding(.vertical, 3)
                     }
                 }
-                if r.count > limit {
-                    Button("Show \(r.count - limit) More Columns") { withAnimation(.easeOut(duration: 0.15)) { showAll = true } }
-                        .buttonStyle(.link).font(.caption)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 40).padding(.vertical, 3)
-                }
+                .padding(.vertical, 5)
             }
-            .padding(.vertical, 5)
             if !table.extras.isEmpty {
                 Divider().padding(.leading, 12)
                 VStack(alignment: .leading, spacing: 2) {
@@ -680,6 +796,7 @@ private struct ExtraRow: View {
                     Text(fact.before.map { b in fact.after != nil ? "\(b) → \(v)" : v } ?? v)
                         .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
                 }
+                ForEach(fact.notes, id: \.self) { Text($0).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(3) }
             }
             Spacer(minLength: 0)
         }
@@ -690,7 +807,13 @@ private struct ExtraRow: View {
 private struct ObjectRow: View {
     var object: DBObject
     var onOpen: (String, Int?) -> Void
-    @State private var open = false
+    @State private var open: Bool
+
+    init(object: DBObject, onOpen: @escaping (String, Int?) -> Void) {
+        self.object = object; self.onOpen = onOpen
+        // A short definition is the change itself: shown, not behind a click.
+        _open = State(initialValue: (object.after ?? object.before ?? "").split(separator: "\n").count <= 25)
+    }
 
     var body: some View {
         let o = object
@@ -704,6 +827,7 @@ private struct ObjectRow: View {
                 Text(o.kind == .removed ? "Dropped" : o.kind == .changed && code ? "Redefined" : o.kind.label).font(.caption).foregroundStyle(.secondary)
             }
             .openable(o.path, o.line, onOpen)
+            ForEach(o.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).lineLimit(3).padding(.leading, 22) }
             if !code, let a = o.after ?? o.before {
                 Text(o.before.map { b in o.after != nil ? "\(b)  →  \(a)" : a } ?? a)
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2).padding(.leading, 22)
@@ -713,8 +837,7 @@ private struct ObjectRow: View {
                     Disclosure(title: "Definition", open: $open)
                     if open {
                         if o.kind == .changed, let b = o.before, let a = o.after {
-                            CodeBlock(text: b, path: "x.sql", kind: .removed, maxLines: 10)
-                            CodeBlock(text: a, path: "x.sql", kind: .added, maxLines: 10)
+                            LineDiff(before: b, after: a)
                         } else if let t = o.after ?? o.before {
                             CodeBlock(text: t, path: "x.sql", maxLines: 12)
                         }
@@ -778,11 +901,18 @@ private struct WarningRow: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor).font(.system(size: 14))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(fact.title) not replayed").font(.system(size: 12.5, weight: .medium))
-                    Text("Loupe doesn't run procedural SQL, so the schema shown doesn't include \(fact.count ?? 1 == 1 ? "its" : "their") effect.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(fact.title).font(.system(size: 12.5, weight: .medium))
+                    ForEach(fact.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                 }
                 Spacer()
+                if let p = fact.path {
+                    // A migration's directory names it better than its up.sql; left out when the text already does.
+                    let name = (p as NSString).lastPathComponent
+                    let file = ["up.sql", "down.sql"].contains(name.lowercased()) ? ((p as NSString).deletingLastPathComponent as NSString).lastPathComponent : name
+                    if !fact.notes.contains(where: { $0.contains(file) }) {
+                        Text(file).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 260, alignment: .trailing)
+                    }
+                }
                 if fact.after != nil { Button(show ? "Hide" : "Show") { withAnimation(.easeOut(duration: 0.15)) { show.toggle() } }.controlSize(.small) }
                 if let p = fact.path { Button("Open") { onOpen(p, fact.line) }.controlSize(.small) }
             }
@@ -863,5 +993,143 @@ private struct ConfigRow: View {
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+}
+
+// MARK: - Follow-ups
+
+private struct FollowUpBody: View {
+    var report: LensReport
+    var onOpen: (String, Int?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(report.sections) { s in
+                VStack(alignment: .leading, spacing: 6) {
+                    Subheading(text: s.title)
+                    Grouped {
+                        CappedRows(items: s.facts, limit: 8, noun: "Lines", inset: 10) { f in
+                            HStack(spacing: 8) {
+                                Text(marked(f)).font(.system(size: 11.5, design: .monospaced)).lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text("\(((f.path ?? "") as NSString).lastPathComponent):\(f.line ?? 1)").font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .openable(f.path, f.line, onOpen)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The line, with what it matched in colour.
+    private func marked(_ f: LensFact) -> AttributedString {
+        var a = AttributedString(f.title)
+        a.foregroundColor = .secondary
+        if let t = f.tag, let r = a.range(of: t) { a[r].foregroundColor = .orange }
+        return a
+    }
+}
+
+// MARK: - Branch
+
+/// How far the change's base is behind the branch it goes into, whether the two merge, and the commits there that
+/// change the same files. Conflicting files and those commits fold away: there can be dozens.
+private struct BranchRow: View {
+    var status: BranchStatus
+    var onOpen: (String, Int?) -> Void
+    @State private var showConflicts = false
+    @State private var showCommits = false
+
+    private struct File: Identifiable { var id: String }
+
+    var body: some View {
+        let s = status
+        let conflicts = s.conflicts ?? []
+        Grouped {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(plural(s.behind, "commit")) behind \(s.target)").font(.system(size: 12.5, weight: .medium))
+                    Text(s.touching.isEmpty ? "None of them change these files"
+                         : "\(s.touching.count == s.behind ? "All" : "\(s.touching.count)") of them change these files")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if let c = s.conflicts {
+                    Label(c.isEmpty ? "Merges cleanly" : plural(c.count, "conflicting file"),
+                          systemImage: c.isEmpty ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(c.isEmpty ? .green : .red)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background((c.isEmpty ? Color.green : .red).opacity(0.12), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            if !conflicts.isEmpty {
+                Divider()
+                DisclosureRow(title: "Conflicting files", count: conflicts.count, open: $showConflicts)
+                if showConflicts {
+                    CappedRows(items: conflicts.map(File.init), limit: 8, noun: "Files", inset: 36) { f in
+                        // Who changed it on the other side: whom to ask about the conflict.
+                        let by = Array(Set(s.touching.filter { $0.files.contains(f.id) }.map(\.author))).sorted()
+                        HStack(spacing: 7) {
+                            FileIcon(path: f.id, size: 14)
+                            Text((f.id as NSString).lastPathComponent).lineLimit(1)
+                            Text((f.id as NSString).deletingLastPathComponent).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                            Spacer(minLength: 8)
+                            if !by.isEmpty { Text("changed on \(s.target) by " + by.joined(separator: ", ")).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
+                        }
+                        .font(.system(size: 12))
+                        .padding(.leading, 36).padding(.trailing, 12).padding(.vertical, 4)
+                        .openable(f.id, nil, onOpen)
+                    }
+                }
+            }
+            if !s.touching.isEmpty {
+                Divider()
+                DisclosureRow(title: "Commits on \(s.target) that change these files", count: s.touching.count, open: $showCommits)
+                if showCommits {
+                    CappedRows(items: s.touching, limit: 8, noun: "Commits", inset: 36) { c in
+                        HStack(spacing: 8) {
+                            Text(c.id).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                            Text(c.subject).lineLimit(1)
+                            Text("\(c.author) · \(c.date)").foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(c.files.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))
+                                .font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                        }
+                        .font(.system(size: 12))
+                        .padding(.leading, 36).padding(.trailing, 12).padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A full-width row that shows or hides what's under it: "▸ Conflicting files  7".
+private struct DisclosureRow: View {
+    var title: String
+    var count: Int
+    @Binding var open: Bool
+
+    var body: some View {
+        Button { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0)).frame(width: 18)
+                Text(title).font(.system(size: 12))
+                Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.07), in: Capsule())
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
     }
 }
