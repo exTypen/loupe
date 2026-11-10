@@ -101,7 +101,7 @@ struct LensMetric: Sendable {
 }
 
 struct LensReport: Identifiable, Sendable {
-    enum Kind: Sendable { case files, database, dependencies, configuration, followUps }
+    enum Kind: Sendable { case files, database, code, dependencies, configuration, followUps }
     var id: String { title }
     var kind: Kind
     var title: String
@@ -123,11 +123,13 @@ enum ChangeLens {
         async let sql = SQLLens.report(changes, a: a, b: b, upstream: upstream, in: dir)
         async let deps = DependencyLens.report(changes, a: a, b: b, in: dir)
         async let config = ConfigLens.report(changes, a: a, b: b, in: dir)
-        async let added = AddedLines.read(changes, a: a, b: b, in: dir)
+        async let lines = ChangedLines.read(changes, a: a, b: b, in: dir)
         let generated = await FilesLens.generated(changes, b: b, in: dir)
         let files = FilesLens.report(changes, generated: generated)
-        let notes = FollowUpLens.report(await added, skip: { p in generated.contains(p) || ["Generated", "Docs"].contains(FilesLens.category(p)) })
-        return [files] + [await sql, await deps, await config, notes].compactMap { $0 }
+        let diff = await lines
+        let code = await CodeLens.report(diff, changes: changes, a: a, b: b, in: dir)
+        let notes = FollowUpLens.report(diff.added, skip: { p in generated.contains(p) || ["Generated", "Docs"].contains(FilesLens.category(p)) })
+        return [files] + [await sql, code, await deps, await config, notes].compactMap { $0 }
     }
 }
 

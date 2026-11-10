@@ -668,7 +668,33 @@ import AppKit
     #expect(SQLLens.version("0042_add.up.sql") == [42])
     #expect(SQLLens.version("init.sql") == nil)
     let lines = ["// TODO: retry", "model.fit(x)", "it.skip('flaky', () => {})", "#[allow(dead_code)]", "let latest = 1"]
-        .enumerated().map { AddedLines.Line(path: "a.ts", line: $0.offset + 1, text: $0.element) }
+        .enumerated().map { ChangedLines.Line(path: "a.ts", line: $0.offset + 1, text: $0.element) }
     let r = FollowUpLens.report(lines, skip: { _ in false })
     #expect(r?.sections.map { $0.facts.map(\.line) } == [[1], [3], [4]])
+    // A pattern the code looks for, or test data, is inside a string; a comment's apostrophe opens none.
+    #expect(FollowUpLens.inString(#"let p = "TODO|FIXME""#, before: 9) && FollowUpLens.inString("x = ['it.skip(']", before: 7))
+    #expect(!FollowUpLens.inString("// don't ship: TODO", before: 15))
+}
+
+@Test func codeLensTellsCopiesAndImportSwaps() {
+    let copies = CodeLens.copyGroups([.init(from: "src/a/x.tsx", to: "src/classic/a/x.tsx", similarity: 97),
+                                      .init(from: "src/b.tsx", to: "src/classic/b.tsx", similarity: 80),
+                                      .init(from: "lib/old.ts", to: "lib/new.ts", similarity: 60)])
+    #expect(copies.map { "\($0.title) \($0.detail ?? "")" } == ["src/ → src/classic/ 2 files · 80–97% the same", "lib/old.ts → lib/new.ts 60% the same"])
+
+    func lines(_ l: [(String, String)]) -> [ChangedLines.Line] { l.map { ChangedLines.Line(path: $0.0, line: 1, text: $0.1) } }
+    let files = ["a.tsx", "b.tsx", "c.tsx"]
+    let removed = lines(files.map { ($0, "import Button from '~/components/Button'") } + [("a.tsx", "import { useEffect, useState } from 'react'")])
+    let added = lines(files.map { ($0, "import { PillButton } from '~/components/pill-button'") } + [("a.tsx", "import { useState } from 'react'")]
+                      + [("new.tsx", "import { PillButton } from '~/components/pill-button'")])
+    let facts = CodeLens.importShifts(added: added, removed: removed, modified: Set(files), newFiles: ["new.tsx"])
+    // The react import only lists other names: not a change. The new file's import doesn't count.
+    #expect(facts.map { "\($0.kind) \($0.title) \($0.count ?? 0)" } == ["changed Button → PillButton 3"])
+    #expect(CodeLens.importOf("use crate::controllers::{status, Status};", path: "x.rs")?.module == "crate::controllers")
+    #expect(CodeLens.importOf("} from \"./x\"", path: "x.ts")?.module == "./x")
+
+    // Expo's [name, options] plugins by name; gradle.properties read as keys.
+    let app = ConfigLens.flatten("app.json", #"{"expo": {"plugins": ["expo-router", ["expo-build-properties", {"android": {"minSdkVersion": 26}}]]}}"#)
+    #expect(app["expo.plugins[expo-build-properties].android.minSdkVersion"] == "26" && app["expo.plugins[expo-router]"] == "on")
+    #expect(ConfigLens.flatten("gradle.properties", "! comment\nandroid.minSdkVersion=26\n") == ["android.minSdkVersion": "26"])
 }

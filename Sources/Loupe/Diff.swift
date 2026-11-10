@@ -22,6 +22,8 @@ struct FileDiff: Identifiable, Hashable {
     var lines: [DiffLine] = []       // flat, hunk header rows included — this is what the table renders
     var hunks: [Hunk] = []
     var isBinary = false
+    var copiedFrom: String?          // `git diff -C`: a new file copied from this one; its lines are what differs
+    var similarity: Int?             // percent, for a copy or rename
     var additions = 0
     var deletions = 0
 
@@ -141,6 +143,9 @@ enum DiffParser {
             else if line.hasPrefix("+++ ") { cur!.newPath = stripPrefix(line.dropFirst(4)) }
             else if line.hasPrefix("rename from ") { cur!.oldPath = String(line.dropFirst(12)) }
             else if line.hasPrefix("rename to ") { cur!.newPath = String(line.dropFirst(10)) }
+            else if line.hasPrefix("copy from ") { cur!.copiedFrom = String(line.dropFirst(10)); cur!.oldPath = cur!.copiedFrom }
+            else if line.hasPrefix("copy to ") { cur!.newPath = String(line.dropFirst(8)) }
+            else if line.hasPrefix("similarity index ") { cur!.similarity = Int(line.dropFirst(17).dropLast()) }
             else if line.hasPrefix("Binary files ") || line.hasPrefix("GIT binary patch") { cur!.isBinary = true }
         }
         closeFile()

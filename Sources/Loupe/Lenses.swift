@@ -132,7 +132,9 @@ enum DependencyLens {
     }
 
     static func report(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> LensReport? {
-        let deps = changes.filter { parse($0.path, "") != nil || ["Cargo.toml", "pyproject.toml", "go.mod"].contains(($0.path as NSString).lastPathComponent) || ($0.path as NSString).lastPathComponent.hasPrefix("requirements") }
+        // By name: an empty text doesn't parse as JSON, so asking `parse` would drop package.json and the other JSON files.
+        let names: Set<String> = ["Cargo.lock", "Cargo.toml", "pyproject.toml", "package.json", "package-lock.json", "go.mod", "Package.resolved", "flake.lock"]
+        let deps = changes.filter { let n = ($0.path as NSString).lastPathComponent; return names.contains(n) || (n.hasPrefix("requirements") && n.hasSuffix(".txt")) }
         guard !deps.isEmpty else { return nil }
         async let ta = a.read(deps.compactMap(\.old), in: dir, maxSize: 20_000_000)
         async let tb = b.read(deps.compactMap(\.new), in: dir, maxSize: 20_000_000)
@@ -171,7 +173,7 @@ enum ConfigLens {
     static func isConfig(_ p: String) -> Bool {
         let name = (p as NSString).lastPathComponent, ext = (p as NSString).pathExtension.lowercased()
         if handledElsewhere.contains(name) { return false }
-        return ["json", "toml", "yaml", "yml"].contains(ext) || name.hasPrefix(".env") || ext == "env"
+        return ["json", "toml", "yaml", "yml", "properties"].contains(ext) || name.hasPrefix(".env") || ext == "env"
     }
 
     /// Judged on the last key component: "design-tokens-parity.steps[3].run" isn't a secret, "with.token" is.
@@ -211,10 +213,10 @@ enum ConfigLens {
                 let k = l[..<eq].trimmingCharacters(in: .whitespaces)
                 out[section.isEmpty ? k : "\(section).\(k)"] = l[l.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             }
-        } else if name.hasPrefix(".env") || ext == "env" {
+        } else if name.hasPrefix(".env") || ext == "env" || ext == "properties" {
             for raw in text.split(separator: "\n") {
                 var l = raw.trimmingCharacters(in: .whitespaces)
-                if l.isEmpty || l.hasPrefix("#") { continue }
+                if l.isEmpty || l.hasPrefix("#") || l.hasPrefix("!") { continue }
                 if l.hasPrefix("export ") { l.removeFirst(7) }
                 guard let eq = l.firstIndex(of: "=") else { continue }
                 out[String(l[..<eq])] = String(l[l.index(after: eq)...])
@@ -240,6 +242,16 @@ enum ConfigLens {
         } else if let a = v as? [Any] {
             if a.allSatisfy({ !($0 is [String: Any]) && !($0 is [Any]) }) {
                 out[k] = "[" + a.map { "\($0)" }.joined(separator: ", ") + "]"
+                return
+            }
+            // A list of [name, options] pairs and bare names (Expo's plugins, Babel's): each under its name.
+            let named = a.map { v -> (String, Any?)? in
+                if let s = v as? String { return (s, nil) }
+                if let p = v as? [Any], let n = p.first as? String, p.count == 1 || (p.count == 2 && p[1] is [String: Any]) { return (n, p.count == 2 ? p[1] : nil) }
+                return nil
+            }
+            if a.contains(where: { $0 is [Any] }), named.allSatisfy({ $0 != nil }), Set(named.map { $0!.0 }).count == a.count {
+                for case let (n, v)? in named { if let v { walk(v, "\(k)[\(n)]", &out) } else { out["\(k)[\(n)]"] = "on" } }
                 return
             }
             let ids = identities(a)
@@ -459,37 +471,43 @@ enum ConfigLens {
     }
 }
 
-// MARK: - Lines a change adds
+// MARK: - Lines a change adds and removes
 
-enum AddedLines {
+enum ChangedLines {
     struct Line: Sendable { var path: String; var line: Int; var text: String }
+    struct Copy: Sendable { var from: String; var to: String; var similarity: Int }
+    struct Result: Sendable { var added: [Line] = []; var removed: [Line] = []; var copies: [Copy] = [] }
 
-    /// Every line the change adds, with where it is: the diff from A to B without context, and the whole of each new
-    /// file the diff doesn't cover (untracked, or all of them when A is empty).
-    static func read(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> [Line] {
+    /// The diff from A to B without context, copies found (`-C -C`) so a copied file's lines are only what differs
+    /// from its source; and the whole of each new file the diff doesn't cover (untracked, or all of them when A is empty).
+    static func read(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> Result {
         let revs: [String]? = switch (a, b) {
         case (.rev(let x), .rev(let y)): [x, y]
         case (.rev(let x), .worktree): [x]
         default: nil
         }
-        var out: [Line] = [], seen = Set<String>()
-        if let revs, let data = try? await Git.run(["diff", "-U0", "-M", "--no-color", "--no-ext-diff"] + revs, in: dir) {
-            (out, seen) = await Task.detached {
-                var out: [Line] = [], seen = Set<String>()
+        var r = Result(), seen = Set<String>()
+        if let revs, let data = try? await Git.run(["diff", "-U0", "-M", "-C", "-C", "--no-color", "--no-ext-diff"] + revs, in: dir) {
+            (r, seen) = await Task.detached {
+                var r = Result(), seen = Set<String>()
                 for f in DiffParser.parse(data) {
                     seen.insert(f.path)
+                    if let from = f.copiedFrom { r.copies.append(Copy(from: from, to: f.path, similarity: f.similarity ?? 100)) }
                     guard !FilesLens.generatedName(f.path.lowercased()) else { continue }
-                    for l in f.lines where l.kind == .added { out.append(Line(path: f.path, line: l.newLine ?? 1, text: String(l.text))) }
+                    for l in f.lines {
+                        if l.kind == .added { r.added.append(Line(path: f.path, line: l.newLine ?? 1, text: String(l.text))) }
+                        else if l.kind == .removed { r.removed.append(Line(path: f.path, line: l.oldLine ?? 1, text: String(l.text))) }
+                    }
                 }
-                return (out, seen)
+                return (r, seen)
             }.value
         }
         let rest = changes.filter { $0.old == nil || revs == nil }.compactMap(\.new)
             .filter { !seen.contains($0) && !FilesLens.generatedName($0.lowercased()) }
         for (p, t) in await b.read(Array(rest.prefix(300)), in: dir) {
-            for (i, l) in t.split(separator: "\n", omittingEmptySubsequences: false).enumerated() { out.append(Line(path: p, line: i + 1, text: String(l))) }
+            for (i, l) in t.split(separator: "\n", omittingEmptySubsequences: false).enumerated() { r.added.append(Line(path: p, line: i + 1, text: String(l))) }
         }
-        return out
+        return r
     }
 }
 
@@ -503,14 +521,14 @@ enum FollowUpLens {
     ]
 
     /// The added lines that match, per kind; `skip` leaves out files not worth it (generated code, docs).
-    static func report(_ lines: [AddedLines.Line], skip: (String) -> Bool) -> LensReport? {
+    static func report(_ lines: [ChangedLines.Line], skip: (String) -> Bool) -> LensReport? {
         var skipped: [String: Bool] = [:], sections: [LensSection] = [], counts: [String] = []
         for k in kinds {
             let re = try! NSRegularExpression(pattern: k.pattern)
             var facts: [LensFact] = []
             for l in lines {
                 let ns = l.text as NSString
-                guard let m = re.firstMatch(in: l.text, range: NSRange(location: 0, length: ns.length)) else { continue }
+                guard let m = re.firstMatch(in: l.text, range: NSRange(location: 0, length: ns.length)), !inString(l.text, before: m.range.location) else { continue }
                 if skipped[l.path] == nil { skipped[l.path] = skip(l.path) }
                 guard skipped[l.path] == false else { continue }
                 // The line from a little before the match, so a long one still shows it.
@@ -525,6 +543,168 @@ enum FollowUpLens {
         let total = sections.reduce(0) { $0 + $1.facts.count }
         return LensReport(kind: .followUps, title: "Follow-ups", icon: "checklist", summary: counts.joined(separator: " · "), sections: sections,
                           metric: LensMetric(value: total, unit: total == 1 ? "follow-up" : "follow-ups"))
+    }
+
+    /// Whether a match at UTF-16 offset `at` sits inside a string literal: a pattern the code looks for, or test data,
+    /// isn't a to-do of its own. An apostrophe between letters (a comment's "don't") opens no string.
+    static func inString(_ text: String, before at: Int) -> Bool {
+        let s = Array((text as NSString).substring(to: at))
+        var open: Character?
+        for (i, c) in s.enumerated() where c == "\"" || c == "'" || c == "`" {
+            if i > 0, s[i - 1] == "\\" { continue }
+            if c == "'", i > 0, i + 1 < s.count, s[i - 1].isLetter, s[i + 1].isLetter { continue }
+            if open == nil { open = c } else if open == c { open = nil }
+        }
+        return open != nil
+    }
+}
+
+// MARK: - Code: what reading the diff file by file hides
+
+/// Not every definition (the diff shows those): only what a reader going file by file would miss. Files copied from
+/// elsewhere, an import swapped for another across files (a refactor's story), and native code in an Expo app whose
+/// runtimeVersion stayed put.
+enum CodeLens {
+    static func report(_ d: ChangedLines.Result, changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> LensReport? {
+        var sections: [LensSection] = []
+        if let w = await nativeWarning(changes, a: a, b: b, in: dir) { sections.append(LensSection(title: "App build", facts: [w])) }
+        let copies = copyGroups(d.copies)
+        if !copies.isEmpty { sections.append(LensSection(title: "Copied", facts: copies)) }
+        let modified = Set(changes.filter { $0.old != nil && $0.new != nil }.compactMap(\.new))
+        let added = Set(changes.filter { $0.old == nil }.compactMap(\.new))
+        let shifts = importShifts(added: d.added, removed: d.removed, modified: modified, newFiles: added)
+        if !shifts.isEmpty { sections.append(LensSection(title: "Imports across files", facts: shifts)) }
+        guard !sections.isEmpty else { return nil }
+        var summary: [String] = []
+        if !copies.isEmpty { summary.append(plural(d.copies.count, "file") + " copied") }
+        if !shifts.isEmpty { summary.append(plural(shifts.count, "import change", "import changes") + " across files") }
+        if sections.first?.title == "App build" { summary.insert("native code, same runtime", at: 0) }
+        let all = sections.flatMap(\.facts)
+        return LensReport(kind: .code, title: "Code", icon: "chevron.left.forwardslash.chevron.right", summary: summary.joined(separator: " · "), sections: sections,
+                          metric: LensMetric(value: all.count, unit: all.count == 1 ? "finding" : "findings", added: all.filter { $0.kind == .added }.count,
+                                             removed: all.filter { $0.kind == .removed }.count, changed: all.filter { $0.kind == .changed }.count))
+    }
+
+    /// Copies by where they came from and went: "client/src/ → client/src/classic/ · 26 files".
+    static func copyGroups(_ copies: [ChangedLines.Copy]) -> [LensFact] {
+        var groups: [String: [ChangedLines.Copy]] = [:], order: [String] = []
+        for c in copies {
+            // The common tail is the file's own path; what differs before it is where it went.
+            let f = c.from.split(separator: "/"), t = c.to.split(separator: "/")
+            var n = 0
+            while n < min(f.count, t.count), f[f.count - 1 - n] == t[t.count - 1 - n] { n += 1 }
+            func dir(_ p: [Substring]) -> String { p.dropLast(n).isEmpty ? "./" : p.dropLast(n).joined(separator: "/") + "/" }
+            let key = n == 0 ? "\(c.from) → \(c.to)" : "\(dir(f)) → \(dir(t))"
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(c)
+        }
+        return order.map { k in
+            let g = groups[k]!, s = g.map(\.similarity)
+            let same = s.min() == s.max() ? "\(s[0])%" : "\(s.min()!)–\(s.max()!)%"
+            return LensFact(kind: .info, title: k, detail: g.count == 1 ? "\(same) the same" : "\(g.count) files · \(same) the same", path: g[0].to, count: g.count)
+        }
+    }
+
+    /// An import line's module and what it brings in, for JavaScript/TypeScript, Python and Rust.
+    private static let patterns: [String: Regex<AnyRegexOutput>] = Dictionary(uniqueKeysWithValues: [
+        #"^\s*import\s+(?:type\s+)?(.+?)\s+from\s+['"]([^'"]+)['"]"#, #"^\s*\}\s*from\s+['"]([^'"]+)['"]"#, #"^\s*import\s+['"]([^'"]+)['"]"#,
+        #"^\s*from\s+(\S+)\s+import\s+(.+)"#, #"^\s*import\s+([\w.]+)"#, #"^\s*(?:pub\s+)?use\s+([\w:]+?)(?:::\{(.*)\})?\s*;"#,
+    ].map { ($0, try! Regex($0)) })
+
+    static func importOf(_ text: String, path: String) -> (module: String, names: String)? {
+        // Most lines aren't imports: a look at how the line starts before any regex.
+        let head = text.drop { $0 == " " || $0 == "\t" }
+        guard ["import", "from", "use ", "pub use", "}"].contains(where: { head.hasPrefix($0) }) else { return nil }
+        let ext = (path as NSString).pathExtension.lowercased()
+        func first(_ pattern: String) -> [String]? {
+            guard let m = text.firstMatch(of: patterns[pattern]!) else { return nil }
+            return (1..<m.output.count).map { m.output[$0].substring.map(String.init) ?? "" }
+        }
+        func clean(_ s: String) -> String { s.trimmingCharacters(in: CharacterSet(charactersIn: "{} ")).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression) }
+        switch ext {
+        case "js", "jsx", "ts", "tsx", "mjs", "cjs", "vue", "svelte":
+            if let g = first(#"^\s*import\s+(?:type\s+)?(.+?)\s+from\s+['"]([^'"]+)['"]"#) { return (g[1], clean(g[0])) }
+            if let g = first(#"^\s*\}\s*from\s+['"]([^'"]+)['"]"#) ?? first(#"^\s*import\s+['"]([^'"]+)['"]"#) { return (g[0], "") }
+        case "py":
+            if let g = first(#"^\s*from\s+(\S+)\s+import\s+(.+)"#) { return (g[0], clean(g[1])) }
+            if let g = first(#"^\s*import\s+([\w.]+)"#) { return (g[0], "") }
+        case "rs":
+            if let g = first(#"^\s*(?:pub\s+)?use\s+([\w:]+?)(?:::\{(.*)\})?\s*;"#) { return (g[0], clean(g[1])) }
+        default: break
+        }
+        return nil
+    }
+
+    /// Imports that came or went in several files the change edits: one swapped for another ("Button → PillButton ·
+    /// 5 files"), or a module now used by several. A module whose import only lists other names isn't a change, and
+    /// new files are left out: each imports its usual libraries.
+    static func importShifts(added: [ChangedLines.Line], removed: [ChangedLines.Line], modified: Set<String>, newFiles: Set<String>) -> [LensFact] {
+        func collect(_ lines: [ChangedLines.Line]) -> [String: (files: Set<String>, names: String)] {
+            var out: [String: (files: Set<String>, names: String)] = [:]
+            for l in lines where modified.contains(l.path) {
+                guard let i = importOf(l.text, path: l.path) else { continue }
+                out[i.module, default: ([], i.names)].files.insert(l.path)
+                if out[i.module]!.names.isEmpty { out[i.module]!.names = i.names }
+            }
+            return out
+        }
+        var plus = collect(added), minus = collect(removed)
+        for m in Set(plus.keys).intersection(minus.keys) {
+            let both = plus[m]!.files.intersection(minus[m]!.files)
+            plus[m]!.files.subtract(both); minus[m]!.files.subtract(both)
+        }
+        func label(_ m: String, _ names: String) -> String {
+            names.isEmpty || names.count > 40 ? (m.components(separatedBy: "::").last ?? m).split(separator: "/").last.map(String.init) ?? m : names
+        }
+        // A module that's a file this change adds counts from two importers; any other from three.
+        func isNew(_ m: String) -> Bool {
+            let stem = m.split(separator: "/").filter { $0 != "." && $0 != ".." && $0 != "~" && $0 != "@" }.joined(separator: "/")
+            return !stem.isEmpty && newFiles.contains { ($0 as NSString).deletingPathExtension.hasSuffix(stem) || $0.hasSuffix(stem) }
+        }
+        var facts: [LensFact] = [], used = Set<String>()
+        // Swaps: a removed and an added module in the same files, best overlaps first.
+        var pairs: [(r: String, a: String, files: Set<String>)] = []
+        for (r, rv) in minus where rv.files.count >= 2 {
+            for (a, av) in plus where av.files.count >= 2 {
+                let shared = rv.files.intersection(av.files)
+                if shared.count >= 2 { pairs.append((r, a, shared)) }
+            }
+        }
+        for p in pairs.sorted(by: { $0.files.count > $1.files.count }) where !used.contains(p.r) && !used.contains(p.a) {
+            used.insert(p.r); used.insert(p.a)
+            facts.append(LensFact(kind: .changed, title: "\(label(p.r, minus[p.r]!.names)) → \(label(p.a, plus[p.a]!.names))",
+                                  detail: "\(plural(p.files.count, "file")) · \(p.a)", path: p.files.sorted().first, count: p.files.count))
+        }
+        for (m, v) in plus.sorted(by: { $0.value.files.count > $1.value.files.count }) where !used.contains(m) && v.files.count >= (isNew(m) ? 2 : 3) {
+            facts.append(LensFact(kind: .added, title: label(m, v.names), detail: "now imported in \(plural(v.files.count, "file")) · \(m)", path: v.files.sorted().first, tag: isNew(m) ? "new" : nil, count: v.files.count))
+        }
+        for (m, v) in minus.sorted(by: { $0.value.files.count > $1.value.files.count }) where !used.contains(m) && v.files.count >= 3 {
+            facts.append(LensFact(kind: .removed, title: label(m, v.names), detail: "no longer imported in \(plural(v.files.count, "file")) · \(m)", count: v.files.count))
+        }
+        return facts
+    }
+
+    /// An Expo app with OTA updates: native code that changed while runtimeVersion stayed the same reaches, through an
+    /// update, installs built without it. A runtimeVersion policy (appVersion, fingerprint) moves by itself and isn't
+    /// checked. ponytail: reads the root app.json only, not app.config.js or apps in subfolders.
+    static func nativeWarning(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> LensFact? {
+        let native = changes.compactMap(\.new).filter { p in
+            ["swift", "m", "mm", "h", "kt", "java", "cpp", "cc", "c"].contains((p as NSString).pathExtension.lowercased()) || (p as NSString).lastPathComponent == "Podfile.lock"
+        }
+        guard !native.isEmpty else { return nil }
+        async let tb = b.read(["package.json", "app.json"], in: dir)
+        async let ta = a.read(["app.json"], in: dir)
+        let (nb, na) = (await tb, await ta)
+        guard nb["package.json"]?.contains("\"expo-updates\"") == true else { return nil }
+        func runtime(_ t: String?) -> String? {
+            let j = t.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            return (j?["expo"] as? [String: Any])?["runtimeVersion"] as? String
+        }
+        guard let rb = runtime(nb["app.json"]), rb == runtime(na["app.json"]) else { return nil }
+        let names = native.prefix(3).map { ($0 as NSString).lastPathComponent }.joined(separator: ", ") + (native.count > 3 ? "…" : "")
+        return LensFact(kind: .warning, title: "Native code changed; runtimeVersion is still \(rb)",
+                        detail: "An OTA update with this JavaScript would reach installs built without it. \(plural(native.count, "native file")): \(names)",
+                        path: native.first, count: native.count)
     }
 }
 

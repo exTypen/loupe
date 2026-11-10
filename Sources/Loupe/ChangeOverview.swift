@@ -109,6 +109,7 @@ private extension LensReport.Kind {
         case .dependencies: .brown
         case .configuration: .gray
         case .followUps: .purple
+        case .code: .indigo
         }
     }
 }
@@ -485,6 +486,7 @@ private struct LensSectionView: View {
                 case .dependencies: DependencyBody(report: report, onOpen: onOpen)
                 case .configuration: ConfigBody(report: report, onOpen: onOpen)
                 case .followUps: FollowUpBody(report: report, onOpen: onOpen)
+                case .code: CodeBody(report: report, onOpen: onOpen)
                 }
             }
         }
@@ -995,6 +997,41 @@ private struct ConfigRow: View {
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+}
+
+// MARK: - Code
+
+private struct CodeBody: View {
+    var report: LensReport
+    var onOpen: (String, Int?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(report.sections) { s in
+                VStack(alignment: .leading, spacing: 6) {
+                    Subheading(text: s.title)
+                    Grouped {
+                        CappedRows(items: s.facts, limit: 6, noun: s.title, inset: 32) { f in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                if f.kind == .warning || f.kind == .info {
+                                    Image(systemName: f.kind == .warning ? "exclamationmark.triangle.fill" : "doc.on.doc")
+                                        .font(.system(size: 11)).foregroundStyle(f.kind == .warning ? Color.yellow : Color.secondary).frame(width: 14)
+                                } else { StatusSymbol(kind: f.kind) }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(f.title).font(.system(size: 12, design: f.kind == .warning ? .default : .monospaced)).lineLimit(1).truncationMode(.middle)
+                                    if let d = f.detail { Text(d).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                                }
+                                Spacer(minLength: 6)
+                                if let t = f.tag { Text(t).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .openable(f.path, f.line, onOpen)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
