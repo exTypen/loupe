@@ -176,23 +176,31 @@ enum ConfigLens {
 
     /// Judged on the last key component: "design-tokens-parity.steps[3].run" isn't a secret, "with.token" is.
     static func secret(_ key: String) -> Bool {
-        let last = key.split(separator: ".").last.map(String.init) ?? key
+        let last = components(key).last ?? key
         let k = last.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression).lowercased()
         return ["secret", "token", "password", "passwd", "apikey", "api_key", "private", "credential", "auth"].contains { k.contains($0) }
     }
 
-    /// Flattens a file into "a.b[0].c" → value.
+    /// A key path's parts: "rules[apps: deployments].verbs" → ["rules[apps: deployments]", "verbs"]. Dots inside
+    /// brackets (an item named "fleetdriver.com: projects") don't split.
+    static func components(_ key: String) -> [String] {
+        var out: [String] = [], cur = "", depth = 0
+        for c in key {
+            if c == "[" { depth += 1 } else if c == "]" { depth -= 1 }
+            if c == ".", depth == 0 { out.append(cur); cur = ""; continue }
+            cur.append(c)
+        }
+        out.append(cur)
+        return out
+    }
+
+    /// Flattens a file into "a.b[web].c" → value.
     static func flatten(_ path: String, _ text: String) -> [String: String] {
         let name = (path as NSString).lastPathComponent, ext = (path as NSString).pathExtension.lowercased()
         var out: [String: String] = [:]
         if ext == "json" {
             guard let j = try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed]) else { return [:] }
-            func walk(_ v: Any, _ k: String) {
-                if let d = v as? [String: Any] { for (kk, vv) in d { walk(vv, k.isEmpty ? kk : "\(k).\(kk)") } }
-                else if let a = v as? [Any] { for (i, vv) in a.enumerated() { walk(vv, "\(k)[\(i)]") } }
-                else { out[k] = "\(v)" }
-            }
-            walk(j, "")
+            walk(j, "", &out)
         } else if ext == "toml" {
             var section = ""
             for raw in text.split(separator: "\n") {
@@ -212,55 +220,191 @@ enum ConfigLens {
                 out[String(l[..<eq])] = String(l[l.index(after: eq)...])
             }
         } else {
-            out = yaml(text)
+            let docs = YAML.documents(text)
+            for (i, d) in docs.enumerated() {
+                // Several manifests in one file are told apart by what they are, not where they sit.
+                let m = d as? [String: Any]
+                let id = [m?["kind"] as? String, (m?["metadata"] as? [String: Any])?["name"] as? String].compactMap { $0 }.joined(separator: " ")
+                walk(d, docs.count > 1 ? "[\(id.isEmpty ? String(i) : id)]" : "", &out)
+            }
         }
         return out
     }
 
-    /// Mappings and sequences by indentation, enough for key-level diffs of config and CI files. Block scalars are
-    /// kept whole as one value. ponytail: not a YAML parser (anchors, flow style and multi-line keys are approximated).
-    static func yaml(_ text: String) -> [String: String] {
-        var out: [String: String] = [:]
-        var stack: [(indent: Int, key: String)] = []
-        var seqIndex: [String: Int] = [:]
-        var doc = 0
-        var block: (key: String, indent: Int, lines: [String])?
-        func flushBlock() { if let b = block { out[b.key] = b.lines.joined(separator: "\n") }; block = nil }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            let indent = line.prefix { $0 == " " }.count
-            let l = line.trimmingCharacters(in: .whitespaces)
-            if let b = block {
-                if l.isEmpty || indent > b.indent { block?.lines.append(l); continue }
-                flushBlock()
+    /// Lists of plain values stay one value ("[get, create]"). The items of a list of mappings are named by what
+    /// identifies them (`containers[web]`, `rules[configmaps]`) when every item has a distinct one, so inserting an
+    /// item doesn't make every later one look changed.
+    static func walk(_ v: Any, _ k: String, _ out: inout [String: String]) {
+        if let d = v as? [String: Any] {
+            for (kk, vv) in d { walk(vv, k.isEmpty ? kk : "\(k).\(kk)", &out) }
+        } else if let a = v as? [Any] {
+            if a.allSatisfy({ !($0 is [String: Any]) && !($0 is [Any]) }) {
+                out[k] = "[" + a.map { "\($0)" }.joined(separator: ", ") + "]"
+                return
             }
-            if l.isEmpty || l.hasPrefix("#") { continue }
-            if l == "---" { doc += 1; stack = []; continue }
-            while let top = stack.last, top.indent >= indent { stack.removeLast() }
-            var parent = stack.last?.key ?? (doc > 0 ? "[\(doc)]" : "")
-            var body = Substring(l)
-            var itemIndent = indent
-            if body.hasPrefix("- ") || body == "-" {
-                let i = seqIndex[parent, default: -1] + 1
-                seqIndex[parent] = i
-                parent = "\(parent)[\(i)]"
-                body = body.dropFirst(2)
-                itemIndent = indent + 2
-                stack.append((indent, parent))
-                if body.isEmpty { continue }
-            }
-            guard let colon = body.range(of: ": ") ?? (body.hasSuffix(":") ? body.index(before: body.endIndex)..<body.endIndex : nil) else {
-                out[parent] = String(body); continue
-            }
-            let k = body[..<colon.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-            let v = body[colon.upperBound...].trimmingCharacters(in: .whitespaces)
-            let full = parent.isEmpty ? k : "\(parent).\(k)"
-            if v.isEmpty { stack.append((itemIndent, full)); seqIndex[full] = nil }
-            else if v == "|" || v == ">" || v.hasPrefix("|") || v.hasPrefix(">") { block = (full, itemIndent, []) }
-            else { out[full] = v.split(separator: " #").first.map(String.init) ?? v }
+            let ids = identities(a)
+            for (i, vv) in a.enumerated() { walk(vv, "\(k)[\(ids?[i] ?? String(i))]", &out) }
+        } else {
+            out[k] = "\(v)"
         }
-        flushBlock()
-        return out
+    }
+
+    static func identities(_ a: [Any]) -> [String]? {
+        let ds = a.compactMap { $0 as? [String: Any] }
+        guard ds.count == a.count else { return nil }
+        func text(_ v: Any?) -> String? { (v as? [Any]).map { $0.map { "\($0)" }.joined(separator: ", ") } ?? (v as? String) }
+        let namers: [([String: Any]) -> String?] = [
+            { $0["name"] as? String }, { $0["id"] as? String }, { $0["key"] as? String }, { $0["type"] as? String },
+            // RBAC rules, by what they grant on: "configmaps", "fleetdriver.com: projects, objectstorages".
+            { d in text(d["resources"]).map { r in let g = text(d["apiGroups"]) ?? ""; return g.isEmpty ? r : "\(g): \(r)" } },
+        ]
+        for name in namers {
+            let ids = ds.compactMap(name)
+            if ids.count == ds.count, Set(ids).count == ids.count, !ids.contains(where: \.isEmpty) { return ids }
+        }
+        return nil
+    }
+
+    /// Keys under a parent that exists only on one side collapse into the parent: a new CI job is one fact.
+    static func collapse(_ keys: [String], absentFrom other: [String: String]) -> [(key: String, count: Int)] {
+        let otherKeys = Array(other.keys)
+        func prefixes(_ k: String) -> [String] {
+            var out: [String] = [], cur = ""
+            for part in components(k) {
+                cur = cur.isEmpty ? part : "\(cur).\(part)"
+                out.append(cur)
+            }
+            return out
+        }
+        var groups: [String: Int] = [:], order: [String] = []
+        for k in keys {
+            // The shortest prefix that the other side lacks entirely and that holds more than this key.
+            let p = prefixes(k).dropLast().first { pre in
+                !otherKeys.contains { $0 == pre || $0.hasPrefix(pre + ".") || $0.hasPrefix(pre + "[") }
+                    && keys.filter { $0.hasPrefix(pre + ".") || $0.hasPrefix(pre + "[") }.count > 1
+            } ?? k
+            if groups[p] == nil { order.append(p) }
+            groups[p, default: 0] += 1
+        }
+        return order.map { ($0, groups[$0]!) }
+    }
+
+    /// Key-level facts between two flattened versions of a file.
+    static func keyFacts(_ fa: [String: String], _ fb: [String: String], path: String?) -> [LensFact] {
+        func one(_ v: String) -> String {
+            let lines = v.split(separator: "\n", omittingEmptySubsequences: true)
+            let first = String((lines.first ?? "").prefix(80))
+            return lines.count > 1 ? "\(first) … (\(lines.count) lines)" : first
+        }
+        func show(_ k: String, _ v: String) -> String? { secret(k) ? nil : one(v) }
+        /// A small new or removed group reads better as its values than as "3 keys".
+        func inline(_ k: String, _ f: [String: String]) -> String? {
+            // Values the name already says (an RBAC rule's resources) or that say nothing (the core API group's [""]) are left out.
+            let kids = f.keys.filter { $0.hasPrefix(k + ".") && !["", "[]"].contains(f[$0]!) && !k.contains("[\(f[$0]!.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))]") }.sorted()
+            guard kids.count <= 4, kids.allSatisfy({ !secret($0) && !f[$0]!.contains("\n") }) else { return nil }
+            return kids.map { "\($0.dropFirst(k.count + 1)): \(f[$0]!)" }.joined(separator: " · ")
+        }
+        func list(_ v: String) -> [String]? {
+            guard v.hasPrefix("["), v.hasSuffix("]") else { return nil }
+            return v.dropFirst().dropLast().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        var facts: [LensFact] = []
+        for (k, n) in collapse(Set(fb.keys).subtracting(fa.keys).sorted(), absentFrom: fa) {
+            let small = n > 1 ? inline(k, fb) : nil
+            facts.append(LensFact(kind: .added, title: k, detail: n > 1 ? small ?? "added · \(n) keys" : show(k, fb[k] ?? "") ?? "(value hidden)", path: path,
+                                  tag: n > 1 && small == nil ? "\(n) keys" : nil, after: n > 1 ? small : show(k, fb[k] ?? ""), count: n))
+        }
+        for (k, n) in collapse(Set(fa.keys).subtracting(fb.keys).sorted(), absentFrom: fb) {
+            let small = n > 1 ? inline(k, fa) : nil
+            facts.append(LensFact(kind: .removed, title: k, detail: n > 1 ? small ?? "removed · \(n) keys" : show(k, fa[k] ?? "") ?? "(value hidden)",
+                                  tag: n > 1 && small == nil ? "\(n) keys" : nil, before: n > 1 ? small : show(k, fa[k] ?? ""), count: n))
+        }
+        for k in Set(fa.keys).intersection(fb.keys).sorted() where fa[k] != fb[k] {
+            if !secret(k), let la = list(fa[k]!), let lb = list(fb[k]!) {
+                // A list of values: what joined and what left, not the whole list twice.
+                let d = (lb.filter { !la.contains($0) }.map { "+\($0)" } + la.filter { !lb.contains($0) }.map { "−\($0)" }).joined(separator: "  ")
+                facts.append(LensFact(kind: .changed, title: k, detail: d.isEmpty ? "reordered" : d, path: path))
+                continue
+            }
+            let multi = fa[k]!.contains("\n") || fb[k]!.contains("\n")
+            let d = secret(k) ? "(value hidden)" : multi ? "changed (\(fb[k]!.split(separator: "\n").count) lines)" : "\(one(fa[k]!)) → \(one(fb[k]!))"
+            let plain = !secret(k) && !multi
+            facts.append(LensFact(kind: .changed, title: k, detail: d, path: path, before: plain ? one(fa[k]!) : nil, after: plain ? one(fb[k]!) : nil))
+        }
+        return facts
+    }
+
+    // MARK: Custom resource definitions
+
+    /// A CRD as its resource sees it: each schema field with its type ("status.phase" → "Pending | Bound | Lost ·
+    /// required") and the columns `kubectl get` prints.
+    struct CRD { var kind: String; var fields: [String: String]; var columns: [String] }
+
+    static func crd(_ text: String) -> CRD? {
+        // A file of one manifest: beside other manifests, the CRD's name would head changes that aren't its own.
+        let docs = YAML.documents(text)
+        guard docs.count == 1, let d = docs[0] as? [String: Any], d["kind"] as? String == "CustomResourceDefinition",
+              let spec = d["spec"] as? [String: Any] else { return nil }
+        let versions = (spec["versions"] as? [Any] ?? []).compactMap { $0 as? [String: Any] }
+        var fields: [String: String] = [:], columns: [String] = []
+        for v in versions {
+            let pre = versions.count > 1 ? "\(v["name"] as? String ?? "?") " : ""
+            if let s = (v["schema"] as? [String: Any])?["openAPIV3Schema"] as? [String: Any] { schema(s, pre, required: false, &fields) }
+            columns += (v["additionalPrinterColumns"] as? [Any] ?? []).compactMap { (($0 as? [String: Any])?["name"] as? String).map { pre + $0 } }
+        }
+        return CRD(kind: ((spec["names"] as? [String: Any])?["kind"] as? String) ?? "Resource", fields: fields, columns: columns)
+    }
+
+    private static func schema(_ s: [String: Any], _ path: String, required: Bool, _ out: inout [String: String]) {
+        func type(_ s: [String: Any]) -> String {
+            if let e = s["enum"] as? [Any] { return e.map { "\($0)" }.joined(separator: " | ") }
+            if s["x-kubernetes-int-or-string"] as? String == "true" { return "int or string" }
+            let t = s["type"] as? String ?? "object"
+            return s["format"].map { "\(t) (\($0))" } ?? t
+        }
+        var node = s, t = type(s)
+        if t == "array", let item = s["items"] as? [String: Any] { t = "list of \(type(item))"; node = item }
+        let root = path.isEmpty || path.hasSuffix(" ")
+        if !root { out[path] = t + (required ? " · required" : "") }
+        let req = Set((node["required"] as? [Any] ?? []).map { "\($0)" })
+        for (k, v) in node["properties"] as? [String: Any] ?? [:] {
+            if let v = v as? [String: Any] { schema(v, root ? path + k : "\(path).\(k)", required: req.contains(k), &out) }
+        }
+    }
+
+    static func crdFacts(_ a: CRD, _ b: CRD, path: String?) -> [LensFact] {
+        /// A new or removed object's own fields, by name: "type, status, reason, message".
+        func fields(of k: String, _ f: [String: String]) -> String {
+            f.keys.filter { $0.hasPrefix(k + ".") && !$0.dropFirst(k.count + 1).contains(".") }.map { String($0.dropFirst(k.count + 1)) }.sorted().joined(separator: ", ")
+        }
+        func plain(_ t: String) -> String { t.replacingOccurrences(of: " · required", with: "") }
+        var facts: [LensFact] = []
+        /// New (or gone) fields whose parent isn't: a new object is one fact, its fields listed in it.
+        func tops(_ x: [String: String], _ y: [String: String]) -> [String] {
+            let only = Set(x.keys).subtracting(y.keys)
+            return only.filter { k in !only.contains { k.hasPrefix($0 + ".") } }.sorted()
+        }
+        for k in tops(b.fields, a.fields) {
+            let kids = fields(of: k, b.fields)
+            let t = (b.fields[k] ?? "") + (kids.isEmpty ? "" : " · \(kids)")
+            facts.append(LensFact(kind: .added, title: k, detail: t, path: path, after: t))
+        }
+        for k in tops(a.fields, b.fields) {
+            let kids = fields(of: k, a.fields)
+            let t = (a.fields[k] ?? "") + (kids.isEmpty ? "" : " · \(kids)")
+            facts.append(LensFact(kind: .removed, title: k, detail: t, tag: "breaking", before: t))
+        }
+        for k in Set(a.fields.keys).intersection(b.fields.keys).sorted() where a.fields[k] != b.fields[k] {
+            let (x, y) = (a.fields[k]!, b.fields[k]!)
+            // Readers break when a type changes or a field becomes required; a field becoming optional breaks no one.
+            let breaking = plain(x) != plain(y) || (y.hasSuffix("required") && !x.hasSuffix("required"))
+            facts.append(LensFact(kind: .changed, title: k, detail: "\(x) → \(y)", path: path, tag: breaking ? "breaking" : nil, before: x, after: y))
+        }
+        if a.columns != b.columns {
+            func row(_ c: [String]) -> String { c.isEmpty ? "NAME · AGE" : (["NAME"] + c).joined(separator: " · ") }
+            facts.append(LensFact(kind: .changed, title: "kubectl get", detail: "\(row(a.columns)) → \(row(b.columns))", path: path, tag: "columns", before: row(a.columns), after: row(b.columns)))
+        }
+        return facts
     }
 
     static func report(_ changes: [ChangedPath], a: Snapshot, b: Snapshot, in dir: String) async -> LensReport? {
@@ -270,67 +414,48 @@ enum ConfigLens {
         async let tb = b.read(cfg.compactMap(\.new), in: dir, maxSize: 1_000_000)
         let (textA, textB) = (await ta, await tb)
         var sections: [LensSection] = []
-        var total = 0
+        var crds: [(kind: String, path: String, facts: [LensFact])] = []
         for c in cfg {
-            let fa = c.old.flatMap { p in textA[p].map { flatten(p, $0) } } ?? [:]
-            let fb = c.new.flatMap { p in textB[p].map { flatten(p, $0) } } ?? [:]
-            func one(_ v: String) -> String {
-                let lines = v.split(separator: "\n", omittingEmptySubsequences: true)
-                let first = String((lines.first ?? "").prefix(80))
-                return lines.count > 1 ? "\(first) … (\(lines.count) lines)" : first
-            }
-            func show(_ k: String, _ v: String) -> String? { secret(k) ? nil : one(v) }
-            /// Keys under a parent that exists only on one side collapse into the parent: a new CI job is one fact.
-            func collapse(_ keys: [String], absentFrom other: [String: String]) -> [(key: String, count: Int)] {
-                let otherKeys = Array(other.keys)
-                func prefixes(_ k: String) -> [String] {
-                    var out: [String] = [], cur = ""
-                    for part in k.split(separator: ".", omittingEmptySubsequences: false) {
-                        cur = cur.isEmpty ? String(part) : "\(cur).\(part)"
-                        out.append(cur)
-                    }
-                    return out
-                }
-                var groups: [String: Int] = [:], order: [String] = []
-                for k in keys {
-                    // The shortest prefix that the other side lacks entirely and that holds more than this key.
-                    let p = prefixes(k).dropLast().first { pre in
-                        !otherKeys.contains { $0 == pre || $0.hasPrefix(pre + ".") || $0.hasPrefix(pre + "[") }
-                            && keys.filter { $0.hasPrefix(pre + ".") || $0.hasPrefix(pre + "[") }.count > 1
-                    } ?? k
-                    if groups[p] == nil { order.append(p) }
-                    groups[p, default: 0] += 1
-                }
-                return order.map { ($0, groups[$0]!) }
-            }
-            var facts: [LensFact] = []
+            let rawA = c.old.flatMap { textA[$0] }, rawB = c.new.flatMap { textB[$0] }
+            var fa = c.old.flatMap { p in rawA.map { flatten(p, $0) } } ?? [:]
+            var fb = c.new.flatMap { p in rawB.map { flatten(p, $0) } } ?? [:]
             // Whole new or deleted files: one line, not every key.
-            if c.old == nil { facts.append(LensFact(kind: .added, title: c.path, detail: "new file · \(fb.count) keys", path: c.new, tag: "new file", count: fb.count)) }
-            else if c.new == nil { facts.append(LensFact(kind: .removed, title: c.path, detail: "deleted · had \(fa.count) keys", tag: "deleted", count: fa.count)) }
-            else {
-                for (k, n) in collapse(Set(fb.keys).subtracting(fa.keys).sorted(), absentFrom: fa) {
-                    facts.append(LensFact(kind: .added, title: k, detail: n > 1 ? "added · \(n) keys" : show(k, fb[k] ?? "") ?? "(value hidden)", path: c.new,
-                                          tag: n > 1 ? "\(n) keys" : nil, after: n > 1 ? nil : show(k, fb[k] ?? ""), count: n))
-                }
-                for (k, n) in collapse(Set(fa.keys).subtracting(fb.keys).sorted(), absentFrom: fb) {
-                    facts.append(LensFact(kind: .removed, title: k, detail: n > 1 ? "removed · \(n) keys" : show(k, fa[k] ?? "") ?? "(value hidden)",
-                                          tag: n > 1 ? "\(n) keys" : nil, before: n > 1 ? nil : show(k, fa[k] ?? ""), count: n))
-                }
-                for k in Set(fa.keys).intersection(fb.keys).sorted() where fa[k] != fb[k] {
-                    let multi = fa[k]!.contains("\n") || fb[k]!.contains("\n")
-                    let d = secret(k) ? "(value hidden)" : multi ? "changed (\(fb[k]!.split(separator: "\n").count) lines)" : "\(one(fa[k]!)) → \(one(fb[k]!))"
-                    let plain = !secret(k) && !multi
-                    facts.append(LensFact(kind: .changed, title: k, detail: d, path: c.new, before: plain ? one(fa[k]!) : nil, after: plain ? one(fb[k]!) : nil))
-                }
+            if c.old == nil { sections.append(LensSection(title: c.path, facts: [LensFact(kind: .added, title: c.path, detail: "new file · \(fb.count) keys", path: c.new, tag: "new file", count: fb.count)])); continue }
+            if c.new == nil { sections.append(LensSection(title: c.path, facts: [LensFact(kind: .removed, title: c.path, detail: "deleted · had \(fa.count) keys", tag: "deleted", count: fa.count)])); continue }
+            if let x = rawA.flatMap(crd), let y = rawB.flatMap(crd) {
+                // The schema and columns are told as fields; the rest of the file as keys.
+                func rest(_ f: [String: String]) -> [String: String] { f.filter { !$0.key.contains(".schema.openAPIV3Schema") && !$0.key.contains(".additionalPrinterColumns") } }
+                fa = rest(fa); fb = rest(fb)
+                let facts = crdFacts(x, y, path: c.new) + keyFacts(fa, fb, path: c.new)
+                if !facts.isEmpty { crds.append((y.kind, c.path, facts)) }
+                continue
             }
-            total += facts.count
+            let facts = keyFacts(fa, fb, path: c.new)
             if !facts.isEmpty { sections.append(LensSection(title: c.path, facts: facts)) }
         }
+        sections.insert(contentsOf: crdSections(crds), at: 0)
         guard !sections.isEmpty else { return nil }
         let all = sections.flatMap(\.facts)
-        return LensReport(kind: .configuration, title: "Configuration", icon: "slider.horizontal.3", summary: plural(total, "key change") + " in " + plural(sections.count, "file"), sections: sections,
+        let total = all.count
+        return LensReport(kind: .configuration, title: "Configuration", icon: "slider.horizontal.3", summary: plural(total, "change") + " in " + plural(cfg.count, "file"), sections: sections,
                           metric: LensMetric(value: total, unit: total == 1 ? "config change" : "config changes", added: all.filter { $0.kind == .added }.count,
                                              removed: all.filter { $0.kind == .removed }.count, changed: all.filter { $0.kind == .changed }.count))
+    }
+
+    /// One section for what every changed CRD shares (the same field added to three resources is one fact), then
+    /// one per resource for the rest.
+    static func crdSections(_ crds: [(kind: String, path: String, facts: [LensFact])]) -> [LensSection] {
+        func sig(_ f: LensFact) -> String { "\(f.kind)|\(f.title)|\(f.detail ?? "")|\(f.before ?? "")|\(f.after ?? "")|\(f.tag ?? "")" }
+        let shared = crds.count > 1 ? Set(crds[0].facts.map(sig)).filter { s in crds.dropFirst().allSatisfy { $0.facts.contains { sig($0) == s } } } : []
+        var out: [LensSection] = []
+        if !shared.isEmpty {
+            out.append(LensSection(title: crds.map(\.kind).sorted().joined(separator: ", ") + " · the same in each", facts: crds[0].facts.filter { shared.contains(sig($0)) }))
+        }
+        for c in crds.sorted(by: { $0.kind < $1.kind }) {
+            let own = c.facts.filter { !shared.contains(sig($0)) }
+            if !own.isEmpty { out.append(LensSection(title: "\(c.kind) · \((c.path as NSString).lastPathComponent)", facts: own)) }
+        }
+        return out
     }
 }
 

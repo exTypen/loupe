@@ -483,11 +483,64 @@ import AppKit
               cargo test
               cargo clippy
     """
-    let f = ConfigLens.yaml(y)
-    #expect(f["name"] == "ci" && f["on.push.paths[0]"] == "\"src/**\"" && f["jobs.build.runs-on"] == "linux")
-    #expect(f["jobs.build.steps[0].uses"] == "actions/checkout@v4" && f["jobs.build.steps[1].name"] == "test")
+    let f = ConfigLens.flatten("ci.yml", y)
+    #expect(f["name"] == "ci" && f["on.push.paths"] == "[src/**]" && f["jobs.build.runs-on"] == "linux")
+    #expect(f["jobs.build.steps[0].uses"] == "actions/checkout@v4" && f["jobs.build.steps[1].name"] == "test")   // not every step is named
     #expect(f["jobs.build.steps[1].run"] == "cargo test\ncargo clippy")
     #expect(ConfigLens.secret("jobs.x.with.token") && !ConfigLens.secret("jobs.design-tokens.steps[3].run"))
+}
+
+@Test func readsKubernetesYAMLByWhatItemsAre() {
+    // RBAC rules match by what they grant on: a rule inserted in the middle is one new rule, not every later one changed.
+    let before = """
+    rules:
+      - apiGroups: [""]
+        resources: ["namespaces"]
+        verbs: ["get", "create", "patch"]
+      # Create only.
+      - apiGroups: [""]
+        resources: ["persistentvolumeclaims"]
+        verbs: ["get", "create"]
+    """
+    let after = """
+    rules:
+      - apiGroups: [""]
+        resources: ["namespaces"]
+        verbs: ["get", "create"]
+      - apiGroups: [""]
+        resources: ["configmaps"]
+        verbs: ["get"]
+      - apiGroups: [""]
+        resources: ["persistentvolumeclaims"]
+        verbs: ["get", "create"]
+    """
+    let facts = ConfigLens.keyFacts(ConfigLens.flatten("role.yaml", before), ConfigLens.flatten("role.yaml", after), path: nil)
+    #expect(facts.map { "\($0.kind) \($0.title) \($0.detail ?? "")" }.sorted() == ["added rules[configmaps] verbs: [get]", "changed rules[namespaces].verbs −patch"])
+    #expect(ConfigLens.components("rules[fleetdriver.com: projects].verbs") == ["rules[fleetdriver.com: projects]", "verbs"])
+
+    // A sequence at its key's own indent, a mapping opened by "- key:", a sequence item that is itself a sequence.
+    let y = ConfigLens.flatten("x.yaml", "versions:\n- name: v1\n  additionalPrinterColumns:\n  - jsonPath: .spec.size\n    name: Size\n  served: true\nmatrix:\n  - - a\n    - b\n")
+    #expect(y["versions[v1].additionalPrinterColumns[Size].jsonPath"] == ".spec.size" && y["versions[v1].served"] == "true" && y["matrix[0]"] == "[a, b]")
+
+    let crd = { (status: String) in """
+        kind: CustomResourceDefinition
+        spec:
+          names:
+            kind: Volume
+          versions:
+          - name: v1
+            schema:
+              openAPIV3Schema:
+                properties:
+                  status:
+                    properties:
+        \(status)
+        """ }
+    let a = try! #require(ConfigLens.crd(crd("              phase:\n                enum:\n                - Pending\n                - Bound\n                type: string\n              ready:\n                type: boolean\n            required:\n            - ready")))
+    let b = try! #require(ConfigLens.crd(crd("              conditions:\n                items:\n                  properties:\n                    type:\n                      type: string\n                  type: object\n                type: array\n              ready:\n                type: string")))
+    #expect(a.kind == "Volume" && a.fields["status.phase"] == "Pending | Bound" && a.fields["status.ready"] == "boolean · required")
+    let d = ConfigLens.crdFacts(a, b, path: nil).map { "\($0.kind) \($0.title) \($0.detail ?? "") \($0.tag ?? "")" }.sorted()
+    #expect(d == ["added status.conditions list of object · type ", "changed status.ready boolean · required → string breaking", "removed status.phase Pending | Bound breaking"])
 }
 
 @Test func markdownBlocks() {

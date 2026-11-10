@@ -977,14 +977,14 @@ private struct ConfigRow: View {
     var fact: LensFact
     var body: some View {
         let f = fact
-        let parts = f.title.split(separator: ".")
+        let parts = ConfigLens.components(f.title)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 StatusSymbol(kind: f.kind)
-                (Text(parts.dropLast().map { $0 + "." }.joined()).foregroundColor(.secondary) + Text(parts.last.map(String.init) ?? f.title))
+                (Text(parts.dropLast().map { $0 + "." }.joined()).foregroundColor(.secondary) + Text(parts.last ?? f.title))
                     .font(.system(size: 11.5, design: .monospaced)).lineLimit(1).truncationMode(.head)
                 Spacer(minLength: 4)
-                if let t = f.tag { Text(t).font(.caption).foregroundStyle(.secondary) }
+                if let t = f.tag { Text(t).font(.caption).foregroundStyle(t == "breaking" ? .orange : .secondary) }
             }
             if f.before != nil || f.after != nil {
                 Text(f.kind == .changed ? "\(f.before ?? "") → \(f.after ?? "")" : f.after ?? f.before ?? "")
