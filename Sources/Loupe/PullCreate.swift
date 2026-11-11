@@ -241,7 +241,7 @@ final class PullCreateModel {
             let reply = PullDraft.splitReply(try await CommitAI.answer(prompt, in: path))
             if !reply.title.isEmpty { title = reply.title }
             body = reply.body
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// Pushes the branch when the remote doesn't have its head yet (the toolbar's push, with the space's credentials),
@@ -266,7 +266,7 @@ final class PullCreateModel {
             error = ForgejoClient.PullExists().errorDescription
         } catch {
             working = nil
-            self.error = error.localizedDescription
+            self.error = error.userMessage ?? self.error
         }
     }
 

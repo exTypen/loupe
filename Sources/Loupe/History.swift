@@ -212,7 +212,7 @@ final class HistoryModel {
                 let out = try await Git.string(["rev-list", "-n", "20000"] + scope.revs.filter { $0 != "HEAD" } + ["^HEAD", "--"], in: path)
                 notInHead = await Task.detached(priority: .userInitiated) { Set(out.split(separator: "\n").map(String.init)) }.value
             }
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// Drops the selected commit's files (they come back with `reload`); the selection stays.
@@ -237,7 +237,7 @@ final class HistoryModel {
                 message = b.trimmingCharacters(in: .whitespacesAndNewlines)
                 files = d
                 if !files.contains(where: { $0.path == selectedPath }) { selectedPath = files.first?.path }
-            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch { if !Task.isCancelled { self.error = error.userMessage ?? self.error } }
         }
     }
 
@@ -248,7 +248,7 @@ final class HistoryModel {
         do { try await UndoStack.for(path).run(undo) { try await Git.run(args, in: path) } }
         catch {
             let unmerged = (try? await Git.string(["diff", "--name-only", "--diff-filter=U"], in: path)) ?? ""
-            if unmerged.isEmpty { self.error = error.localizedDescription } else { stoppedOnConflicts = true }
+            if unmerged.isEmpty { self.error = error.userMessage ?? self.error } else { stoppedOnConflicts = true }
         }
         await reload()
     }

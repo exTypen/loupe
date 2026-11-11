@@ -307,7 +307,7 @@ final class WorktreeModel {
             if selectedFileIDs.isEmpty, let id = selectedFileID { selectedFileIDs = [id] }
             loadDiff()
             await detectMerged(branch: s.branch, head: s.oid)
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// Runs on every status refresh, so the check itself only happens when the branch or its target moved.
@@ -402,7 +402,7 @@ final class WorktreeModel {
     func perform(_ label: String, _ op: () async throws -> Void) async {
         busy = label
         defer { busy = nil }
-        do { try await op() } catch { self.error = error.localizedDescription }
+        do { try await op() } catch { self.error = error.userMessage ?? self.error }
         await refreshStatus()
     }
 
@@ -483,7 +483,7 @@ final class WorktreeModel {
     func generateMessage() async {
         generatingMessage = true; defer { generatingMessage = false }
         do { commitMessage = try await CommitAI.message(in: path, amend: amend, hasStaged: !staged.isEmpty) }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = error.userMessage ?? self.error }
     }
 
     func loadLastCommitMessage() async {

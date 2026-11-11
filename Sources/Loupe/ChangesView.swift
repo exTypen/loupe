@@ -215,7 +215,7 @@ struct BranchPicker: View {
                 }
                 await app.refreshWorktrees(repo: repo)
                 dismiss()
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.userMessage ?? self.error }
         }
     }
 }

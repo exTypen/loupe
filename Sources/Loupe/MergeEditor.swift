@@ -256,7 +256,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
         if noFinalNewline, s.hasSuffix("\n") { s.removeLast() }
         if s != known {
             do { try Self.write(s, to: url); known = s }
-            catch { model.error = error.localizedDescription }
+            catch { model.error = error.userMessage ?? model.error }
         }
         refreshDerived()
     }
@@ -445,7 +445,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
         defer { suggesting = false }
         let k = current
         do { proposal = try await MergeAI.suggest(path: path, sides: s, before: before, after: after, in: model.path); proposalFor = k }
-        catch { model.error = error.localizedDescription }
+        catch { model.error = error.userMessage ?? model.error }
     }
 
     func acceptProposal() {

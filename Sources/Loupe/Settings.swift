@@ -317,7 +317,7 @@ struct AddAccountSheet: View {
                 app.accounts.removeAll { $0.id == acct.id }
                 app.accounts.append(acct)
                 dismiss()
-            } catch { status = error.localizedDescription }
+            } catch { status = error.userMessage ?? status }
         }
     }
 
