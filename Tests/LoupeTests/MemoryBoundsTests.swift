@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 import ImageIO
 import CoreGraphics
 @testable import Loupe
@@ -209,5 +210,29 @@ struct LFSPreviewTests {
         m.viewed = [:]; #expect(UserDefaults.standard.object(forKey: vk) == nil)
         m.drafts = [DraftComment(path: "a", newLine: 1, oldLine: nil, body: "x")]; #expect(UserDefaults.standard.object(forKey: dk) != nil)
         m.drafts = []; #expect(UserDefaults.standard.object(forKey: dk) == nil)
+    }
+}
+
+struct FSWatcherTests {
+    /// Events still arrive, and dropping watchers while files change doesn't touch a freed watcher.
+    @Test func firesAndSurvivesTeardown() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-fsw-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let fired = Mutex(0)
+        var w: FSWatcher? = FSWatcher(paths: [dir]) { _ in fired.withLock { $0 += 1 } }
+        for k in 0..<20 {
+            try "x".write(toFile: dir + "/f\(k)", atomically: false, encoding: .utf8)
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(fired.withLock { $0 } > 0)
+        for k in 0..<50 {   // churn: watchers created and dropped while events are in flight
+            let t = FSWatcher(paths: [dir]) { _ in }
+            try "y".write(toFile: dir + "/g\(k)", atomically: false, encoding: .utf8)
+            _ = t
+        }
+        w = nil
+        _ = w
+        try? FileManager.default.removeItem(atPath: dir)
     }
 }

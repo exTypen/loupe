@@ -593,19 +593,28 @@ final class WorktreeModel {
 /// FSEvents wrapper; fires on any change under the given paths (coalesced by FSEvents latency).
 final class FSWatcher {
     private var stream: FSEventStreamRef?
-    private let callback: (_ worktreesChanged: Bool) -> Void
+    /// What the stream calls. The stream retains it (the context's retain/release), so an event already being
+    /// delivered on the FSEvents queue while the watcher goes away still finds it alive.
+    private final class Handler {
+        let callback: (_ worktreesChanged: Bool) -> Void
+        init(_ c: @escaping (_ worktreesChanged: Bool) -> Void) { callback = c }
+    }
 
     /// `worktreesChanged`: a directory directly under .git/worktrees/ appeared or vanished, i.e. a worktree was added
     /// or removed (possibly from outside Loupe). Changes deeper inside, like a linked worktree's index, don't count.
     init(paths: [String], callback: @escaping (_ worktreesChanged: Bool) -> Void) {
-        self.callback = callback
-        var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        let handler = Unmanaged.passRetained(Handler(callback))
+        defer { handler.release() }   // the stream holds its own reference from here on
+        var ctx = FSEventStreamContext(version: 0, info: handler.toOpaque(),
+                                       retain: { info in info.map { Unmanaged<Handler>.fromOpaque($0).retain().toOpaque() }.map(UnsafeRawPointer.init) },
+                                       release: { info in info.map { Unmanaged<Handler>.fromOpaque($0).release() } },
+                                       copyDescription: nil)
         let cb: FSEventStreamCallback = { _, info, count, rawPaths, _, _ in
             guard let info else { return }
-            let me = Unmanaged<FSWatcher>.fromOpaque(info).takeUnretainedValue()
+            let handler = Unmanaged<Handler>.fromOpaque(info).takeUnretainedValue()
             let paths = unsafeBitCast(rawPaths, to: NSArray.self) as? [String] ?? []
             guard paths.contains(where: { !FSWatcher.isNoise($0) }) else { return }
-            me.callback(paths.contains { ($0 as NSString).deletingLastPathComponent.hasSuffix("/.git/worktrees") })
+            handler.callback(paths.contains { ($0 as NSString).deletingLastPathComponent.hasSuffix("/.git/worktrees") })
         }
         stream = FSEventStreamCreate(nil, cb, &ctx, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.15,
                                      FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents))
