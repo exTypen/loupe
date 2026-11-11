@@ -24,6 +24,9 @@ final class AppModel {
     var worktrees: [String: [Worktree]] = [:]          // repo path → worktrees (main first), across all spaces
     var selection: String? {   // selected worktree path
         didSet {
+            // Only the shown worktree keeps its big, quick-to-rebuild state (a commit's files, whole files, PRs).
+            if let old = oldValue, old != selection { models[old]?.releaseHeavyState() }
+            if let s = selection { models[s]?.restoreHeavyState() }
             guard let s = selection else { spaces[spaceIndex].selection = nil; return }
             // Jumping to a worktree in another space (⌘K, PR checkout) takes the sidebar there too.
             let repo = repo(containing: s) ?? s
@@ -123,6 +126,14 @@ final class AppModel {
         return m
     }
 
+    /// A worktree that's gone: its model (and file watcher), undo stack and last rewrite.
+    func forget(_ path: String) {
+        models[path]?.stopWatching(); models[path] = nil
+        UndoStack.forget(path); Rewrites.forget(path)
+    }
+
+    var cachedModelCount: Int { models.count }   // tests
+
     func repo(containing worktreePath: String) -> String? {
         worktrees.first { $0.value.contains { $0.path == worktreePath } }?.key
     }
@@ -144,7 +155,7 @@ final class AppModel {
         var sp = spaces
         for i in sp.indices { sp[i].repos.removeAll { $0 == path } }
         spaces = sp
-        for wt in worktrees[path] ?? [] { models[wt.path]?.stopWatching(); models[wt.path] = nil }
+        for wt in worktrees[path] ?? [] { forget(wt.path) }
         worktrees[path] = nil
     }
 
@@ -155,6 +166,8 @@ final class AppModel {
     func refreshWorktrees(repo: String) async {
         guard let list = try? await Git.worktrees(in: repo) else { return }
         let wts = list.filter { !$0.isBare }
+        // Worktrees removed outside Loupe (or pruned): their models, watchers and undo history go too.
+        for old in worktrees[repo] ?? [] where !wts.contains(where: { $0.path == old.path }) { forget(old.path) }
         if worktrees[repo] != wts { worktrees[repo] = wts }   // a subscript write notifies even when equal
         for wt in list where !wt.isBare { Task { await model(for: wt.path).refreshStatus() } }
     }
@@ -169,7 +182,7 @@ final class AppModel {
 
     func removeWorktree(repo: String, path: String, force: Bool) async throws {
         try await Git.run(["worktree", "remove"] + (force ? ["--force"] : []) + [path], in: repo)
-        models[path]?.stopWatching(); models[path] = nil
+        forget(path)
         if selection == path { selection = repo }
         await refreshWorktrees(repo: repo)
     }
@@ -234,7 +247,11 @@ final class WorktreeModel {
     var selectedFileID: String?            // the file whose diff is shown
     var selectedFileIDs: Set<String> = []   // the file list's selection (⌘/⇧-click, ⌘A); bulk actions use it
     var diff: FileDiff?
-    @ObservationIgnored lazy var browser = WorktreeBrowser(model: self)   // Full mode: the worktree as an IDE
+    @ObservationIgnored private var browserStorage: WorktreeBrowser?
+    var browser: WorktreeBrowser {   // Full mode: the worktree as an IDE
+        if let b = browserStorage { return b }
+        let b = WorktreeBrowser(model: self); browserStorage = b; return b
+    }
     var commitMessage = ""
     var amend = false
     var busy: String?                  // non-nil → an operation is running (label)
@@ -243,7 +260,11 @@ final class WorktreeModel {
     var remoteName = "origin"
     var remoteDetected = false
     var pulls = PullListModel()
-    @ObservationIgnored lazy var history = HistoryModel(path: path)
+    @ObservationIgnored private var historyStorage: HistoryModel?
+    var history: HistoryModel {
+        if let h = historyStorage { return h }
+        let h = HistoryModel(path: path); historyStorage = h; return h
+    }
     @ObservationIgnored lazy var lfs = LFSModel(path: path)
     @ObservationIgnored lazy var submodules = SubmoduleModel(path: path)
 
@@ -544,6 +565,20 @@ final class WorktreeModel {
     }
 
     func stopWatching() { watcher = nil }
+
+    /// The sidebar moved to another worktree: let go of what's big and quick to rebuild (the shown diff, a commit's
+    /// files, whole files and the tree of Full mode, opened pull requests). The status list, selections, tabs and
+    /// scopes stay, so coming back looks the same.
+    func releaseHeavyState() {
+        diffTask?.cancel(); diff = nil
+        historyStorage?.releaseDetail()
+        browserStorage?.release()
+        pulls.details = [:]
+    }
+
+    func restoreHeavyState() {
+        if diff == nil, selectedFile != nil { loadDiff() }
+    }
 
     private func scheduleRefresh() {
         refreshTask?.cancel()

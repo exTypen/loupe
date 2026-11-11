@@ -163,6 +163,7 @@ final class HistoryModel {
         exhausted = false
         await fetch(skip: 0, replace: true)
         if selectedSHA == nil || !commits.contains(where: { $0.sha == selectedSHA }) { select(commits.first?.sha) }
+        else if files.isEmpty, !detailLoading { select(selectedSHA) }   // released while another worktree showed
         async let refs = Git.string(["for-each-ref", "--format=%(refname)", "--sort=-committerdate", "refs/heads", "refs/remotes"], in: path)
         let names = ((try? await refs) ?? "").split(separator: "\n").map(String.init).filter { !$0.hasSuffix("/HEAD") }
         branches = (names.filter { $0.hasPrefix("refs/heads/") }.map { String($0.dropFirst(11)) },
@@ -212,6 +213,12 @@ final class HistoryModel {
                 notInHead = await Task.detached(priority: .userInitiated) { Set(out.split(separator: "\n").map(String.init)) }.value
             }
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// Drops the selected commit's files (they come back with `reload`); the selection stays.
+    func releaseDetail() {
+        detailTask?.cancel()
+        files = []
     }
 
     func select(_ sha: String?) {

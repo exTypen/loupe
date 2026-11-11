@@ -182,6 +182,7 @@ extension Git {
     private static var last: [String: (label: String, sha: String)] = [:]
 
     static func lastRewrite(in worktree: String) -> (label: String, sha: String)? { last[worktree] }
+    static func forget(_ worktree: String) { last[worktree] = nil }
 
     static func record(_ label: String, sha: String, in worktree: String) {
         last[worktree] = (label, sha)
