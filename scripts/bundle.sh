@@ -10,7 +10,9 @@ set -e
 cd "$(dirname "$0")/.."
 VERSION="${LOUPE_VERSION:-0.1.0}"
 # CFBundleVersion must grow with every release (Sparkle compares it): x.y.z → x*10000 + y*100 + z, so 0.8.0 → 800.
-BUILD="${LOUPE_BUILD:-$(echo "$VERSION" | awk -F. '{ print $1 * 10000 + $2 * 100 + $3 }')}"
+# A version that doesn't fit the formula (not x.y.z, or y/z above 99) would give a build number that can go backwards.
+BUILD="${LOUPE_BUILD:-$(echo "$VERSION" | awk -F. 'NF != 3 || $0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/ || $2 > 99 || $3 > 99 { exit 1 } { print $1 * 10000 + $2 * 100 + $3 }')}" \
+  || { echo "LOUPE_VERSION must be x.y.z with y and z below 100 (or set LOUPE_BUILD): $VERSION" >&2; exit 1; }
 
 swift build -c release
 APP=build/Loupe.app
@@ -22,7 +24,7 @@ otool -l "$APP/Contents/MacOS/Loupe" | grep -q "@executable_path/../Frameworks" 
   || install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/Loupe"
 cp scripts/AppIcon.icns "$APP/Contents/Resources/"
 
-SPARKLE_KEY="${LOUPE_SPARKLE_PUBLIC_KEY:-$(grep -v '^#' scripts/sparkle-public-key.txt 2>/dev/null | tr -d '[:space:]')}"
+SPARKLE_KEY=$(printf %s "${LOUPE_SPARKLE_PUBLIC_KEY:-$(grep -v '^#' scripts/sparkle-public-key.txt 2>/dev/null)}" | tr -d '[:space:]')
 if [ -n "$SPARKLE_KEY" ]; then SPARKLE_KEY_PLIST="<key>SUPublicEDKey</key><string>$SPARKLE_KEY</string>"
 else echo "warning: no Sparkle public key (LOUPE_SPARKLE_PUBLIC_KEY or scripts/sparkle-public-key.txt): this build will not offer updates" >&2; fi
 
