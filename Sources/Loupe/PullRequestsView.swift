@@ -32,6 +32,7 @@ struct PullBrowser: View {
     var remote: RemoteRepo
     var me: String?
     @State private var search = ""
+    @State private var canCreate = false   // the branch has commits the default branch doesn't
 
     @Environment(AppModel.self) private var app
     private var worktreeBranches: Set<String> {
@@ -63,6 +64,10 @@ struct PullBrowser: View {
                             .disabled(me == nil)
                             .help(me.map { "Only pull requests opened by \($0)" } ?? "Add a Forgejo account to filter by author")
                         TextField("Filter pull requests", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 320)
+                        if canCreate, let b = model.branch, !list.pulls.contains(where: { $0.head.ref == b && $0.state == "open" }) {
+                            Button { app.creatingPull = model.path } label: { Label("Create Pull Request…", systemImage: "plus") }
+                                .help("Create a pull request for \(b)")
+                        }
                         Spacer()
                         if list.loading { ProgressView().controlSize(.small) }
                         else if let t = list.lastUpdated {
@@ -116,6 +121,7 @@ struct PullBrowser: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await list.load(client, remote) } }
+        .task(id: model.headOID) { canCreate = await model.aheadOfDefault() != nil }
         .onChange(of: list.selected) { _, sel in if sel == nil { Task { await list.load(client, remote) } } }
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await list.load(client, remote) } }
     }

@@ -39,6 +39,7 @@ final class AppModel {
         didSet { UserDefaults.standard.set(Array(collapsed), forKey: "collapsed") }
     }
     var showSwitcher = false
+    var creatingPull: String?   // worktree path the New Pull Request sheet is open for
     var accounts: [ForgejoAccount] = (try? JSONDecoder().decode([ForgejoAccount].self, from: UserDefaults.standard.data(forKey: "accounts") ?? Data())) ?? [] {
         didSet { UserDefaults.standard.set(try? JSONEncoder().encode(accounts), forKey: "accounts") }
     }

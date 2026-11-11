@@ -206,9 +206,9 @@ struct ForgejoClient {
     }
     private var serverName: String { github ? "GitHub" : "Forgejo" }
     /// Page-size parameter: Forgejo `limit`, GitHub `per_page`.
-    private func paged(_ page: Int, _ size: Int) -> [String: String] { ["page": "\(page)", github ? "per_page" : "limit": "\(size)"] }
+    func paged(_ page: Int, _ size: Int) -> [String: String] { ["page": "\(page)", github ? "per_page" : "limit": "\(size)"] }
 
-    private func request(_ method: String, _ path: String, query: [String: String] = [:], body: Encodable? = nil, accept: String = "application/json") throws -> URLRequest {
+    func request(_ method: String, _ path: String, query: [String: String] = [:], body: Encodable? = nil, accept: String = "application/json") throws -> URLRequest {
         var c = URLComponents(string: apiRoot + path)!
         if !query.isEmpty { c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var r = URLRequest(url: c.url!)
@@ -222,7 +222,7 @@ struct ForgejoClient {
         return r
     }
 
-    private func send(_ r: URLRequest) async throws -> Data {
+    func send(_ r: URLRequest) async throws -> Data {
         let (data, resp) = try await URLSession.shared.data(for: r)
         guard let http = resp as? HTTPURLResponse else { throw GitError(message: "No HTTP response") }
         guard (200..<300).contains(http.statusCode) else {
@@ -232,12 +232,12 @@ struct ForgejoClient {
         return data
     }
 
-    private func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+    func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
         try JSONDecoder().decode(T.self, from: try await send(try request("GET", path, query: query)))
     }
 
     /// Follows page=N until a short page comes back.
-    private func getAll<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> [T] {
+    func getAll<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> [T] {
         var all: [T] = [], page = 1
         while true {
             let q = query.merging(paged(page, 50)) { a, _ in a }
