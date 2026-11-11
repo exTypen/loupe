@@ -4,7 +4,7 @@ import AppKit
 @main
 struct LoupeApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
-    @State private var app = AppModel()
+    @State private var app = StressDriver.makeModel()   // AppModel(), unless LOUPE_STRESS is set (memory test copy only)
 
     init() {
         // Dev aid: `Loupe --api /repos/o/r/pulls/1/reviews` prints a Forgejo response using the app's own Keychain
