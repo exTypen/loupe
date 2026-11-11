@@ -262,10 +262,11 @@ final class WorktreeModel {
 
     func refreshStatus() async {
         statusVersion += 1
+        let undoStamp = undo.stamp
         do {
             let s = try await Git.status(in: path)
             branch = s.branch; headOID = s.oid; ahead = s.ahead; behind = s.behind
-            undo.prune(branch: s.branch, oid: s.oid)
+            undo.prune(branch: s.branch, oid: s.oid, since: undoStamp)
             let stashes = (try? await Git.string(["stash", "list", "--format=%H"], in: path)) ?? ""
             stashCount = stashes.split(separator: "\n").count
             await detectOperation()
@@ -428,7 +429,8 @@ final class WorktreeModel {
         let amending = amend
         await perform("Committing") {
             // Undo keeps the changes staged and puts the message back.
-            try await undo.run(.reset(amending ? "Amend" : "Commit", soft: true, offerRevert: !amending) {
+            try await undo.run(.reset(amending ? "Amend" : "Commit", soft: true, offerRevert: !amending) { [weak self] in
+                guard let self, self.commitMessage.isEmpty else { return }   // never over what was typed since
                 self.commitMessage = msg; self.amend = amending
             }) {
                 try await Git.run(["commit", "-F", "-"] + (amending ? ["--amend"] : []), in: path, stdin: Data(msg.utf8))

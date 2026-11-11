@@ -58,6 +58,8 @@ final class UndoStack {
     private(set) var entries: [Entry] = []
     var toast: Toast?
     @ObservationIgnored private var inFlight = 0   // an action is between its git command and its record: don't prune
+    /// Bumps whenever an action or undo starts or ends: a status read that began before it is stale and mustn't prune.
+    @ObservationIgnored private(set) var stamp = 0
     @ObservationIgnored private var undoing = false
 
     private static var stacks: [String: UndoStack] = [:]
@@ -75,7 +77,7 @@ final class UndoStack {
 
     func record(_ label: String, published: String? = nil, offerRevert: Bool = false, toast: Bool = false,
                 restore: @escaping @MainActor () async throws -> Void) async {
-        inFlight += 1; defer { inFlight -= 1 }
+        inFlight += 1; stamp += 1; defer { inFlight -= 1; stamp += 1 }
         let e = Entry(label: label, head: await Self.head(in: path), published: published, offerRevert: offerRevert, restore: restore)
         entries.append(e)
         if entries.count > Self.limit { entries.removeFirst(entries.count - Self.limit) }
@@ -84,7 +86,7 @@ final class UndoStack {
 
     /// Runs `op` with nothing pruned meanwhile; `record` inside it sees the state `op` left.
     func track<T>(_ op: () async throws -> T) async rethrows -> T {
-        inFlight += 1; defer { inFlight -= 1 }
+        inFlight += 1; stamp += 1; defer { inFlight -= 1; stamp += 1 }
         return try await op()
     }
 
@@ -116,8 +118,8 @@ final class UndoStack {
             case let .stash(label, sha, message, applied, dropped):
                 var snap: FileSnapshot?
                 if applied {
-                    let names = try await Git.string(["stash", "show", "--name-only", "--no-renames", "--include-untracked", sha], in: dir)
-                    snap = try await FileSnapshot.capture(names.split(separator: "\n").map(String.init), index: true, in: dir)
+                    let names = try await Git.run(["stash", "show", "-z", "--name-only", "--no-renames", "--include-untracked", sha], in: dir)
+                    snap = try await FileSnapshot.capture(names.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }, index: true, in: dir)
                 }
                 try await op()
                 try await snap?.seal(in: dir)
@@ -139,13 +141,15 @@ final class UndoStack {
 
     /// Takes back the newest entry that still applies. Throws `UndoRefusal` when that's unsafe.
     func undo() async throws {
-        guard !undoing else { return }   // a second ⌘Z while the first runs would restore the same entry twice
-        undoing = true; inFlight += 1; defer { undoing = false; inFlight -= 1 }
+        // A second ⌘Z while the first runs would restore the same entry twice; one during an action would undo the
+        // entry below the one that action is about to record.
+        guard !undoing, inFlight == 0 else { return }
+        undoing = true; inFlight += 1; stamp += 1; defer { undoing = false; inFlight -= 1; stamp += 1 }
         drop(unless: await Self.head(in: path))
         guard let e = entries.last else { throw UndoRefusal(message: "Nothing to undo in this worktree.") }
         if let sha = e.published,
            let on = String(decoding: try await Git.run(["branch", "-r", "--contains", sha], in: path, allowFailure: true), as: UTF8.self)
-            .split(separator: "\n").first?.trimmingCharacters(in: .whitespaces) {
+            .split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.contains(" -> ") }) {
             throw UndoRefusal(message: "\(e.label) is already on \(on). Undoing it would rewrite pushed history."
                               + (e.offerRevert ? " Revert it instead: a new commit that takes it back." : ""),
                               revert: e.offerRevert ? sha : nil)
@@ -156,8 +160,9 @@ final class UndoStack {
     }
 
     /// Status refresh: HEAD (or the branch) moved without Loupe, so the newest entries no longer apply.
-    func prune(branch: String?, oid: String) {
-        guard inFlight == 0 else { return }
+    /// `since`: `stamp` read before the status was; if an action ran meanwhile, that status may predate it.
+    func prune(branch: String?, oid: String, since: Int? = nil) {
+        guard inFlight == 0, since == nil || since == stamp else { return }
         drop(unless: Self.key(branch: branch, oid: oid))
     }
 
@@ -247,7 +252,8 @@ struct FileSnapshot: Sendable {
 
     func restore(in dir: String, label: String) async throws {
         let now = try await Self.contents(files.map(\.path), write: false, in: dir)
-        let changed = zip(files, now).filter { $0.0.after != $0.1 }.map(\.0.path)
+        // A directory reads as "no file": one made since at a path that had none must not be deleted below.
+        let changed = zip(files, now).filter { $0.0.after != $0.1 || Self.isDirectory($0.0.path, in: dir) }.map(\.0.path)
         let indexMoved = indexBefore != indexAfter
         let indexNow = indexMoved ? await Self.tree(in: dir) : indexAfter
         if !changed.isEmpty || indexNow != indexAfter {
@@ -285,12 +291,21 @@ struct FileSnapshot: Sendable {
             if fm.fileExists(atPath: full, isDirectory: &isDir), !isDir.boolValue { regular.append(i) }
         }
         guard !regular.isEmpty else { return result }
-        let out = try await Git.string(["hash-object", "--no-filters"] + (write ? ["-w"] : []) + ["--"] + regular.map { paths[$0] }, in: dir)
+        // Paths on stdin: a discard of thousands of files would overflow the argument list.
+        let list = Data(regular.map { paths[$0] + "\n" }.joined().utf8)
+        let out = String(decoding: try await Git.run(["hash-object", "--no-filters", "--stdin-paths"] + (write ? ["-w"] : []), in: dir, stdin: list), as: UTF8.self)
         for (i, sha) in zip(regular, out.split(separator: "\n")) {
             let full = (dir as NSString).appendingPathComponent(paths[i])
             result[i] = .blob(String(sha), executable: fm.isExecutableFile(atPath: full))
         }
         return result
+    }
+
+    private static func isDirectory(_ path: String, in dir: String) -> Bool {
+        let full = (dir as NSString).appendingPathComponent(path)
+        var isDir: ObjCBool = false
+        return (try? FileManager.default.destinationOfSymbolicLink(atPath: full)) == nil
+            && FileManager.default.fileExists(atPath: full, isDirectory: &isDir) && isDir.boolValue
     }
 
     private static func tree(in dir: String) async -> String? {   // nil with conflicts in the index
@@ -324,7 +339,8 @@ extension WorktreeModel {
             a.addButton(withTitle: "Revert Commit")
             a.addButton(withTitle: "Cancel")
             guard a.runModal() == .alertFirstButtonReturn else { return }
-            await perform("Reverting") { try await Git.run(["revert", "--no-edit", sha], in: path) }
+            let merge = (try? await Git.run(["rev-parse", "-q", "--verify", "\(sha)^2"], in: path)) != nil
+            await perform("Reverting") { try await Git.run(["revert", "--no-edit"] + (merge ? ["-m", "1"] : []) + [sha], in: path) }
             await history.reload()
         } else { a.runModal() }
     }
