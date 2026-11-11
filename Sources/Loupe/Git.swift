@@ -28,6 +28,7 @@ enum Git {
                 env["GIT_OPTIONAL_LOCKS"] = "0"   // status must not fight other git processes for index.lock
                 env["GIT_TERMINAL_PROMPT"] = "0"
                 env["LC_ALL"] = "C"
+                env["PATH"] = searchPath(env["PATH"])
                 env.merge(extra) { _, new in new }
                 p.environment = env
                 let out = Pipe(), err = Pipe(), inp = Pipe()
@@ -64,6 +65,14 @@ enum Git {
     static func string(_ args: [String], in dir: String) async throws -> String {
         String(decoding: try await run(args, in: dir), as: UTF8.self)
     }
+
+    /// Opened from Finder the app's PATH is /usr/bin:/bin:..., so git couldn't find Homebrew's git-lfs (its filters
+    /// would fail on checkout and pull) or the tools hooks call. A terminal has them; so does git run from here.
+    static func searchPath(_ path: String?) -> String {
+        var dirs = (path ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
+        for d in ["/opt/homebrew/bin", "/usr/local/bin"] where !dirs.contains(d) { dirs.append(d) }
+        return dirs.joined(separator: ":")
+    }
 }
 
 // MARK: - Worktrees
@@ -81,7 +90,14 @@ struct Worktree: Identifiable, Hashable {
 
 extension Git {
     static func worktrees(in dir: String) async throws -> [Worktree] {
-        parseWorktrees(try await string(["worktree", "list", "--porcelain"], in: dir))
+        var list = parseWorktrees(try await string(["worktree", "list", "--porcelain"], in: dir))
+        // A submodule opened as a repo lists its git dir (<super>/.git/modules/<name>) as its main worktree. Its
+        // core.worktree names the real one; asking from `dir` alone would give a linked worktree's own folder.
+        if let gitDir = list.first?.path, gitDir.contains("/.git/modules/"),
+           let top = try? await string(["--git-dir=" + gitDir, "rev-parse", "--show-toplevel"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty {
+            list[0].path = top
+        }
+        return list
     }
 
     static func parseWorktrees(_ s: String) -> [Worktree] {
@@ -138,6 +154,7 @@ struct FileChange: Identifiable, Hashable {
     var origPath: String?
     var kind: Kind
     var staged: Bool
+    var submodule: SubmoduleStatus? = nil   // a submodule, not a file: its recorded commit or its contents changed
     var id: String { (staged ? "S:" : "W:") + path }
 }
 
@@ -173,8 +190,9 @@ extension Git {
                 let path = String(f[t == "1" ? 8 : 9])
                 var orig: String?
                 if t == "2", i < parts.count { orig = parts[i]; i += 1 }
-                if xy[0] != "." { files.append(FileChange(path: path, origPath: orig, kind: kind(xy[0]), staged: true)) }
-                if xy[1] != "." { files.append(FileChange(path: path, origPath: xy[1] == "R" ? orig : nil, kind: kind(xy[1]), staged: false)) }
+                let sub = SubmoduleStatus(f[2])
+                if xy[0] != "." { files.append(FileChange(path: path, origPath: orig, kind: kind(xy[0]), staged: true, submodule: sub)) }
+                if xy[1] != "." { files.append(FileChange(path: path, origPath: xy[1] == "R" ? orig : nil, kind: kind(xy[1]), staged: false, submodule: sub)) }
             case "u":
                 let f = e.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: false)
                 if f.count >= 11 { files.append(FileChange(path: String(f[10]), kind: .conflicted, staged: false)) }

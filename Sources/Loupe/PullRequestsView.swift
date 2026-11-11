@@ -509,6 +509,7 @@ private struct PullFilePane: View {
             Divider()
             if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
             else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
+            else if let lfs = LFSDiff(f) { LFSObjectView(lfs: lfs, dir: pull.local.dir, path: f.path) }
             else {
                 DiffTableView(file: f, comments: pull.inlineComments(for: f.path),
                               onAddComment: { n, o, body in pull.drafts.append(DraftComment(path: f.path, newLine: n, oldLine: o, body: body)) },

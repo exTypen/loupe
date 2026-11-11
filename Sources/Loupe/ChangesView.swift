@@ -231,6 +231,8 @@ struct ChangesView: View {
             OperationBanner(model: model)
             Divider()
         }
+        LFSMissingBanner(model: model)
+        SubmoduleBanner(model: model)
         ResizableSplit(key: "changesListWidth", minWidth: 220, maxWidth: 380, defaultFraction: 300/380) {
             VStack(spacing: 0) {
                 if fullMode { WorktreeTree(model: model, browser: model.browser) }
@@ -357,7 +359,7 @@ struct FileListView: View {
             return .handled
         }
         .onDeleteCommand {
-            let fs = model.selectedFiles.filter { !$0.staged }
+            let fs = model.selectedFiles.filter { !$0.staged && $0.submodule == nil }
             if !fs.isEmpty { confirmDiscard = fs }
         }
     }
@@ -393,7 +395,7 @@ struct FileListView: View {
             } else if let p = r.filePath, let f = byPath[p] {
                 HStack(spacing: 4) {
                     Color.clear.frame(width: 12)
-                    FileRow(path: f.path, badge: f.kind, nameOnly: true)
+                    FileRow(path: f.path, badge: f.kind, nameOnly: true, symbol: f.submodule == nil ? nil : "shippingbox", lockedBy: model.lfs.locks[f.path])
                 }
                 .treeRow(depth: r.depth)
                 .tag(f.id)
@@ -408,14 +410,17 @@ struct FileListView: View {
         let urls = fs.map { URL(fileURLWithPath: model.path).appendingPathComponent($0.path) }
         if !unstaged.isEmpty { Button("Stage\(n(unstaged))") { Task { await model.stage(unstaged) } } }
         if !staged.isEmpty { Button("Unstage\(n(staged))") { Task { await model.unstage(staged) } } }
-        if !unstaged.isEmpty { Button("Discard Changes\(n(unstaged))…", role: .destructive) { confirmDiscard = unstaged } }
+        let discardable = unstaged.filter { $0.submodule == nil }   // `git restore` leaves a submodule as it is
+        if !discardable.isEmpty { Button("Discard Changes\(n(discardable))…", role: .destructive) { confirmDiscard = discardable } }
         if !fs.isEmpty {
             let paths = Array(Set(fs.map(\.path))).sorted()
             Button("Stash\(paths.count == 1 ? "" : " \(paths.count) Files")") {
                 Task { await model.stash(message: "", untracked: fs.contains { $0.kind == .untracked }, paths: paths) }
             }
         }
-        if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added {
+        SubmoduleMenuItems(model: model, files: fs)
+        LFSMenuItems(model: model, files: fs)
+        if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added, f.submodule == nil {
             Divider()
             Button("Blame") { model.select(f.id); panel = .blame }
             Button("File History") { model.select(f.id); panel = .history }
@@ -437,10 +442,12 @@ struct FileRow: View {
     var nameOnly = false   // in a tree, where the folders are rows
     var additions: Int? = nil
     var deletions: Int? = nil
+    var symbol: String? = nil      // instead of the file-type icon (a submodule)
+    var lockedBy: String? = nil    // a Git LFS lock's owner
 
     var body: some View {
         HStack(spacing: 7) {
-            FileIcon(path: path)
+            if let symbol { Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16) } else { FileIcon(path: path) }
             let dir = nameOnly ? "" : (path as NSString).deletingLastPathComponent
             // GitHub Desktop style: one line, directory dimmed, file name emphasized; the head truncates first.
             (Text(dir.isEmpty ? "" : dir + "/").foregroundStyle(.secondary) + Text((path as NSString).lastPathComponent))
@@ -454,6 +461,7 @@ struct FileRow: View {
                 }
                 .font(.caption.monospacedDigit()).fixedSize()
             }
+            if let lockedBy { LFSLockBadge(owner: lockedBy) }
             if let badge { StatusIcon(kind: badge) }
         }
         .padding(.vertical, 2)
@@ -480,7 +488,8 @@ struct DiffPane: View {
 
     var body: some View {
         // Keep showing the previous diff until the next one is parsed: swapping in a spinner for ~50 ms reads as a flash.
-        if let f = model.selectedFile, let d = model.diff {
+        if let f = model.selectedFile, f.submodule != nil { SubmodulePane(model: model, file: f) }
+        else if let f = model.selectedFile, let d = model.diff {
             VStack(spacing: 0) {
                 DiffHeader(path: d.path, oldPath: d.oldPath != d.newPath ? d.oldPath : nil, additions: d.additions, deletions: d.deletions,
                            file: f.kind == .untracked || f.kind == .added ? nil : FileTarget(worktree: model.path, path: f.path)) {
@@ -493,6 +502,7 @@ struct DiffPane: View {
                 Divider()
                 WithFilePanel(file: f.kind == .untracked || f.kind == .added ? nil : FileTarget(worktree: model.path, path: f.path), version: d.uid) {
                 if d.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                else if let lfs = LFSDiff(d) { LFSObjectView(lfs: lfs, dir: model.path, path: d.path, newInWorktree: !f.staged) }
                 else {
                     DiffTableView(file: d,
                                   hunkActions: f.staged ? [.unstage] : f.kind == .untracked ? [] : [.discard, .stage],
@@ -717,6 +727,7 @@ struct WorktreeTree: View {
                         Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                             .foregroundStyle(c == nil ? .secondary : .primary)
                         Spacer(minLength: 4)
+                        if let o = model.lfs.locks[path] { LFSLockBadge(owner: o) }
                         if let c { StatusIcon(kind: c.kind) }
                     }
                     .help(path)
@@ -769,6 +780,7 @@ struct WorktreeFilePane: View {
                 if let f {
                     if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
                     else if f.lines.isEmpty { ContentUnavailableView("Empty File", systemImage: "doc") }
+                    else if let lfs = LFSDiff(f) { LFSObjectView(lfs: lfs, dir: model.path, path: path, newInWorktree: c?.staged != true) }
                     else {
                         DiffTableView(file: f, onNavigate: { word, action in Task { await browser.navigate(word, action, from: path) } },
                                       reveal: browser.reveal, changeRuler: true)
