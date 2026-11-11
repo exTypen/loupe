@@ -30,15 +30,15 @@ struct ConflictText {
         func marker(_ l: Substring, _ c: Character) -> Bool {
             l.count >= 7 && l.prefix(7).allSatisfy { $0 == c } && (l.count == 7 || l[l.index(l.startIndex, offsetBy: 7)] == " ")
         }
-        func label(_ l: Substring) -> String { l.dropFirst(7).trimmingCharacters(in: .whitespaces) }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        func label(_ l: Substring) -> String { l.dropFirst(7).trimmingCharacters(in: .whitespacesAndNewlines) }
+        for line in Merge3.split(text) {
             if cur == nil, marker(line, "<") {
                 if !plain.isEmpty { segments.append(.text(plain)); plain = [] }
                 cur = Conflict(current: [], base: nil, incoming: [], currentLabel: label(line), incomingLabel: "")
                 section = 1
             } else if cur != nil, section == 1, marker(line, "|") {
                 cur!.base = []; section = 2
-            } else if cur != nil, section < 3, line == "=======" {
+            } else if cur != nil, section < 3, line == "=======" || line == "=======\r" {
                 section = 3
             } else if cur != nil, section == 3, marker(line, ">") {
                 cur!.incomingLabel = label(line)

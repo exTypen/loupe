@@ -133,7 +133,57 @@ private func merged(_ m: Merge3, conflict: (Merge3.Chunk) -> ArraySlice<Substrin
     let disk = try String(contentsOfFile: dir + "/f.txt", encoding: .utf8)
     #expect(ConflictText.blocks(in: disk).count == m.conflictCount)   // ours lines up with git's own conflicts
     #expect(merged(m) { m.ours[$0.ours] + m.theirs[$0.theirs] } == "ONE\ntwo\nthree main\nTHREE topic\nfour\nfive\nsix\nseven\neight\n")
+    // Built from the chunks with git's labels, the result is git's file: what merged on its own is the same text.
+    let blocks = ConflictText.blocks(in: disk)
+    let (lines, regions) = MergeSession.fromChunks(m, (blocks[0].conflict.currentLabel, blocks[0].conflict.incomingLabel))
+    #expect(MergeSession.agree(disk: disk, blocks: blocks.map(\.range), result: lines, conflicts: regions))
 
     let gone = ConflictStages(try await Git.string(["ls-files", "-u", "-z", "--", "gone.txt"], in: dir))
     #expect(gone.kind == .deletedByUs)
+}
+
+@Test func crlfFilesSplitIntoLines() {
+    // "\r\n" is one Character: splitting the String on "\n" would leave a CRLF file as one line, all of it one conflict.
+    let m = Merge3(base: "a\r\nb\r\nc\r\nd\r\n", ours: "a\r\nB\r\nc\r\nd\r\n", theirs: "a\r\nb\r\nc\r\nD\r\n")
+    #expect(m.conflictCount == 0 && m.base.count == 4)
+    #expect(merged(m) { _ in [] } == "a\r\nB\r\nc\r\nD\r\n")
+    let text = "x\r\n<<<<<<< HEAD\r\nmine\r\n=======\r\nyours\r\n>>>>>>> topic\r\ny\r\n"
+    let t = ConflictText(text)
+    #expect(t.conflictCount == 1)
+    let b = ConflictText.blocks(in: text)
+    #expect(b.count == 1 && b[0].conflict.incomingLabel == "topic" && b[0].conflict.current == ["mine\r"])
+    #expect((text as NSString).substring(with: b[0].range).hasSuffix(">>>>>>> topic\r\n"))
+}
+
+@Test func editsOutsideTheConflictsKeepTheFileAsItIs() {
+    let m = Merge3(base: "a\nx\nb\nc\nd\n", ours: "A\nx\nours\nc\nd\n", theirs: "a\nx\ntheirs\nc\nd\n")
+    let (lines, regions) = MergeSession.fromChunks(m, ("HEAD", "topic"))
+    let git = "A\nx\n<<<<<<< HEAD\nours\n||||||| base\nb\n=======\ntheirs\n>>>>>>> topic\nc\nd\n"
+    let agree = { (disk: String) in MergeSession.agree(disk: disk, blocks: ConflictText.blocks(in: disk).map(\.range), result: lines, conflicts: regions) }
+    #expect(agree(git))
+    #expect(!agree(git.replacingOccurrences(of: "c\n", with: "c edited in vim\n")))   // a write would undo that edit
+    #expect(!agree(git.replacingOccurrences(of: "\n", with: "\r\n")))                // autocrlf checkout: keep its line endings
+    #expect(!agree("A\nx\nours\nc\nd\n"))                                               // resolved in an editor, or by rerere
+}
+
+@Test func strayMarkerLinesStillCountAsUnresolved() {
+    #expect(MergeSession.hasMarkers("a\n<<<<<<< HEAD\nb\n"))
+    #expect(MergeSession.hasMarkers(">>>>>>> topic\n"))
+    #expect(!MergeSession.hasMarkers("Title\n=======\n<<<<<<<< not a marker\n"))
+}
+
+@Test func textTypedWhereAConflictResolvedToNothingIsItsOwn() {
+    let empty = NSRange(location: 4, length: 0)
+    #expect(MergeSession.moved(empty, edit: NSRange(location: 4, length: 6), delta: 6, owns: false) == NSRange(location: 4, length: 6))   // its undo
+    #expect(MergeSession.moved(empty, edit: NSRange(location: 1, length: 2), delta: 2, owns: false) == NSRange(location: 6, length: 0))
+}
+
+@Test func writingTheResultKeepsTheFileExecutable() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-merge-\(UUID().uuidString).sh")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try "#!/bin/sh\n".write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    try MergeSession.write("#!/bin/sh\necho hi\n", to: url)
+    #expect((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) == 0o755)
+    #expect(try String(contentsOf: url, encoding: .utf8) == "#!/bin/sh\necho hi\n")
 }

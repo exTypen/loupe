@@ -55,6 +55,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
     var showBase = false
     var suggesting = false
     var proposal: String?
+    @ObservationIgnored private var proposalFor: Int?             // the conflict it was asked for
 
     @ObservationIgnored let ours = NSTextStorage()
     @ObservationIgnored let theirs = NSTextStorage()
@@ -83,6 +84,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
 
     var conflictCount: Int { conflictRegions.count }
     var unresolvedCount: Int { resolved.filter { !$0 }.count }
+    var symlink: Bool { stages.entries.values.contains { $0.mode == "120000" } }
     var isText: Bool { !binary && (stages.kind == .text || stages.kind == .bothAdded) }
     private var currentRegion: Int? { conflictRegions.indices.contains(current) ? conflictRegions[current] : nil }
 
@@ -97,7 +99,8 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
             data[n] = try? await Git.run(["show", ":\(n):\(path)"], in: dir)
         }
         sizes = data.mapValues(\.count)
-        binary = data.values.contains { $0.looksBinary || String(data: $0, encoding: .utf8) == nil }
+        // A symlink's blob is its target: merging it as text would write a regular file over the link.
+        binary = symlink || data.values.contains { $0.looksBinary || String(data: $0, encoding: .utf8) == nil }
         mergeTool = await Self.configuredMergeTool(in: dir)
         let disk = (try? Data(contentsOf: url)).flatMap { String(data: $0, encoding: .utf8) }
         known = disk
@@ -113,13 +116,17 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
     }
 
     private func build(base b: String, ours o: String, theirs t: String, disk: String?) async {
-        let path = path, mk = marker
+        let path = path
         let built = await Task.detached(priority: .userInitiated) { () -> Built in
             let m = Merge3(base: b, ours: o, theirs: t)
             let blocks = disk.map { ConflictText.blocks(in: $0) } ?? []
-            // Git's file and ours agree on the conflicts: build the result from the chunks, which marks what merged on its own.
-            // Otherwise it was edited elsewhere (or merged differently): keep it, and track only its markers.
-            let outside = disk != nil && blocks.count != m.conflictCount
+            // Git's own markers, so a write changes only what the user resolved.
+            let mk = blocks.first.map { ($0.conflict.currentLabel, $0.conflict.incomingLabel) } ?? ("HEAD", "theirs")
+            let (chunkLines, chunkRegions) = Self.fromChunks(m, mk)
+            // Git's file and ours agree outside the conflicts: build the result from the chunks, which marks what merged
+            // on its own. Otherwise it was edited elsewhere, merged differently (attributes, -X options, line endings,
+            // another diff algorithm): keep it as it is, and track only its markers.
+            let outside = disk.map { !Self.agree(disk: $0, blocks: blocks.map(\.range), result: chunkLines, conflicts: chunkRegions) } ?? false
             var regions: [Region] = [], resultLines: [Substring] = []
             if outside, let disk {
                 resultLines = Merge3.lines(disk)
@@ -134,29 +141,20 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
                     regions.append(Region(range: blk.range, kind: .conflict, chunk: j, sides: Sides(ours: blk.conflict.current, base: base, theirs: blk.conflict.incoming)))
                 }
             } else {
-                var loc = 0
-                for (j, c) in m.chunks.enumerated() {
-                    var sides: Sides?
-                    let lines: [Substring]
-                    if c.kind == .conflict {
-                        let s = Sides(ours: Array(m.ours[c.ours]), base: Array(m.base[c.base]), theirs: Array(m.theirs[c.theirs]))
-                        sides = s
-                        lines = Self.markerBlock(s, mk)
-                    } else { lines = Array(m.merged(c)) }
-                    let len = lines.reduce(0) { $0 + $1.utf16.count + 1 }
-                    if c.kind != .same { regions.append(Region(range: NSRange(location: loc, length: len), kind: c.kind, chunk: j, sides: sides)) }
-                    resultLines += lines
-                    loc += len
-                }
+                resultLines = chunkLines
+                regions = chunkRegions
             }
-            return Built(merge: m, regions: regions, outside: outside,
+            // A kept file keeps its last line as it is; a merged one ends like both sides do.
+            let noNewline = outside ? disk.map { !$0.isEmpty && !$0.hasSuffix("\n") } ?? false : m.noFinalNewline
+            return Built(merge: m, regions: regions, outside: outside, marker: mk, noFinalNewline: noNewline,
                          ours: Self.highlight(m.ours, path: path), theirs: Self.highlight(m.theirs, path: path),
                          base: Self.highlight(m.base, path: path), result: Self.highlight(resultLines, path: path))
         }.value
         let m = built.merge
         merge = m
         editedOutside = built.outside
-        noFinalNewline = !built.outside && m.noFinalNewline
+        noFinalNewline = built.noFinalNewline
+        marker = built.marker
         regions = built.regions
         conflictRegions = regions.indices.filter { regions[$0].kind == .conflict }
         set(ours, built.ours.value); set(theirs, built.theirs.value); set(base, built.base.value); set(result, built.result.value)
@@ -184,7 +182,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
     /// Sendable carrier for text attributed off the main thread; never mutated after.
     struct Frozen: @unchecked Sendable { let value: NSAttributedString }
     private struct Built: @unchecked Sendable {
-        var merge: Merge3, regions: [Region], outside: Bool
+        var merge: Merge3, regions: [Region], outside: Bool, marker: (ours: String, theirs: String), noFinalNewline: Bool
         var ours: Frozen, theirs: Frozen, base: Frozen, result: Frozen
     }
 
@@ -200,6 +198,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
         let disk = (try? Data(contentsOf: url)).flatMap { String(data: $0, encoding: .utf8) }
         let st = ConflictStages((try? await Git.string(["ls-files", "-u", "-z", "--", path], in: model.path)) ?? "")
         guard disk != known || st != stages else { return }
+        guard !st.entries.isEmpty else { return }   // resolved: the pane is about to go
         writeTask?.cancel()
         await load()
     }
@@ -210,8 +209,10 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
             return v?.isEmpty == false ? v : nil
         }
         if let g = await get("merge.guitool") { return (g, true) }
-        return await get("merge.tool").map { ($0, false) }
+        // Loupe runs it without a terminal: vim or emacs there would wait for one forever.
+        return await get("merge.tool").flatMap { terminalTools.contains($0) ? nil : ($0, false) }
     }
+    nonisolated static let terminalTools: Set = ["vimdiff", "vimdiff1", "vimdiff2", "vimdiff3", "nvimdiff", "nvimdiff1", "nvimdiff2", "nvimdiff3", "emerge"]
 
     // MARK: Editing
 
@@ -240,25 +241,36 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
     nonisolated static func moved(_ r: NSRange, edit: NSRange, delta: Int, owns: Bool) -> NSRange {
         let lo = edit.location, hi = edit.location + edit.length - delta   // the edited stretch before the edit
         let end = r.location + r.length
-        if !owns, hi <= r.location { return NSRange(location: r.location + delta, length: r.length) }
-        if !owns, lo >= end { return r }
+        // Text put where a region resolved to nothing is that region's (typed into it, or its undo).
+        let fills = r.length == 0 && lo == r.location
+        if !owns, !fills, hi <= r.location { return NSRange(location: r.location + delta, length: r.length) }
+        if !owns, !fills, lo >= end { return r }
         let start = min(r.location, lo)
         return NSRange(location: start, length: max(0, max(end, hi) + delta - start))
     }
 
     /// Writes the result and works out what's still unresolved.
     private func commit() {
-        writeTask?.cancel()
+        writeTask?.cancel(); writeTask = nil
         var s = result.string
         if noFinalNewline, s.hasSuffix("\n") { s.removeLast() }
         if s != known {
-            do { try Data(s.utf8).write(to: url, options: .atomic); known = s }
+            do { try Self.write(s, to: url); known = s }
             catch { model.error = error.localizedDescription }
         }
         refreshDerived()
     }
 
+    /// Atomically, keeping the file's permissions (a script stays executable).
+    nonisolated static func write(_ s: String, to url: URL) throws {
+        let perms = try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+        try Data(s.utf8).write(to: url, options: .atomic)
+        if let perms { try? FileManager.default.setAttributes([.posixPermissions: perms], ofItemAtPath: url.path) }
+    }
+
     func flush() { if writeTask != nil { commit() } }
+    /// Before git rewrites the file (Reset, a whole side): a write still waiting would land on top of it.
+    func discardPendingWrite() { writeTask?.cancel(); writeTask = nil }
 
     private func refreshDerived() {
         let ns = result.string as NSString
@@ -267,7 +279,7 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
             return range.location + range.length <= ns.length && ConflictText(ns.substring(with: range)).conflictCount == 0
         }
         if r != resolved { resolved = r }
-        let left = ConflictText(result.string).conflictCount > 0
+        let left = Self.hasMarkers(result.string)
         if left != markersLeft { markersLeft = left }
     }
 
@@ -386,9 +398,10 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
 
     func tints(_ role: Role) -> [Tint] {
         if role == .result {
-            return regions.indices.map { i in
-                let r = regions[i]
-                let k = conflictRegions.firstIndex(of: i)
+            var n = -1   // conflicts seen so far
+            return regions.map { r in
+                if r.kind == .conflict { n += 1 }
+                let k: Int? = r.kind == .conflict ? n : nil
                 let color: NSColor = switch r.kind {
                 case .ours: Palette.ours
                 case .theirs: Palette.theirs
@@ -430,23 +443,64 @@ final class MergeSession: NSObject, NSTextStorageDelegate, NSTextViewDelegate {
         let after = ns.substring(from: min(r.location + r.length, ns.length)).split(separator: "\n", omittingEmptySubsequences: false).prefix(20).joined(separator: "\n")
         suggesting = true
         defer { suggesting = false }
-        do { proposal = try await MergeAI.suggest(path: path, sides: s, before: before, after: after, in: model.path) }
+        let k = current
+        do { proposal = try await MergeAI.suggest(path: path, sides: s, before: before, after: after, in: model.path); proposalFor = k }
         catch { model.error = error.localizedDescription }
     }
 
     func acceptProposal() {
-        guard let p = proposal else { return }
+        guard let p = proposal, let k = proposalFor, conflictRegions.indices.contains(k) else { return }
         proposal = nil
-        if let i = currentRegion { regions[i].picks = [] }
-        replace(current, with: Merge3.lines(p))
+        regions[conflictRegions[k]].picks = []
+        replace(k, with: Merge3.lines(p))
     }
 
     // MARK: Helpers
+
+    /// The result built from the chunks: what merged on its own taken in, each conflict as a marker block.
+    nonisolated static func fromChunks(_ m: Merge3, _ mk: (ours: String, theirs: String)) -> ([Substring], [Region]) {
+        var regions: [Region] = [], out: [Substring] = [], loc = 0
+        for (j, c) in m.chunks.enumerated() {
+            var sides: Sides?
+            let lines: [Substring]
+            if c.kind == .conflict {
+                let s = Sides(ours: Array(m.ours[c.ours]), base: Array(m.base[c.base]), theirs: Array(m.theirs[c.theirs]))
+                sides = s
+                lines = markerBlock(s, mk)
+            } else { lines = Array(m.merged(c)) }
+            let len = lines.reduce(0) { $0 + $1.utf16.count + 1 }
+            if c.kind != .same { regions.append(Region(range: NSRange(location: loc, length: len), kind: c.kind, chunk: j, sides: sides)) }
+            out += lines
+            loc += len
+        }
+        return (out, regions)
+    }
+
+    /// Whether the file on disk and the chunks' result have the same text around their conflicts (and as many).
+    nonisolated static func agree(disk: String, blocks: [NSRange], result: [Substring], conflicts regions: [Region]) -> Bool {
+        let cr = regions.filter { $0.kind == .conflict }.map(\.range)
+        guard cr.count == blocks.count else { return false }
+        func around(_ s: NSString, _ cut: [NSRange]) -> [String] {
+            var out: [String] = [], at = 0
+            for r in cut { out.append(s.substring(with: NSRange(location: at, length: max(0, r.location - at)))); at = r.location + r.length }
+            out.append(at < s.length ? s.substring(from: at) : "")
+            return out
+        }
+        let d = disk.isEmpty || disk.hasSuffix("\n") ? disk : disk + "\n"
+        return around(d as NSString, blocks) == around(result.map { $0 + "\n" }.joined() as NSString, cr)
+    }
 
     nonisolated static func markerBlock(_ s: Sides, _ labels: (ours: String, theirs: String)) -> [Substring] {
         var l: [Substring] = [Substring("<<<<<<< " + labels.ours)] + s.ours
         if let b = s.base { l += ["||||||| base"] + b }
         return l + ["======="] + s.theirs + [Substring(">>>>>>> " + labels.theirs)]
+    }
+
+    /// A whole conflict, or a `<<<<<<<` / `>>>>>>>` line left behind from one: not resolved yet.
+    nonisolated static func hasMarkers(_ s: String) -> Bool {
+        ConflictText(s).conflictCount > 0 || Merge3.split(s).contains { l in
+            ["<", ">"].contains { c in l.count >= 7 && l.prefix(7).allSatisfy { $0 == c } && (l.count == 7 || l.dropFirst(7).first?.isWhitespace == true) }
+        }
     }
 
     nonisolated static func lineStarts(_ lines: [Substring]) -> [Int] {
@@ -508,7 +562,7 @@ extension ConflictText {
         }
         var out: [(NSRange, Conflict)] = []
         var loc = 0, start: Int?, block: [Substring] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in Merge3.split(text) {
             let len = line.utf16.count + 1
             if start == nil, marker(line, "<") { start = loc; block = [] }
             if let s = start {
@@ -614,6 +668,11 @@ struct MergeCodePane: NSViewRepresentable {
     }
 
     func updateNSView(_ v: NSScrollView, context: Context) {}
+
+    /// The storage keeps its layout managers: one left behind would lay out (and hold) the text for a view that's gone.
+    static func dismantleNSView(_ v: NSScrollView, coordinator: ()) {
+        if let lm = (v.documentView as? NSTextView)?.layoutManager { lm.textStorage?.removeLayoutManager(lm) }
+    }
 }
 
 // MARK: - The editor
@@ -633,7 +692,6 @@ struct ConflictPane: View {
             let s = MergeSession(model: model, path: path)
             session = s
             await s.load()
-            s.focus(0)
         }
         .task(id: model.statusVersion) { await session?.reloadIfChangedOutside() }   // a terminal, the merge tool
         .onDisappear { session?.flush() }
@@ -656,6 +714,7 @@ private struct MergeEditor: View {
             if session.isText { editor }
             else { SpecialConflict(model: model, session: session, labels: labels) }
         }
+        .task { session.focus(session.current) }   // the panes exist now: scroll them to the first conflict
     }
 
     private var header: some View {
@@ -678,14 +737,15 @@ private struct MergeEditor: View {
             }
             Spacer()
             Group {
-                Button("Use \(labels.ours)") { Task { await model.resolve(path, take: .current) } }
+                Button("Use \(labels.ours)") { session.discardPendingWrite(); Task { await model.resolve(path, take: .current) } }
                     .help("Take the whole file from \(labels.ours.lowercased()) (git checkout --ours) and mark it resolved")
-                Button("Use \(labels.theirs)") { Task { await model.resolve(path, take: .incoming) } }
+                Button("Use \(labels.theirs)") { session.discardPendingWrite(); Task { await model.resolve(path, take: .incoming) } }
                     .help("Take the whole file from \(labels.theirs.lowercased()) (git checkout --theirs) and mark it resolved")
                 Button("Reset…") { confirmReset = true }
                     .help("Throw away the edits to this file and bring its conflicts back (git checkout -m)")
                     .confirmationDialog("Bring back the conflicts in \((path as NSString).lastPathComponent)?", isPresented: $confirmReset) {
                         Button("Reset File", role: .destructive) {
+                            session.discardPendingWrite()
                             Task { await model.perform("Resetting") { try await Git.run(["checkout", "-m", "--", path], in: model.path) }; await session.load(); session.focus(0) }
                         }
                     } message: { Text("Your edits to the result are lost.") }
@@ -701,7 +761,7 @@ private struct MergeEditor: View {
                         }
                     }
                     .disabled(tool == nil || model.busy != nil)
-                    .help(tool.map { "Open the file in \($0.name) (git mergetool)" } ?? "Set merge.tool in your git config to use an external merge tool")
+                    .help(tool.map { "Open the file in \($0.name) (git mergetool)" } ?? "Set merge.tool (or merge.guitool) in your git config to a GUI merge tool to use it here")
                     Button("Mark Resolved") { session.flush(); Task { await model.resolve(path, take: nil) } }
                         .buttonStyle(.borderedProminent)
                         .disabled(session.markersLeft)
@@ -856,7 +916,7 @@ private struct SpecialConflict: View {
         case .deletedByThem: "Changed on \(labels.ours), deleted on \(labels.theirs)"
         case .addedByUs: "Only on \(labels.ours)"
         case .addedByThem: "Only on \(labels.theirs)"
-        default: session.binary ? "Binary file conflict" : "Conflict"
+        default: session.symlink ? "Symbolic link conflict" : session.binary ? "Binary file conflict" : "Conflict"
         }
     }
 
@@ -866,7 +926,8 @@ private struct SpecialConflict: View {
         case .deletedByUs, .deletedByThem: "Keep the changed file, or delete it as the other side did."
         case .addedByUs, .addedByThem: "The other side doesn't have this path, usually because it renamed or deleted the file. Keep it or delete it."
         default:
-            session.binary ? "Binary files can't be merged line by line. Keep one side: \(labels.ours) \(size(2)), \(labels.theirs) \(size(3))." : "Keep one side."
+            session.symlink ? "The two sides point the link at different targets. Keep one side."
+                : session.binary ? "Binary files can't be merged line by line. Keep one side: \(labels.ours) \(size(2)), \(labels.theirs) \(size(3))." : "Keep one side."
         }
     }
 

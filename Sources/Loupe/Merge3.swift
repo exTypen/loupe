@@ -69,9 +69,15 @@ struct Merge3: Sendable {
 
     /// A file's lines; a final newline doesn't start another line.
     static func lines(_ s: String) -> [Substring] {
-        var l = s.split(separator: "\n", omittingEmptySubsequences: false)
+        var l = split(s)
         if l.last == "" { l.removeLast() }
         return l
+    }
+
+    /// Splits at every "\n", keeping a CRLF line's "\r". Splitting the String itself wouldn't: "\r\n" is one Character,
+    /// so a CRLF file would be a single line.
+    static func split(_ s: String) -> [Substring] {
+        s.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map(Substring.init)
     }
 
     /// For each line of `a`, the line of `b` it's kept as, or nil when the change removed it.
