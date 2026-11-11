@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Submodules: status, diff, actions
 
@@ -58,6 +59,14 @@ enum Submodules {
     static func paths(fromConfig out: String) -> [String] {
         out.split(separator: "\n").compactMap { line in line.range(of: ".path ").map { String(line[$0.upperBound...]) } }
     }
+
+    /// Commits a checkout elsewhere would leave reachable from no branch, tag or remote: work done on the
+    /// detached HEAD `submodule update` leaves behind. 0 when it isn't checked out.
+    static func strandedCommits(in dir: String) async -> Int {
+        guard FileManager.default.fileExists(atPath: dir + "/.git") else { return 0 }
+        let out = try? await Git.string(["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"], in: dir)
+        return Int(out?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+    }
 }
 
 /// Per worktree: submodules listed in .gitmodules that were never checked out.
@@ -65,6 +74,7 @@ enum Submodules {
 final class SubmoduleModel {
     let path: String
     var uninitialized: [String] = []
+    var bannerHidden = false        // "Not Now": until the app quits, not each time the view is rebuilt
 
     init(path: String) { self.path = path }
 
@@ -88,7 +98,22 @@ extension WorktreeModel {
     }
 
     /// Checks the submodules out at the commits this repository records for them.
+    /// A submodule with commits on a detached HEAD asks first: the checkout would leave them only in its reflog.
     func updateSubmodules(_ paths: [String]) async {
+        var stranded: [(String, Int)] = []
+        for p in paths {
+            let n = await Submodules.strandedCommits(in: (path as NSString).appendingPathComponent(p))
+            if n > 0 { stranded.append((p, n)) }
+        }
+        if !stranded.isEmpty {
+            let a = NSAlert()
+            a.messageText = "Leave commits that are on no branch?"
+            a.informativeText = stranded.map { "\($0.0): \($0.1) commit\($0.1 == 1 ? "" : "s")" }.joined(separator: "\n")
+                + "\n\nThey were made on a detached HEAD. After the update they're only in the submodule's reflog. Open the submodule and create a branch to keep them."
+            a.addButton(withTitle: "Update Anyway").hasDestructiveAction = true
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
         await perform("Updating submodules") { try await Git.run(["submodule", "update", "--init", "--recursive", "--"] + paths, in: path, env: gitAuth) }
     }
 
@@ -123,11 +148,9 @@ struct SubmoduleMenuItems: View {
 /// Submodules listed in .gitmodules but never checked out: offer to do it.
 struct SubmoduleBanner: View {
     var model: WorktreeModel
-    @State private var hidden = false
-
     var body: some View {
         let n = model.submodules.uninitialized.count
-        if n > 0, !hidden {
+        if n > 0, !model.submodules.bannerHidden {
             HStack(spacing: 10) {
                 Image(systemName: "shippingbox").foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 1) {
@@ -136,7 +159,7 @@ struct SubmoduleBanner: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
-                Button("Not Now") { hidden = true }
+                Button("Not Now") { model.submodules.bannerHidden = true }
                 Button("Initialize") { Task { await model.initSubmodules() } }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy != nil)
@@ -163,13 +186,17 @@ struct SubmodulePane: View {
                 Button("Open Submodule") { Task { await model.openSubmodule(file.path) } }.disabled(!model.isCheckedOut(file.path))
                 if file.staged { Button("Unstage") { Task { await model.unstage([file]) } } }
                 else {
+                    // Behind the recorded commit (typically after a pull): updating is the usual move, staging would record a rewind.
+                    let behind = diff.map { !$0.commits.isEmpty && !$0.commits.contains(where: \.added) } ?? false
                     if file.submodule?.commitChanged == true {
                         Button("Update to Recorded Commit") { Task { await model.updateSubmodules([file.path]) } }
+                            .prominent(behind)
                             .help("Check the submodule out at the commit this repository records (git submodule update)")
                     }
-                    Button("Stage Pointer") { Task { await model.stage([file]) } }.buttonStyle(.borderedProminent)
+                    Button("Stage Pointer") { Task { await model.stage([file]) } }
+                        .prominent(!behind)
                         .disabled(file.submodule?.commitChanged != true)
-                        .help("Record the submodule's checked-out commit in this repository")
+                        .help(behind ? "Record the older commit checked out in the submodule (a rewind)" : "Record the submodule's checked-out commit in this repository")
                 }
             }
             Divider()
@@ -202,12 +229,14 @@ struct SubmodulePane: View {
                     Text([fwd > 0 ? "\(fwd) new commit\(fwd == 1 ? "" : "s")" : nil, back > 0 ? "\(back) commit\(back == 1 ? "" : "s") left behind" : nil]
                         .compactMap { $0 }.joined(separator: ", ")).font(.subheadline.weight(.medium)).padding(.top, 4)
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(d.commits.enumerated()), id: \.offset) { _, c in
+                        // A long-lived fork can be thousands of commits off; a plain VStack shouldn't lay them all out.
+                        ForEach(Array(d.commits.prefix(300).enumerated()), id: \.offset) { _, c in
                             HStack(spacing: 6) {
                                 Image(systemName: c.added ? "plus.circle" : "arrow.uturn.backward.circle").foregroundStyle(c.added ? .green : .orange)
                                 Text(c.subject).lineLimit(1).truncationMode(.tail).textSelection(.enabled)
                             }
                         }
+                        if d.commits.count > 300 { Text("and \(d.commits.count - 300) more").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
                 if d.modifiedContent || d.untrackedContent {
@@ -220,5 +249,11 @@ struct SubmodulePane: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder func prominent(_ on: Bool) -> some View {
+        if on { buttonStyle(.borderedProminent) } else { self }
     }
 }

@@ -99,6 +99,16 @@ import Foundation
     let real = try #require(realpath(sub, nil))
     defer { free(real) }
     #expect(wts.first?.path == String(cString: real))
+    // Asked from a linked worktree of the submodule, the main entry is still the submodule, not that worktree.
+    try await git(sub, "worktree", "add", "-q", "--detach", root + "/sub-wt")
+    let fromLinked = try await Git.worktrees(in: root + "/sub-wt")
+    #expect(fromLinked.count == 2 && fromLinked.first?.path == String(cString: real))
+    // Update to Recorded Commit would strand a commit made on a detached HEAD: it's counted.
+    try await git(sub, "commit", "-q", "--allow-empty", "-m", "detached work")
+    #expect(await Submodules.strandedCommits(in: sub) == 1)
+    try await git(sub, "checkout", "-q", "-B", "work")
+    #expect(await Submodules.strandedCommits(in: sub) == 0)
+    try await git(sub, "checkout", "-q", "--detach", "HEAD~1")
 
     // A clone has it listed but not checked out, until it's initialized.
     try await git(root, "clone", "-q", sup, clone)

@@ -96,6 +96,7 @@ final class LFSModel {
     var lockingSupported = false          // `git lfs locks` answered and locking wasn't turned off for the remote
     @ObservationIgnored private var commonDir: String?
     @ObservationIgnored private var locksLoaded: Date?
+    @ObservationIgnored private var loadingLocks = false
 
     init(path: String) { self.path = path }
 
@@ -114,6 +115,10 @@ final class LFSModel {
     }
 
     func loadLocks(env: [String: String]) async {
+        // An unreachable server can take longer than the minute between refreshes: one request at a time.
+        guard !loadingLocks else { return }
+        loadingLocks = true
+        defer { loadingLocks = false }
         locksLoaded = Date()
         // git-lfs answers `[]` even when the server is unreachable or has no locking API, so the only "no" is a
         // remote with `lfs.<url>.locksverify false`, what git-lfs tells you to set for such a server.
@@ -222,9 +227,13 @@ struct LFSObjectView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Label("LFS object", systemImage: "externaldrive").font(.headline)
                 HStack(alignment: .top, spacing: 24) {
-                    if lfs.old != nil || lfs.new == nil { side("Before", lfs.old) }
-                    if lfs.old != nil && lfs.new != nil { Image(systemName: "arrow.right").foregroundStyle(.secondary).padding(.top, 22) }
-                    if lfs.new != nil { side("After", lfs.new) }
+                    // A file shown whole (Full mode, a pointer never downloaded) has the same object on both sides.
+                    if lfs.old == lfs.new { side("Object", lfs.new) }
+                    else {
+                        if lfs.old != nil || lfs.new == nil { side("Before", lfs.old) }
+                        if lfs.old != nil && lfs.new != nil { Image(systemName: "arrow.right").foregroundStyle(.secondary).padding(.top, 22) }
+                        if lfs.new != nil { side("After", lfs.new) }
+                    }
                 }
             }
             .padding(20)

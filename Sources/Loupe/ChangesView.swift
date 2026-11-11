@@ -354,7 +354,7 @@ struct FileListView: View {
             return .handled
         }
         .onDeleteCommand {
-            let fs = model.selectedFiles.filter { !$0.staged }
+            let fs = model.selectedFiles.filter { !$0.staged && $0.submodule == nil }
             if !fs.isEmpty { confirmDiscard = fs }
         }
     }
@@ -405,7 +405,8 @@ struct FileListView: View {
         let urls = fs.map { URL(fileURLWithPath: model.path).appendingPathComponent($0.path) }
         if !unstaged.isEmpty { Button("Stage\(n(unstaged))") { Task { await model.stage(unstaged) } } }
         if !staged.isEmpty { Button("Unstage\(n(staged))") { Task { await model.unstage(staged) } } }
-        if !unstaged.isEmpty { Button("Discard Changes\(n(unstaged))…", role: .destructive) { confirmDiscard = unstaged } }
+        let discardable = unstaged.filter { $0.submodule == nil }   // `git restore` leaves a submodule as it is
+        if !discardable.isEmpty { Button("Discard Changes\(n(discardable))…", role: .destructive) { confirmDiscard = discardable } }
         if !fs.isEmpty {
             let paths = Array(Set(fs.map(\.path))).sorted()
             Button("Stash\(paths.count == 1 ? "" : " \(paths.count) Files")") {
@@ -414,7 +415,7 @@ struct FileListView: View {
         }
         SubmoduleMenuItems(model: model, files: fs)
         LFSMenuItems(model: model, files: fs)
-        if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added {
+        if fs.count == 1, let f = fs.first, f.kind != .untracked, f.kind != .added, f.submodule == nil {
             Divider()
             Button("Blame") { model.select(f.id); panel = .blame }
             Button("File History") { model.select(f.id); panel = .history }

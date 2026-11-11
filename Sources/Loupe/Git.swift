@@ -91,9 +91,10 @@ struct Worktree: Identifiable, Hashable {
 extension Git {
     static func worktrees(in dir: String) async throws -> [Worktree] {
         var list = parseWorktrees(try await string(["worktree", "list", "--porcelain"], in: dir))
-        // A submodule opened as a repo lists its git dir (<super>/.git/modules/<name>) as its main worktree.
-        if list.first?.path.contains("/.git/modules/") == true,
-           let top = try? await string(["rev-parse", "--show-toplevel"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty {
+        // A submodule opened as a repo lists its git dir (<super>/.git/modules/<name>) as its main worktree. Its
+        // core.worktree names the real one; asking from `dir` alone would give a linked worktree's own folder.
+        if let gitDir = list.first?.path, gitDir.contains("/.git/modules/"),
+           let top = try? await string(["--git-dir=" + gitDir, "rev-parse", "--show-toplevel"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty {
             list[0].path = top
         }
         return list
