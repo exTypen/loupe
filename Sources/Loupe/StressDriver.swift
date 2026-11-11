@@ -52,6 +52,7 @@ enum StressDriver {
         d.set(false, forKey: "prFullMode")
         d.set(DiffSide.diff.rawValue, forKey: "diffSide")
         d.set(true, forKey: "lfsMissingBannerDismissed")
+        if ProcessInfo.processInfo.environment["LOUPE_STRESS_LOGSTACKS"] != nil { logStacks() }
         let app = AppModel()   // no accounts in defaults: its Keychain read finds nothing to read
         let account = ForgejoAccount(baseURL: s.forge, username: s.user)
         app.accounts = [account]
@@ -60,6 +61,20 @@ enum StressDriver {
         app.tokensLoaded = true
         Task { await StressRun(app: app, s: s).run() }
         return app
+    }
+}
+
+/// LOUPE_STRESS_LOGSTACKS=1: every NSLog line that mentions "reentrant" (AppKit's NSTableView warning) is followed by
+/// the stack that logged it. Foundation's private NSLog hook runs on the logging thread, so the stack is the culprit's.
+private func logStacks() {
+    typealias LogFn = @convention(c) (UnsafePointer<CChar>?, UInt32, Bool) -> Void
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_NSSetLogCStringFunction") else { fputs("LOUPE_STRESS no NSLog hook\n", stderr); return }
+    let set = unsafeBitCast(sym, to: (@convention(c) (LogFn) -> Void).self)
+    set { msg, _, _ in
+        guard let msg else { return }
+        let line = String(cString: msg)
+        fputs(line + "\n", stderr)
+        if line.contains("reentrant") { fputs("--- stack\n" + Thread.callStackSymbols.joined(separator: "\n") + "\n---\n", stderr) }
     }
 }
 
