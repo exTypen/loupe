@@ -80,6 +80,7 @@ struct CommitStatus: Codable, Hashable, Identifiable {
     var target_url: String?
     var created_at: String?
     var updated_at: String?
+    var checkRun: CheckRunRef? = nil   // GitHub check runs only
 }
 
 struct ActionRunPage: Codable { var workflow_runs: [ActionRun]?; var total_count: Int? }
@@ -213,6 +214,9 @@ struct ForgejoClient {
         if !query.isEmpty { c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var r = URLRequest(url: c.url!)
         r.httpMethod = method
+        // GitHub sends max-age=60, so the default policy served polls (CI, PR state) from URLCache for a minute.
+        // Revalidating keeps them fresh, and GitHub doesn't count a 304 against the rate limit.
+        if method == "GET" { r.cachePolicy = .reloadRevalidatingCacheData }
         r.setValue("token \(token)", forHTTPHeaderField: "Authorization")
         r.setValue(github && accept == "application/json" ? "application/vnd.github+json" : accept, forHTTPHeaderField: "Accept")
         if let body {
@@ -368,14 +372,15 @@ struct ForgejoClient {
     }
 
     /// GitHub reports Actions (and most apps) as check runs, older integrations as commit statuses; both become
-    /// CommitStatus rows. Logs aren't tailed for GitHub: a row's details open in the browser.
+    /// CommitStatus rows. An Actions check run's id is its job id, which ChecksModel uses to show the job in the app.
     private func gitHubChecks(_ r: RemoteRepo, sha: String) async throws -> [CommitStatus] {
         struct S: Decodable { var id: Int; var state: String; var context: String; var description: String?; var target_url: String?; var created_at: String?; var updated_at: String? }
         struct Combined: Decodable { var statuses: [S] }
         struct Run: Decodable {
-            struct Output: Decodable { var title: String? }
-            var id: Int; var name: String; var status: String; var conclusion: String?; var html_url: String?
-            var started_at: String?; var completed_at: String?; var output: Output?
+            struct Output: Decodable { var title: String?; var summary: String?; var annotations_count: Int? }
+            struct App: Decodable { var slug: String? }
+            var id: Int; var name: String; var status: String; var conclusion: String?; var html_url: String?; var details_url: String?
+            var started_at: String?; var completed_at: String?; var output: Output?; var app: App?
         }
         struct Runs: Decodable { var check_runs: [Run] }
         async let combinedReq: Combined = get("/repos/\(r.owner)/\(r.name)/commits/\(sha)/status", query: ["per_page": "100"])
@@ -393,12 +398,13 @@ struct ForgejoClient {
             default: "failure"
             }
             return CommitStatus(id: c.id, status: status, context: c.name, description: c.output?.title,
-                                target_url: c.html_url, created_at: c.started_at, updated_at: c.completed_at)
+                                target_url: c.details_url ?? c.html_url, created_at: c.started_at, updated_at: c.completed_at,
+                                checkRun: CheckRunRef(id: c.id, app: c.app?.slug, summary: c.output?.summary, annotations: c.output?.annotations_count))
         }
     }
 
     func actionRuns(_ r: RemoteRepo, headSHA: String) async throws -> [ActionRun] {
-        if github { return [] }   // Forgejo Actions API; GitHub's runs arrive as check runs above
+        if github { return [] }   // Forgejo's shapes; GitHub and Gitea go through ciRuns (CIForges.swift)
         let page: ActionRunPage = try await get("/repos/\(r.owner)/\(r.name)/actions/runs", query: ["head_sha": headSHA, "limit": "100"])
         return page.workflow_runs ?? []
     }
@@ -414,9 +420,9 @@ struct ForgejoClient {
     /// Log bytes from `range` ("bytes=N-" to tail, "bytes=-N" for the last N bytes). The server honours Range,
     /// so polling a running job only transfers what's new. Returns (data, firstByte, totalSize); empty data when nothing new.
     func actionLog(_ r: RemoteRepo, jobID: Int, range: String?) async throws -> (Data, Int, Int?) {
-        var req = try request("GET", "/repos/\(r.owner)/\(r.name)/actions/jobs/\(jobID)/logs", accept: "text/plain")
+        var req = try request("GET", "/repos/\(r.owner)/\(r.name)/actions/jobs/\(jobID)/logs", accept: github ? "application/json" : "text/plain")
         if let range { req.setValue(range, forHTTPHeaderField: "Range") }
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req, delegate: RedirectWithoutAuth.shared)   // GitHub: 302 to a blob
         guard let http = resp as? HTTPURLResponse else { throw GitError(message: "No HTTP response") }
         if http.statusCode == 416 { return (Data(), 0, nil) }   // offset == size: no new output yet
         guard (200..<300).contains(http.statusCode) else { throw GitError(message: "Log \(http.statusCode): \(String(decoding: data.prefix(200), as: UTF8.self))") }
