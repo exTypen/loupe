@@ -214,6 +214,9 @@ struct ForgejoClient {
         if !query.isEmpty { c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var r = URLRequest(url: c.url!)
         r.httpMethod = method
+        // GitHub sends max-age=60, so the default policy served polls (CI, PR state) from URLCache for a minute.
+        // Revalidating keeps them fresh, and GitHub doesn't count a 304 against the rate limit.
+        if method == "GET" { r.cachePolicy = .reloadRevalidatingCacheData }
         r.setValue("token \(token)", forHTTPHeaderField: "Authorization")
         r.setValue(github && accept == "application/json" ? "application/vnd.github+json" : accept, forHTTPHeaderField: "Accept")
         if let body {

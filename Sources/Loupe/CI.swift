@@ -107,8 +107,7 @@ final class ChecksModel {
         if let f = Self.featureCache[client.baseURL] { features = f; return f }
         let version = client.github ? nil : await client.serverVersion()
         let f = CIFeatures.detect(github: client.github, version: version)
-        if client.github || version != nil { Self.featureCache[client.baseURL] = f }   // a failed lookup is retried next time
-        features = f
+        if client.github || version != nil { Self.featureCache[client.baseURL] = f; features = f }   // a failed lookup is retried next refresh
         return f
     }
 
@@ -230,7 +229,7 @@ final class JobLogModel {
             await append(data)
             return true
         } catch {
-            if isRunning { waitingForLog = true } else { self.error = error.localizedDescription }
+            if isRunning || waitingForLog { waitingForLog = true } else { self.error = error.localizedDescription }   // poll() gives up after its grace
             return false
         }
     }
@@ -695,7 +694,9 @@ struct CheckDetail: View {
                 if log.waitingForLog {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("\(forgeName) makes a job's log available once the job has finished; the steps above update meanwhile.")
+                        Text(CheckState(jobStatus: log.job.status) == .pending ? "Waiting for a runner to pick up this job…"
+                             : model.client.github ? "GitHub makes a job's log available once the job has finished; the steps above update meanwhile."
+                             : "Waiting for the job's log…")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -736,9 +737,12 @@ struct CheckDetail: View {
                     CheckRunOutput(summary: run.summary, annotations: annotations)
                 } else {
                     ContentUnavailableView {
-                        Label("External Status", systemImage: "arrow.up.right.square")
+                        Label(check.status.checkRun?.app == "github-actions" ? "Job Not Loaded" : "External Status", systemImage: "arrow.up.right.square")
                     } description: {
-                        Text("Reported by a service outside \(forgeName) Actions, so there's no log to show here.")
+                        // An Actions check run without its job: the token can't read Actions, or a rerun's jobs aren't listed yet.
+                        Text(check.status.checkRun?.app == "github-actions"
+                             ? model.notice ?? "GitHub hasn't listed this job yet; it shows here once it does."
+                             : "Reported by a service outside \(forgeName) Actions, so there's no log to show here.")
                     } actions: {
                         if let url = webURL { Button("Open Details") { NSWorkspace.shared.open(url) } }
                     }

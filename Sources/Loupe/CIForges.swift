@@ -45,13 +45,14 @@ struct CIFeatures: Equatable, Sendable {
         var icon: String { self == .cancel ? "stop.circle" : self == .rerunJob ? "arrow.clockwise" : "arrow.clockwise.circle" }
     }
 
-    /// The buttons a job's detail header offers. A rerun needs the run to have finished; cancel needs it moving.
+    /// The buttons a job's detail header offers. Any rerun, a job's too, needs the whole run to have finished (GitHub,
+    /// Forgejo and Gitea all refuse one while the run is moving); cancel needs it moving.
     func actions(runStatus: String?, jobStatus: String) -> [Action] {
         guard actions else { return [] }
         let job = CheckState(jobStatus: jobStatus), run = runStatus.map { CheckState(jobStatus: $0) } ?? job
         var out: [Action] = []
-        if rerunJob, job.isDone { out.append(.rerunJob) }
-        if rerunFailed, run.isDone, run == .failing { out.append(.rerunFailed) }
+        if rerunJob, job.isDone, run.isDone { out.append(.rerunJob) }
+        if rerunFailed, run == .failing || (runStatus ?? jobStatus) == "cancelled" { out.append(.rerunFailed) }   // GitHub reruns cancelled jobs too
         if rerunRun, run.isDone { out.append(.rerunAll) }
         if cancel, !run.isDone { out.append(.cancel) }
         return out

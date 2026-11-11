@@ -32,7 +32,9 @@ import AppKit
     let gh = CIFeatures.detect(github: true, version: nil)
     #expect(gh.actions(runStatus: "failure", jobStatus: "failure") == [.rerunJob, .rerunFailed, .rerunAll])
     #expect(gh.actions(runStatus: "success", jobStatus: "success") == [.rerunJob, .rerunAll])
-    #expect(gh.actions(runStatus: "running", jobStatus: "success") == [.rerunJob, .cancel])
+    // A job can't be re-run while its run is still moving (every forge refuses it).
+    #expect(gh.actions(runStatus: "running", jobStatus: "success") == [.cancel])
+    #expect(gh.actions(runStatus: "cancelled", jobStatus: "cancelled") == [.rerunJob, .rerunFailed, .rerunAll])
     #expect(gh.actions(runStatus: "running", jobStatus: "running") == [.cancel])
     let fj = CIFeatures.detect(github: false, version: "17.0.0+gitea-1.22.0")
     #expect(fj.actions(runStatus: "failure", jobStatus: "failure") == [.rerunJob, .rerunAll])
@@ -188,4 +190,10 @@ struct GitHubActionsLive {
         let text = JobLogModel.format(String(decoding: data, as: UTF8.self))
         #expect(text.string.contains("▸ "))
     }
+}
+
+@Test func gitHubGetsRevalidateInsteadOfServingTheCache() throws {
+    let c = ForgejoClient(baseURL: "https://github.com", token: "t", github: true)
+    #expect(try c.request("GET", "/repos/a/b/actions/runs").cachePolicy == .reloadRevalidatingCacheData)
+    #expect(try c.request("POST", "/repos/a/b/actions/runs/1/rerun").cachePolicy == .useProtocolCachePolicy)
 }
