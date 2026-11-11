@@ -70,6 +70,7 @@ final class UndoStack {
         return s
     }
     init(path: String) { self.path = path }
+    static func forget(_ path: String) { stacks[path] = nil }
 
     var title: String { entries.last.map { "Undo \($0.label)" } ?? "Undo" }
 

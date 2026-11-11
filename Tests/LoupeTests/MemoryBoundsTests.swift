@@ -121,3 +121,37 @@ struct GitCancellationTests {
         #expect(l.details.count <= PullListModel.keptDetails)
     }
 }
+
+@MainActor struct WorktreeEvictionTests {
+    @Test func goneWorktreesAreForgotten() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-evict-\(UUID().uuidString)").path
+        let dir = base + "/r", wt = base + "/r-wt"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.name", "t"], ["config", "user.email", "t@t"], ["config", "commit.gpgsign", "false"],
+                     ["commit", "-q", "--allow-empty", "-m", "one"], ["worktree", "add", "-q", "-b", "x", wt]] {
+            try await Git.run(args, in: dir)
+        }
+        let dirReal = try await Git.string(["rev-parse", "--show-toplevel"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+        let app = AppModel()
+        await app.refreshWorktrees(repo: dirReal)
+        let paths = app.worktrees[dirReal]?.map(\.path) ?? []
+        #expect(paths.count == 2)
+        for p in paths { _ = app.model(for: p) }
+        let before = app.cachedModelCount
+        let linked = paths.first { $0 != dirReal }!
+        _ = UndoStack.for(linked)
+        try await Git.run(["worktree", "remove", "--force", linked], in: dirReal)
+        await app.refreshWorktrees(repo: dirReal)
+        #expect(app.worktrees[dirReal]?.count == 1)
+        #expect(app.cachedModelCount == before - 1)
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test func leavingAWorktreeReleasesItsCommitFiles() async throws {
+        let app = AppModel()
+        let m = app.model(for: "/nonexistent-\(UUID().uuidString)")
+        m.history.files = [FileDiff()]
+        m.releaseHeavyState()
+        #expect(m.history.files.isEmpty)
+    }
+}

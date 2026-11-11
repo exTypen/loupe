@@ -97,6 +97,13 @@ final class WorktreeBrowser: CodeBrowser {
 
     init(model: WorktreeModel) { self.model = model }
 
+    /// Whole files and the tree, reloaded when the worktree shows again; tabs and folding stay.
+    func release() {
+        files = [:]; filesVersion = -1
+        tree = []; treeKey = ""
+        navResults = nil
+    }
+
     /// Compact mode: keep up with the file the change list shows, without opening tabs for it.
     func follow(_ path: String) {
         guard selectedPath != path else { return }
