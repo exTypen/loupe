@@ -298,8 +298,8 @@ struct PullCreateSheet: View {
             Section {
                 LabeledContent("Branch") {
                     HStack(spacing: 6) {
-                        Text(m.branch).font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
-                        if m.needsPush { Text("pushed first").font(.caption).foregroundStyle(.secondary) }
+                        Text(m.branch).font(.body.monospaced()).lineLimit(1).truncationMode(.middle).help(m.branch)
+                        if m.needsPush { Text("pushed first").font(.caption).foregroundStyle(.secondary).fixedSize() }
                     }
                 }
                 Picker("Into", selection: $m.base) {
@@ -396,6 +396,7 @@ struct PullCreateBanner: View {
                         Image(systemName: "arrow.triangle.pull").foregroundStyle(Color.accentColor)
                         Text("\(ahead == 1 ? "1 commit" : "\(ahead) commits") on \(model.branch ?? "") that \(ahead == 1 ? "isn't" : "aren't") on \(target)")
                             .lineLimit(1).truncationMode(.middle)
+                            .help("\(model.branch ?? "") → \(target)")
                         Spacer()
                         Button("Create Pull Request…") { model.app.creatingPull = model.path }
                             .buttonStyle(.borderedProminent)

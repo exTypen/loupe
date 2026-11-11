@@ -351,7 +351,7 @@ struct HistoryView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Which history to show")
+        .help("Which history to show: \(model.scope.title)")
     }
 
     private var branchName: String { worktree.branch ?? "HEAD" }
@@ -428,7 +428,15 @@ struct CommitRow: View {
                 Text(commit.date, format: .relative(presentation: .named)).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
             }
             if !commit.refs.isEmpty {
-                HStack(spacing: 4) { ForEach(commit.refs, id: \.self) { RefBadge(ref: $0) } }.lineLimit(1)
+                // As many badges as fit, then "+N" for the rest; the last option (one badge, truncated) is used when nothing fits.
+                ViewThatFits(in: .horizontal) {
+                    ForEach((1...commit.refs.count).reversed(), id: \.self) { k in
+                        HStack(spacing: 4) {
+                            ForEach(commit.refs.prefix(k), id: \.self) { RefBadge(ref: $0) }
+                            if k < commit.refs.count { MoreRefsBadge(refs: Array(commit.refs.dropFirst(k))) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -471,21 +479,39 @@ struct GraphCell: View {
 struct RefBadge: View {
     var ref: String   // from --decorate=full: "HEAD -> refs/heads/x", "refs/remotes/origin/x", "tag: refs/tags/v1", "HEAD"
     @Environment(\.backgroundProminence) private var prominence   // .increased on a selected row's accent fill
+    static func parse(_ ref: String) -> (name: String, icon: String, tint: Color) {
+        if ref.hasPrefix("HEAD -> ") { return (String(ref.dropFirst(8)).replacingOccurrences(of: "refs/heads/", with: ""), "arrow.triangle.branch", .accentColor) }
+        if ref.hasPrefix("tag: ") { return (String(ref.dropFirst(5)).replacingOccurrences(of: "refs/tags/", with: ""), "tag", .orange) }
+        if ref.hasPrefix("refs/remotes/") { return (String(ref.dropFirst(13)), "cloud", .secondary) }
+        if ref.hasPrefix("refs/heads/") { return (String(ref.dropFirst(11)), "arrow.triangle.branch", .green) }
+        return (ref, "smallcircle.filled.circle", .accentColor)   // detached HEAD, refs/pull/*, stash…
+    }
+
     var body: some View {
-        let (name, icon, tint): (String, String, Color) = {
-            if ref.hasPrefix("HEAD -> ") { return (String(ref.dropFirst(8)).replacingOccurrences(of: "refs/heads/", with: ""), "arrow.triangle.branch", .accentColor) }
-            if ref.hasPrefix("tag: ") { return (String(ref.dropFirst(5)).replacingOccurrences(of: "refs/tags/", with: ""), "tag", .orange) }
-            if ref.hasPrefix("refs/remotes/") { return (String(ref.dropFirst(13)), "cloud", .secondary) }
-            if ref.hasPrefix("refs/heads/") { return (String(ref.dropFirst(11)), "arrow.triangle.branch", .green) }
-            return (ref, "smallcircle.filled.circle", .accentColor)   // detached HEAD, refs/pull/*, stash…
-        }()
+        let (name, icon, tint) = Self.parse(ref)
         Label(name, systemImage: icon)
             .labelStyle(.titleAndIcon)
             .font(.caption2.weight(.medium))
-            .lineLimit(1)
+            .lineLimit(1).truncationMode(.middle)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .foregroundStyle(prominence == .increased ? .white : tint)
             .background((prominence == .increased ? Color.white.opacity(0.2) : tint.opacity(0.12)), in: Capsule())
+            .help(name)
+    }
+}
+
+/// "+N" after the ref badges that fit a commit row; the tooltip names the rest.
+struct MoreRefsBadge: View {
+    var refs: [String]
+    @Environment(\.backgroundProminence) private var prominence
+    var body: some View {
+        Text(verbatim: "+\(refs.count)")
+            .font(.caption2.weight(.medium).monospacedDigit())
+            .fixedSize()
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .foregroundStyle(prominence == .increased ? Color.white : Color.secondary)
+            .background((prominence == .increased ? Color.white.opacity(0.2) : Color.secondary.opacity(0.12)), in: Capsule())
+            .help(refs.map { RefBadge.parse($0).name }.joined(separator: "\n"))
     }
 }
 

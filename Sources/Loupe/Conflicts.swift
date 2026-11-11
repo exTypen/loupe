@@ -97,6 +97,7 @@ struct OperationBanner: View {
             VStack(alignment: .leading, spacing: 1) {
                 if let op = model.operation {
                     Text("\(op.verb) \(model.operationSubject)").fontWeight(.medium).lineLimit(1).truncationMode(.tail)
+                        .help("\(op.verb) \(model.operationSubject)")
                 } else {
                     Text("Conflicts").fontWeight(.medium)
                 }

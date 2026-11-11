@@ -141,12 +141,14 @@ struct PullRow: View {
                     Text(pr.title).lineLimit(2).fontWeight(.medium)
                 }
                 HStack(spacing: 6) {
-                    Text(verbatim: "#\(pr.number)").monospacedDigit()
-                    Text(pr.user.login).fontWeight(.medium)
-                    if pr.draft == true { Text("Draft").padding(.horizontal, 4).background(.quaternary, in: Capsule()) }
+                    Text(verbatim: "#\(pr.number)").monospacedDigit().fixedSize()
+                    Text(pr.user.login).fontWeight(.medium).lineLimit(1).fixedSize()
+                    if pr.draft == true { Text("Draft").fixedSize().padding(.horizontal, 4).background(.quaternary, in: Capsule()) }
                     Text(pr.head.ref).font(.caption.monospaced()).foregroundStyle(isLocal ? Color.accentColor : Color.secondary).lineLimit(1).truncationMode(.middle)
+                        .help("\(pr.head.ref) → \(pr.base.ref)")
                     if isLocal { Image(systemName: "arrow.triangle.branch").foregroundStyle(Color.accentColor).help("Checked out in a local worktree") }
-                    Text("→ \(pr.base.ref)").font(.caption.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
+                    Text("→ \(pr.base.ref)").font(.caption.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                        .help("\(pr.head.ref) → \(pr.base.ref)")
                     Spacer()
                     if let c = pr.comments, c > 0 { Label(String(c), systemImage: "bubble.left").labelStyle(.titleAndIcon).fixedSize() }
                 }
