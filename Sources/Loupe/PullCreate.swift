@@ -43,9 +43,20 @@ extension ForgejoClient {
             let list: [PullRequest] = try await get("/repos/\(r.owner)/\(r.name)/pulls", query: ["state": "open", "head": "\(r.owner):\(branch)"])
             return list.first
         }
-        // Forgejo's list has no head filter; the open list is the short one.
-        let list: [PullRequest] = try await getAll("/repos/\(r.owner)/\(r.name)/pulls", query: ["state": "open"])
-        return list.first { $0.head.ref == branch }
+        // Forgejo's list has no head filter; the open list is the short one. A fork's PR can share the branch name
+        // (patch-1), so only a head in this same repository counts.
+        let list: [HeadOnly] = try await getAll("/repos/\(r.owner)/\(r.name)/pulls", query: ["state": "open"])
+        guard let n = Self.sameRepoPull(list, head: branch) else { return nil }
+        return try await pull(r, n)
+    }
+
+    struct HeadOnly: Decodable {
+        struct Ref: Decodable { var ref: String; var repo_id: Int? }
+        var number: Int; var head: Ref; var base: Ref
+    }
+
+    static func sameRepoPull(_ list: [HeadOnly], head branch: String) -> Int? {
+        list.first { $0.head.ref == branch && $0.head.repo_id == $0.base.repo_id }?.number
     }
 
     func defaultBranch(_ r: RemoteRepo) async throws -> String {
@@ -165,7 +176,8 @@ final class PullCreateModel {
     var title = ""
     var body = ""
     var draft = false
-    var commits: [PullDraft.Commit] = []
+    var commits: [PullDraft.Commit] = []   // the newest 100
+    var total = 0                           // all of them
     var template: String?
     var needsPush = false
     var loading = true
@@ -186,6 +198,7 @@ final class PullCreateModel {
     func load() async {
         defer { loading = false }
         guard let client = worktree.client, let remote = worktree.remote else { error = "No account for this repository's remote."; return }
+        guard !branch.isEmpty else { error = "HEAD is detached; switch to a branch first."; return }
         template = PullDraft.template(in: path, github: client.github)
         let out = (try? await Git.string(["for-each-ref", "--format=%(refname:lstrip=3)", "--sort=-committerdate", "refs/remotes/\(remoteName)"], in: path)) ?? ""
         var names = out.split(separator: "\n").map(String.init).filter { $0 != "HEAD" && $0 != branch }
@@ -200,15 +213,20 @@ final class PullCreateModel {
 
     /// Commits, title and body follow the base until the user edits them.
     func baseChanged() async {
-        let range = "\(remoteName)/\(base)..HEAD"
-        let log = (try? await Git.string(["log", PullDraft.logFormat, range], in: path)) ?? ""
-        commits = PullDraft.parseLog(log)
+        let sel = base, dir = path, range = "\(remoteName)/\(sel)..HEAD"
+        // Capped: an unrelated base (gh-pages) would otherwise list, and parse on the main actor, the whole history.
+        async let log = Git.string(["log", "-n", "100", PullDraft.logFormat, range], in: dir)
+        async let count = Git.string(["rev-list", "--count", range], in: dir)
+        let parsed = PullDraft.parseLog((try? await log) ?? ""), n = Int(((try? await count) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        guard sel == base else { return }   // the base changed again meanwhile; that call fills in
+        commits = parsed; total = max(n, parsed.count)
         let t = PullDraft.title(commits: commits, branch: branch), b = PullDraft.body(commits: commits, template: template)
         if title == autoTitle { title = t }
         if body == autoBody { body = b }
         autoTitle = t; autoBody = b
         // Already on the remote (or behind it): nothing to push.
-        needsPush = (try? await Git.run(["merge-base", "--is-ancestor", "HEAD", "\(remoteName)/\(branch)"], in: path)) == nil
+        let push = (try? await Git.run(["merge-base", "--is-ancestor", "HEAD", "\(remoteName)/\(branch)"], in: path)) == nil
+        if sel == base { needsPush = push }
     }
 
     func writeWithAI() async {
@@ -311,18 +329,18 @@ struct PullCreateSheet: View {
                 Toggle("Draft", isOn: $m.draft)
                     .help(model.worktree.client?.github == true ? "Open it as a draft pull request" : "Open it as a draft: the title starts with “WIP: ”")
             }
-            Section(m.commits.count == 1 ? "1 commit" : "\(m.commits.count) commits") {
+            Section(m.total == 1 ? "1 commit" : "\(m.total) commits") {
                 if m.commits.isEmpty && !m.loading {
                     Text("No commits on \(m.branch) that aren't on \(m.base).").foregroundStyle(.secondary)
                 }
-                ForEach(m.commits.prefix(100)) { c in
+                ForEach(m.commits) { c in
                     HStack(spacing: 8) {
                         Text(c.sha.prefix(7)).font(.caption.monospaced()).foregroundStyle(.secondary)
                         Text(c.subject).lineLimit(1).truncationMode(.tail)
                     }
                     .help(c.body.isEmpty ? c.subject : c.subject + "\n\n" + c.body)
                 }
-                if m.commits.count > 100 { Text("and \(m.commits.count - 100) more").foregroundStyle(.secondary) }
+                if m.total > m.commits.count { Text("and \(m.total - m.commits.count) more").foregroundStyle(.secondary) }
             }
             if m.error != nil || m.existing != nil {
                 Section {

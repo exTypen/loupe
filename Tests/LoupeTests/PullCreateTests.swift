@@ -74,3 +74,11 @@ import Foundation
                              stat: "1 file", diff: String(repeating: "x", count: 70_000), template: "## Why")
     #expect(p.contains("[diff truncated]") && p.contains("## Why") && p.contains("S\n    B"))
 }
+
+@Test func openPullOnForgejoIgnoresForksWithTheSameBranchName() throws {
+    let json = #"[{"number":4,"head":{"ref":"patch-1","repo_id":9},"base":{"ref":"main","repo_id":8}},{"number":3,"head":{"ref":"patch-1","repo_id":8},"base":{"ref":"main","repo_id":8}}]"#
+    let list = try JSONDecoder().decode([ForgejoClient.HeadOnly].self, from: Data(json.utf8))
+    #expect(ForgejoClient.sameRepoPull(list, head: "patch-1") == 3)
+    #expect(ForgejoClient.sameRepoPull(Array(list.prefix(1)), head: "patch-1") == nil)
+    #expect(ForgejoClient.sameRepoPull(list, head: "other") == nil)
+}
