@@ -319,7 +319,9 @@ struct FileListView: View {
 
     var body: some View {
         // The diff follows the row just added to the selection (plain click, ⌘-click), else stays put.
-        let selection = Binding(get: { model.selectedFileIDs }, set: { ids in
+        // Weak, and only the model: see weakBinding.
+        let selection = Binding(get: { [weak model] in model?.selectedFileIDs ?? [] }, set: { [weak model] ids in
+            guard let model else { return }
             let order = model.listed
             let added = ids.subtracting(model.selectedFileIDs)
             let shown = order.first { added.contains($0.id) }?.id
@@ -726,7 +728,7 @@ struct WorktreeTree: View {
         Group {
             if browser.tree.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
             else {
-                FileTreeList(paths: browser.tree, selection: $browser.selectedPath, collapsed: $browser.collapsed) { path in
+                FileTreeList(paths: browser.tree, selection: weakBinding(browser, \.selectedPath, ifGone: nil), collapsed: $browser.collapsed) { path in
                     let c = browser.change(path)
                     HStack(spacing: 6) {
                         FileIcon(path: path)

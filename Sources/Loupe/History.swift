@@ -294,7 +294,7 @@ struct HistoryView: View {
                 }
                 .padding(8)
                 Divider()
-                List(selection: Binding(get: { model.selectedSHA }, set: { model.select($0) })) {
+                List(selection: Binding(get: { [weak model] in model?.selectedSHA }, set: { [weak model] in model?.select($0) })) {   // weak: see weakBinding
                     ForEach(Array(model.commits.enumerated()), id: \.element.id) { i, c in
                         CommitRow(commit: c, isHead: c.sha == headOID, client: client, remote: remote,
                                   graph: model.graph.indices.contains(i) ? model.graph[i] : nil, graphWidth: model.graphWidth)
@@ -549,7 +549,7 @@ struct CommitDetailView: View {
                 } else {
                 let byPath = Dictionary(model.files.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
                 ResizableSplit(key: "commitTreeWidth", minWidth: 180, maxWidth: 300, defaultFraction: 1) {
-                    FileTreeList(paths: model.files.map(\.path), selection: $model.selectedPath, collapsed: $model.collapsed) { path in
+                    FileTreeList(paths: model.files.map(\.path), selection: weakBinding(model, \.selectedPath, ifGone: nil), collapsed: $model.collapsed) { path in
                         if let f = byPath[path] {
                             TreeFileRow(path: f.path, badge: f.badge, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary)
                         }
