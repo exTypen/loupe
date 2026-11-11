@@ -799,8 +799,8 @@ private struct MergeEditor: View {
         VStack(spacing: 0) {
             HStack(spacing: 5) {
                 Circle().fill(tint).frame(width: 7, height: 7)
-                Text(title).font(.caption.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(title).font(.caption.weight(.semibold)).fixedSize()
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(detail)
                 Spacer()
                 if role == .ours {
                     Toggle("Base", isOn: $session.showBase).toggleStyle(.button).controlSize(.mini)
