@@ -227,6 +227,7 @@ struct FileNavControls<B: CodeBrowser>: View {
     var browser: B
     var path: String
     @State private var outline: [CodeSymbol] = []
+    @State private var tooLarge = false   // no outline: the file is too big or minified to parse
 
     var body: some View {
         HStack(spacing: 2) {
@@ -238,7 +239,10 @@ struct FileNavControls<B: CodeBrowser>: View {
                 .disabled(browser.back.isEmpty).help("Back").shortcut(.navigateBack)
             Button { browser.goForward() } label: { Image(systemName: "chevron.right") }
                 .disabled(browser.forward.isEmpty).help("Forward").shortcut(.navigateForward)
-            if !outline.isEmpty {
+            if tooLarge {
+                Image(systemName: "list.bullet.indent").foregroundStyle(.tertiary)
+                    .help("No outline: this file is too large or minified to parse")
+            } else if !outline.isEmpty {
                 Menu {
                     ForEach(outline, id: \.self) { s in
                         Button { browser.open(path, line: s.line) } label: { Text("\(s.name)  \(s.kind.rawValue) · \(s.line)") }
@@ -250,9 +254,12 @@ struct FileNavControls<B: CodeBrowser>: View {
         }
         .buttonStyle(.borderless)
         .task(id: [path, browser.isLoaded(path) ? "1" : "0"]) {
-            guard let text = browser.headText(path) else { outline = []; return }
-            let p = path
-            outline = await Task.detached(priority: .utility) { CodeIndex.outline(text, path: p) }.value
+            guard let text = browser.headText(path) else { outline = []; tooLarge = false; return }
+            // Structured: leaving the file or the view cancels the parse.
+            switch await CodeIndex.outline(of: text, path: path) {
+            case .tooLarge: outline = []; tooLarge = true
+            case .symbols(let s): if !Task.isCancelled { outline = s; tooLarge = false }
+            }
         }
     }
 }

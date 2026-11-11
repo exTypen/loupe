@@ -73,14 +73,37 @@ enum CodeIndex {
 
     static func canNavigate(_ path: String) -> Bool { grammar(for: path)?.tags != nil }
 
-    /// Every definition and reference the language's tags query finds in `text`.
+    // Tree-sitter on a huge or minified file takes minutes and gigabytes (a 30 MB bundle never finished); such files
+    // aren't worth an outline. Past these, nothing is parsed.
+    static let maxParseBytes = 2 << 20
+    static let maxParseLines = 50_000
+    static let maxAverageLineLength = 1_000   // minified: a few very long lines
+    static let parseTimeout: TimeInterval = 5  // a backstop for what slips under the caps
+
+    /// Too big (or minified) to parse: outline and symbol lookups skip it.
+    static func isTooLarge(_ text: String) -> Bool {
+        let bytes = text.utf8.count
+        if bytes > maxParseBytes { return true }
+        guard bytes > 64 << 10 else { return false }
+        var lines = 1
+        for b in text.utf8 where b == UInt8(ascii: "\n") { lines += 1; if lines > maxParseLines { return true } }
+        return bytes / lines > maxAverageLineLength
+    }
+
+    /// Every definition and reference the language's tags query finds in `text`. Empty for a file over the caps, and
+    /// when the calling task is cancelled (the parse stops early: its input ends where the cancellation found it).
     static func symbols(in text: String, path: String) -> [CodeSymbol] {
-        guard let g = grammar(for: path), let query = g.tags else { return [] }
+        guard let g = grammar(for: path), let query = g.tags, !isTooLarge(text), !Task.isCancelled else { return [] }
         let parser = Parser()
-        guard (try? parser.setLanguage(g.language)) != nil, let tree = parser.parse(text) else { return [] }
+        parser.timeout = parseTimeout
+        guard (try? parser.setLanguage(g.language)) != nil else { return [] }
+        let read = Parser.readFunction(for: text)
+        guard let tree = parser.parse(tree: nil as Tree?, readBlock: { offset, point in Task.isCancelled ? nil : read(offset, point) }),
+              !Task.isCancelled else { return [] }
         let ns = text as NSString
         var out: [CodeSymbol] = []
         for match in query.execute(in: tree) {
+            if Task.isCancelled { return [] }
             guard let nameCapture = match.captures.first(where: { $0.name == "name" }) else { continue }
             let tag = match.captures.compactMap(\.name).first { $0.hasPrefix("definition.") || $0.hasPrefix("reference.") } ?? ""
             let parts = tag.split(separator: ".", maxSplits: 1)
@@ -99,6 +122,15 @@ enum CodeIndex {
         return symbols(in: text, path: path).filter { $0.isDefinition && seen.insert($0.line).inserted }.sorted { $0.line < $1.line }
     }
 
+    enum Outline: Equatable, Sendable { case symbols([CodeSymbol]), tooLarge }
+
+    /// The outline off the main thread, for a view: cancelling the caller (the view went away, another file opened)
+    /// stops the parse. One parse per file content at a time, however many views ask; results are cached.
+    static func outline(of text: String, path: String) async -> Outline {
+        if isTooLarge(text) { return .tooLarge }
+        return .symbols(await OutlineCache.shared.outline(text, path: path))
+    }
+
     private static func kind(_ s: String) -> CodeSymbol.Kind {
         switch s {
         case "function": .function
@@ -111,6 +143,49 @@ enum CodeIndex {
         case "macro": .macro
         case "field", "property": .field
         default: .other
+        }
+    }
+}
+
+/// Outlines by path and content, bounded; and the parses in flight, shared by every caller of the same key. A parse
+/// is cancelled once all its callers are.
+final class OutlineCache: @unchecked Sendable {
+    static let shared = OutlineCache()
+    final class Box { let symbols: [CodeSymbol]; init(_ s: [CodeSymbol]) { symbols = s } }
+    private let cache: NSCache<NSString, Box> = { let c = NSCache<NSString, Box>(); c.countLimit = 64; return c }()
+    private struct Flight { var task: Task<[CodeSymbol], Never>; var waiters: Set<UUID> }
+    private let flights = Mutex<[String: Flight]>([:])
+    let parses = Mutex(0)   // parses started (tests)
+
+    static func key(_ text: String, _ path: String) -> String {
+        var h = Hasher(); h.combine(text); return "\(path)\u{0}\(text.utf8.count)\u{0}\(h.finalize())"
+    }
+
+    var inFlight: Int { flights.withLock { $0.count } }
+
+    func outline(_ text: String, path: String) async -> [CodeSymbol] {
+        let key = Self.key(text, path), me = UUID()
+        if let hit = cache.object(forKey: key as NSString) { return hit.symbols }
+        let task = flights.withLock { f -> Task<[CodeSymbol], Never> in
+            if f[key] != nil { f[key]!.waiters.insert(me); return f[key]!.task }
+            parses.withLock { $0 += 1 }
+            let t = Task.detached(priority: .utility) { CodeIndex.outline(text, path: path) }
+            f[key] = Flight(task: t, waiters: [me])
+            return t
+        }
+        let result = await withTaskCancellationHandler { await task.value } onCancel: { self.leave(key, me, cancel: true) }
+        let cancelled = Task.isCancelled
+        leave(key, me, cancel: cancelled)
+        if cancelled { return [] }
+        if !task.isCancelled { cache.setObject(Box(result), forKey: key as NSString) }
+        return result
+    }
+
+    /// A caller is done (twice is fine): the last one out of a cancelled wait cancels the parse.
+    private func leave(_ key: String, _ me: UUID, cancel: Bool) {
+        flights.withLock { f in
+            guard var e = f[key], e.waiters.remove(me) != nil else { return }
+            if e.waiters.isEmpty { if cancel { e.task.cancel() }; f[key] = nil } else { f[key] = e }
         }
     }
 }
