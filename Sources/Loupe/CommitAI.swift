@@ -165,10 +165,17 @@ enum CommitAI {
     struct Failure: LocalizedError { var errorDescription: String? }
 
     @MainActor static func message(in dir: String, amend: Bool, hasStaged: Bool) async throws -> String {
-        guard let h = selected, let exe = AIHarnesses.shared.paths[h.id] else {
+        guard selected != nil else {
             throw Failure(errorDescription: "No AI tool is set up for commit messages. Pick one in Settings › General.")
         }
-        let prompt = try await prompt(in: dir, amend: amend, hasStaged: hasStaged)
+        return try await answer(try await prompt(in: dir, amend: amend, hasStaged: hasStaged), in: dir)
+    }
+
+    /// One prompt through the selected harness, in its read-only mode; the reply cleaned of fences and escapes.
+    @MainActor static func answer(_ prompt: String, in dir: String) async throws -> String {
+        guard let h = selected, let exe = AIHarnesses.shared.paths[h.id] else {
+            throw Failure(errorDescription: "No AI tool is set up. Pick one in Settings › General.")
+        }
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-msg-\(UUID().uuidString).txt").path
         defer { try? FileManager.default.removeItem(atPath: out) }
         let inv = h.invocation(prompt, model(for: h), out)

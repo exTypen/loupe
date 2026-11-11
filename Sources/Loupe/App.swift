@@ -173,6 +173,9 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $app.showSwitcher) { QuickSwitcher() }
+        .sheet(item: Binding(get: { app.creatingPull.map(IdentifiedString.init) }, set: { app.creatingPull = $0?.value })) { p in
+            PullCreateSheet(worktree: app.model(for: p.value))
+        }
         .alert("Error", isPresented: Binding(get: { app.error != nil }, set: { if !$0 { app.error = nil } })) {
             Button("OK") { app.error = nil }
         } message: { Text(app.error ?? "") }
@@ -365,6 +368,10 @@ struct Sidebar: View {
         Button("Open in Zed") { openIn(bundleID: "dev.zed.Zed", wt.path) }
         Button("Open in VS Code") { openIn(bundleID: "com.microsoft.VSCode", wt.path) }
         Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(wt.path, forType: .string) }
+        if wt.branch != nil, app.model(for: wt.path).client != nil {
+            Divider()
+            Button("Create Pull Request…") { app.creatingPull = wt.path }
+        }
         if wt.path != repo {
             Divider()
             Button("Remove Worktree…", role: .destructive) { removing = (repo, wt) }

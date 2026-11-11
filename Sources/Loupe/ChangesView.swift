@@ -34,7 +34,7 @@ struct WorktreeView: View {
                 }
                 .disabled(model.busy != nil)
                     .help(model.behind > 0 ? "Pull \(model.behind) commits (fast-forward only)" : "Pull (fast-forward only)")
-                Button { Task { await model.remoteOp("Pushing", ["push", "--set-upstream", model.remoteName, "HEAD"]) } } label: {
+                Button { Task { await model.remoteOp("Pushing", ["push", "--set-upstream", model.remoteName, "HEAD"]); NotificationCenter.default.post(name: .branchPushed, object: model.path) } } label: {
                     Label("Push", systemImage: "arrow.up").symbolEffect(.pulse, isActive: model.busy == "Pushing")
                 }
                 .disabled(model.busy != nil)
@@ -230,6 +230,8 @@ struct ChangesView: View {
         if model.operation != nil || !model.conflicted.isEmpty {
             OperationBanner(model: model)
             Divider()
+        } else {
+            PullCreateBanner(model: model)
         }
         LFSMissingBanner(model: model)
         SubmoduleBanner(model: model)
