@@ -735,6 +735,7 @@ struct CheckDetail: View {
             } else if check.job == nil {
                 if let run = check.status.checkRun, run.summary?.isEmpty == false || !annotations.isEmpty {
                     CheckRunOutput(summary: run.summary, annotations: annotations)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 } else {
                     ContentUnavailableView {
                         Label(check.status.checkRun?.app == "github-actions" ? "Job Not Loaded" : "External Status", systemImage: "arrow.up.right.square")
@@ -746,6 +747,8 @@ struct CheckDetail: View {
                     } actions: {
                         if let url = webURL { Button("Open Details") { NSWorkspace.shared.open(url) } }
                     }
+                    // Fill the detail like a job's log does; at its own size the header floated to the middle.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }

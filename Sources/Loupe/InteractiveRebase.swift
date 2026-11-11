@@ -219,7 +219,9 @@ final class Rebaser {
     // weak: a rebase still running when the worktree goes away must not touch a freed model
     weak var history: HistoryModel?
     let path: String
-    var local: Set<String> = []       // HEAD's commits no remote has: these can be dragged
+    /// HEAD's first-parent commits back to the first merge (a rebase can't cross it) and short of the root: these can
+    /// be dragged. Pushed ones too, as in Tower and Fork: `rewrite` asks before rewriting what a remote already has.
+    var local: Set<String> = []
     var dragging: String?
     var dropTarget: (sha: String, zone: RebaseTodo.Zone, fixup: Bool)?
     var pending: Pending?
@@ -230,8 +232,14 @@ final class Rebaser {
     init(history: HistoryModel) { self.history = history; path = history.path }
 
     func refreshLocal() async {
-        let out = (try? await Git.string(["rev-list", "-n", "\(Git.rebaseLimit)", "HEAD", "--not", "--remotes", "--"], in: path)) ?? ""
-        local = Set(out.split(separator: "\n").map(String.init))
+        let out = (try? await Git.string(["rev-list", "--first-parent", "--parents", "-n", "\(Git.rebaseLimit)", "HEAD", "--"], in: path)) ?? ""
+        var set = Set<String>()
+        for line in out.split(separator: "\n") {
+            let ids = line.split(separator: " ")   // the commit, then its parents
+            guard ids.count == 2 else { break }    // a merge (or the root) ends what a rebase can reach
+            set.insert(String(ids[0]))
+        }
+        local = set
     }
 
     /// Loads `oldest^..HEAD`, applies `change` and runs it, asking first when it drops a commit or rewrites pushed ones.
