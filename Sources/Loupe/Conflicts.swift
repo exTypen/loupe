@@ -92,8 +92,8 @@ struct OperationBanner: View {
     var body: some View {
         let n = model.conflicted.count
         HStack(spacing: 10) {
-            Image(systemName: n > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .foregroundStyle(n > 0 ? .orange : .green)
+            Image(systemName: n > 0 ? "exclamationmark.triangle.fill" : model.stoppedToEdit ? "pencil.circle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(n > 0 ? .orange : model.stoppedToEdit ? .blue : .green)
             VStack(alignment: .leading, spacing: 1) {
                 if let op = model.operation {
                     Text("\(op.verb) \(model.operationSubject)").fontWeight(.medium).lineLimit(1).truncationMode(.tail)
@@ -101,6 +101,7 @@ struct OperationBanner: View {
                     Text("Conflicts").fontWeight(.medium)
                 }
                 Text(n > 0 ? "\(n) file\(n == 1 ? "" : "s") with conflicts. Resolve each one, then continue."
+                           : model.stoppedToEdit ? "Stopped to edit this commit. Change it (commit with Amend), then continue."
                            : model.operation == nil ? "" : "All conflicts are resolved.")
                     .font(.caption).foregroundStyle(.secondary)
             }

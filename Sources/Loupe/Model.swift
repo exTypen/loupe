@@ -228,6 +228,7 @@ final class WorktreeModel {
     @ObservationIgnored private var mergedKey = ""
     var operation: GitOperation?      // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
     var operationSubject = ""          // the commit it's applying
+    var stoppedToEdit = false          // an interactive rebase's "edit" stop: amend, then continue
     @ObservationIgnored private var gitDir: String?
     var selectedFileID: String?            // the file whose diff is shown
     var selectedFileIDs: Set<String> = []   // the file list's selection (⌘/⇧-click, ⌘A); bulk actions use it
@@ -306,6 +307,8 @@ final class WorktreeModel {
         let op: GitOperation? = has("rebase-merge") || has("rebase-apply") ? .rebase
             : has("CHERRY_PICK_HEAD") ? .cherryPick : has("REVERT_HEAD") ? .revert : has("MERGE_HEAD") ? .merge : nil
         if op != operation { operation = op }
+        let edit = op == .rebase && has("rebase-merge/amend")   // written only for an edit stop
+        if edit != stoppedToEdit { stoppedToEdit = edit }
         let head = op.flatMap { o -> String? in
             switch o {
             case .cherryPick: "CHERRY_PICK_HEAD"

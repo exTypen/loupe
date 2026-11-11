@@ -152,6 +152,7 @@ final class HistoryModel {
     var error: String?
     private static let page = 300
     private var detailTask: Task<Void, Never>?
+    @ObservationIgnored lazy var rebase = Rebaser(history: self)   // interactive rebase: InteractiveRebase.swift
 
     init(path: String) { self.path = path }
 
@@ -284,6 +285,7 @@ struct HistoryView: View {
                                   graph: model.graph.indices.contains(i) ? model.graph[i] : nil, graphWidth: model.graphWidth)
                             .tag(c.sha)
                             .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 8))   // graph lines run row to row
+                            .modifier(RebaseDragRow(rebaser: model.rebase, commit: c, enabled: model.scope == .current && model.search.isEmpty))
                             .contextMenu { menu(c) }
                             .onAppear { if c.sha == model.commits.last?.sha { Task { await model.loadMore() } } }
                     }
@@ -306,7 +308,8 @@ struct HistoryView: View {
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: worktree.headOID) { await model.reload() }
+        .task(id: worktree.headOID) { await model.reload(); await model.rebase.refreshLocal() }
+        .modifier(RebaseSheets(rebaser: model.rebase))
         .onChange(of: model.search) { _, s in if s.isEmpty { Task { await model.reload() } } }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in if let d = n.object as? Int { model.move(d) } }
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await model.reload() } }
@@ -369,6 +372,10 @@ struct HistoryView: View {
             if model.notInHead.contains(c.sha) { Button("Cherry-pick onto \(branchName)") { Task { await model.cherryPick(c) } } }
             else { Button("Revert Commit") { Task { await model.revert(c) } } }
             Divider()
+            if model.scope == .current && model.search.isEmpty {
+                RebaseMenu(rebaser: model.rebase, commit: c, isHead: c.sha == worktree.headOID)
+                Divider()
+            }
             Button("Copy SHA") { copy(c.sha) }
             Button("Copy Subject") { copy(c.subject) }
             Button("New Worktree from Here…") { worktreeBase = c.sha }
