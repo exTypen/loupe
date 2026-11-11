@@ -164,13 +164,13 @@ struct PullRow: View {
 /// gets cancelled when List re-renders, which left most rows on the fallback.
 @MainActor final class AvatarCache {
     static let shared = AvatarCache()
-    private var images: [URL: NSImage] = [:]
+    private let images: NSCache<NSURL, NSImage> = { let c = NSCache<NSURL, NSImage>(); c.countLimit = 500; return c }()   // bounded: a long session sees thousands of people
     private var tasks: [URL: Task<NSImage?, Never>] = [:]
 
-    func cached(_ url: URL) -> NSImage? { images[url] }
+    func cached(_ url: URL) -> NSImage? { images.object(forKey: url as NSURL) }
 
     func load(_ url: URL) async -> NSImage? {
-        if let img = images[url] { return img }
+        if let img = cached(url) { return img }
         if let t = tasks[url] { return await t.value }
         // Decoded off the main thread at a size no avatar is shown above (32 pt at 2×, with headroom): a 460 px
         // original would otherwise sit decoded in memory at ~850 KB per person.
@@ -186,7 +186,7 @@ struct PullRow: View {
         tasks[url] = t
         let img = await t.value
         tasks[url] = nil
-        if let img { images[url] = img }
+        if let img { images.setObject(img, forKey: url as NSURL) }
         return img
     }
 }

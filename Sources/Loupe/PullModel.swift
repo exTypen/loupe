@@ -146,7 +146,7 @@ final class PullRequestModel {
     var filter = "" { didSet { fileDerived = nil; viewedUnder = [:] } }
     @ObservationIgnored lazy var checks = ChecksModel(client: client, repo: repo, sha: pr.head.sha)
     var drafts: [DraftComment] = [] { didSet { persistDrafts(); commentDerived = nil } }
-    var viewed: [String: UInt64] = [:] { didSet { viewedDerived = nil; viewedUnder = [:]; UserDefaults.standard.set(viewed.mapValues { String($0) }, forKey: viewedKey) } }
+    var viewed: [String: UInt64] = [:] { didSet { viewedDerived = nil; viewedUnder = [:]; Self.store(viewed.isEmpty ? nil : viewed.mapValues { String($0) }, viewedKey) } }
 
     private var viewedKey: String { "viewed:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
     private var draftsKey: String { "drafts:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)" }
@@ -158,7 +158,12 @@ final class PullRequestModel {
         drafts = (try? JSONDecoder().decode([DraftComment].self, from: UserDefaults.standard.data(forKey: "drafts:\(repo.host)/\(repo.owner)/\(repo.name)#\(pr.number)") ?? Data())) ?? []
     }
 
-    private func persistDrafts() { UserDefaults.standard.set(try? JSONEncoder().encode(drafts), forKey: draftsKey) }
+    private func persistDrafts() { Self.store(drafts.isEmpty ? nil : try? JSONEncoder().encode(drafts), draftsKey) }
+
+    /// Per-PR keys live in UserDefaults for every PR ever opened: an empty value removes its key instead of keeping it.
+    nonisolated static func store(_ value: Any?, _ key: String) {
+        if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+    }
 
     var selectedFile: FileDiff? { selectedPath.flatMap(file) }
     func file(_ path: String) -> FileDiff? { index[path].map { files[$0] } }
