@@ -83,6 +83,8 @@ final class ChecksModel {
             // Actions may be disabled on the server (404): commit statuses still stand on their own.
             do { runs = try await runsReq; notice = Self.notice(f, error: nil) }
             catch { runs = []; notice = Self.notice(f, error: error) }
+            let present = Set(runs.map(\.id))
+            jobs = jobs.filter { present.contains($0.key) }   // runs that dropped off the commit (superseded, deleted)
 
             // Only re-fetch jobs for runs that can still change; finished runs are immutable (a rerun resets their status).
             let stale = runs.filter { jobs[$0.id] == nil || !["success", "failure", "cancelled", "skipped"].contains($0.status ?? "") }
@@ -187,9 +189,12 @@ final class JobLogModel {
     @ObservationIgnored private var offset = 0
     @ObservationIgnored private var pending = Data()   // bytes after the last newline (a chunk can split a line or a UTF-8 char)
     @ObservationIgnored private var fold = Fold()      // a group can open in one chunk and close in the next
+    @ObservationIgnored private var trimmed = false    // the live tail dropped its oldest output
     var version = 0                                      // bumps on every append so the view can follow the tail
 
     static let initialTail = 16 << 20   // detail page fetches the whole log; only beyond 16 MB start from the tail
+    static let maxShown = 24 << 20      // characters: a live tail that keeps growing drops its oldest output past this
+    static let maxProblems = 1000       // the newest ones
 
     init(client: ForgejoClient, repo: RemoteRepo, job: ActionJob, features: CIFeatures) {
         self.client = client; self.repo = repo; self.job = job; self.features = features
@@ -221,9 +226,11 @@ final class JobLogModel {
     /// The whole log, or its last 16 MB on Forgejo (GitHub's blob store and Gitea don't promise suffix ranges).
     private func loadInitial() async -> Bool {
         do {
-            let (data, start, total) = try await client.actionLog(repo, jobID: job.id, range: features.githubShaped ? nil : "bytes=-\(Self.initialTail)")
+            var (data, start, total) = try await client.actionLog(repo, jobID: job.id, range: features.githubShaped ? nil : "bytes=-\(Self.initialTail)")
+            offset = total ?? start + data.count
+            // GitHub's blob store and Gitea send it whole: keep the same tail Forgejo would have sent.
+            (data, start) = Self.tail(data, start: start, limit: Self.initialTail)
             truncatedBytes = start
-            offset = total ?? data.count
             waitingForLog = false
             error = nil
             await append(data)
@@ -236,6 +243,14 @@ final class JobLogModel {
 
     /// A tail request ("bytes=<offset>-") answered by a server that ignores Range comes back whole, from byte 0:
     /// keep only what's past the offset.
+    /// The last `limit` bytes of `data` (which starts at byte `start` of the log), from a line start: (bytes, their start).
+    nonisolated static func tail(_ data: Data, start: Int, limit: Int) -> (Data, Int) {
+        guard data.count > limit else { return (data, start) }
+        var cut = data.count - limit
+        if let nl = data[(data.startIndex + cut)...].firstIndex(of: UInt8(ascii: "\n")) { cut = nl + 1 - data.startIndex }
+        return (Data(data[(data.startIndex + cut)...]), start + cut)
+    }
+
     nonisolated static func newBytes(_ data: Data, start: Int, offset: Int) -> Data {
         guard start == 0, offset > 0 else { return data }
         return data.count > offset ? Data(data.dropFirst(offset)) : Data()
@@ -243,13 +258,15 @@ final class JobLogModel {
 
     func loadEarlier() async {
         guard truncatedBytes > 0 else { return }
+        if trimmed { return await reloadWhole() }
         do {
-            let (data, _, _) = try await client.actionLog(repo, jobID: job.id, range: "bytes=0-\(truncatedBytes - 1)")
+            var (data, start, _) = try await client.actionLog(repo, jobID: job.id, range: "bytes=0-\(truncatedBytes - 1)")
+            if start == 0, data.count > truncatedBytes { data = data.prefix(truncatedBytes) }   // a server that ignored Range
             var f = Fold(next: fold.next + 1_000_000)        // ids apart from the tail's
             let (text, found) = await Self.formatted(String(decoding: data, as: UTF8.self), fold: &f)
             storage.insert(text, at: 0)
             let shift = text.length
-            problems = found + problems.map { LogProblem(line: $0.line, range: NSRange(location: $0.range.location + shift, length: $0.range.length), warning: $0.warning) }
+            problems = Array((found + problems.map { LogProblem(line: $0.line, range: NSRange(location: $0.range.location + shift, length: $0.range.length), warning: $0.warning) }).suffix(Self.maxProblems))
             truncatedBytes = 0
             version += 1
         } catch { self.error = error.localizedDescription }
@@ -277,7 +294,41 @@ final class JobLogModel {
         let base = storage.length   // read after the await: loadEarlier may have inserted meanwhile
         storage.append(text)
         problems += found.map { LogProblem(line: $0.line, range: NSRange(location: $0.range.location + base, length: $0.range.length), warning: $0.warning) }
+        trimFront()
+        if problems.count > Self.maxProblems { problems.removeFirst(problems.count - Self.maxProblems) }
         version += 1
+    }
+
+    /// After the live tail dropped output, what's shown no longer starts at a byte we know: read it all again, up to
+    /// where the tail has read.
+    private func reloadWhole() async {
+        do {
+            var (data, start, _) = try await client.actionLog(repo, jobID: job.id, range: "bytes=0-\(max(0, offset - pending.count - 1))")
+            if start == 0, data.count > offset - pending.count { data = data.prefix(offset - pending.count) }   // pending: emitted later
+            var f = Fold()
+            let (text, found) = await Self.formatted(String(decoding: data, as: UTF8.self), fold: &f)
+            storage.setAttributedString(text)
+            fold = f; expanded = []
+            problems = Array(found.suffix(Self.maxProblems))
+            truncatedBytes = 0; trimmed = false
+            version += 1
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// A live tail past `maxShown`: drop the oldest quarter (from a line start), so a job that logs for hours doesn't
+    /// grow without end. What's dropped counts as not loaded: Load Full Log brings it back.
+    func trimFront() {
+        guard storage.length > Self.maxShown else { return }
+        let ns = storage.string as NSString
+        var cut = storage.length - Self.maxShown * 3 / 4
+        let nl = ns.range(of: "\n", range: NSRange(location: cut, length: ns.length - cut))
+        if nl.location != NSNotFound { cut = nl.location + 1 }
+        truncatedBytes += ns.substring(to: cut).utf8.count   // about: formatting changed some lines
+        trimmed = true
+        storage.deleteCharacters(in: NSRange(location: 0, length: cut))
+        problems = problems.compactMap { p in
+            p.range.location < cut ? nil : LogProblem(line: p.line, range: NSRange(location: p.range.location - cut, length: p.range.length), warning: p.warning)
+        }
     }
 
     /// Formatting a multi-MB log takes long enough to drop frames: off the main thread.

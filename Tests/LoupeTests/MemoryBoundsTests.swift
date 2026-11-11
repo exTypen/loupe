@@ -155,3 +155,28 @@ struct GitCancellationTests {
         #expect(m.history.files.isEmpty)
     }
 }
+
+@MainActor struct JobLogBoundsTests {
+    @Test func tailKeepsWholeLines() {
+        let d = Data("aaaa\nbbbb\ncccc\n".utf8)
+        let (t, start) = JobLogModel.tail(d, start: 0, limit: 7)
+        #expect(String(decoding: t, as: UTF8.self) == "cccc\n")
+        #expect(start == 10)
+        #expect(JobLogModel.tail(d, start: 5, limit: 100).1 == 5)
+    }
+
+    @Test func liveTailDropsItsOldestOutput() {
+        let job = ActionJob(id: 1, run_id: 1, attempt: 1, name: "j", html_url: nil, needs: nil, runs_on: nil, task_id: nil, status: "running", steps: nil)
+        let m = JobLogModel(client: ForgejoClient(baseURL: "http://127.0.0.1:1", token: "x"), repo: RemoteRepo(remoteURL: "http://127.0.0.1:1/o/r.git")!,
+                            job: job, features: CIFeatures.detect(github: false, version: "11.0.0"))
+        let line = String(repeating: "x", count: 99) + "\n"
+        m.storage.append(NSAttributedString(string: String(repeating: line, count: JobLogModel.maxShown / 100 + 1000)))
+        let lastLoc = m.storage.length - 100
+        m.problems = [LogProblem(line: "old", range: NSRange(location: 5, length: 3)), LogProblem(line: "new", range: NSRange(location: lastLoc, length: 3))]
+        m.trimFront()
+        #expect(m.storage.length <= JobLogModel.maxShown)
+        #expect(m.problems.map(\.line) == ["new"])
+        #expect(m.problems[0].range.location == m.storage.length - 100)
+        #expect(m.truncatedBytes > 0)
+    }
+}
