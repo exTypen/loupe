@@ -307,7 +307,7 @@ struct Sidebar: View {
                                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
                                     .rotationEffect(.degrees(expanded ? 90 : 0))
                                     .foregroundStyle(.secondary)
-                                Text((repo as NSString).lastPathComponent)
+                                Text((repo as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                                     .font(.body.weight(.semibold)).foregroundStyle(.primary)   // the repo leads, not its rows
                             }
                         }
@@ -599,15 +599,16 @@ struct WorktreeRow: View {
                     .padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Color.purple.opacity(0.15), in: Capsule())
             }
-            if model.ahead > 0 { Text(verbatim: "↑\(String(model.ahead))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
-            if model.behind > 0 { Text(verbatim: "↓\(String(model.behind))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+            // Counts keep their width; the title and branch above truncate instead.
+            if model.ahead > 0 { Text(verbatim: "↑\(String(model.ahead))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary).fixedSize() }
+            if model.behind > 0 { Text(verbatim: "↓\(String(model.behind))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary).fixedSize() }
             if model.changeCount > 0 {
-                Text("\(model.changeCount)").font(.caption.monospacedDigit()).padding(.horizontal, 6).padding(.vertical, 1)
+                Text("\(model.changeCount)").font(.caption.monospacedDigit()).fixedSize().padding(.horizontal, 6).padding(.vertical, 1)
                     .background(.quaternary, in: Capsule())
             }
             if wt.isLocked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary) }
         }
-        .help(wt.path)
+        .help(wt.branch.map { "\(wt.path)\n\($0)" } ?? wt.path)
     }
 }
 
