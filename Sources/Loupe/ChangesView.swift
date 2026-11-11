@@ -8,6 +8,9 @@ struct WorktreeView: View {
     @State private var controls = DiffControls()
     @AppStorage("prFullMode") private var fullMode = false
 
+    private var branchTitle: String { model.headOID.isEmpty ? "" : model.branch ?? "detached HEAD" }
+    private var tildePath: String { (model.path as NSString).abbreviatingWithTildeInPath }
+
     var body: some View {
         Group {
             switch tab {
@@ -17,8 +20,8 @@ struct WorktreeView: View {
             }
         }
         .overlay(alignment: .bottom) { UndoToast(model: model) }
-        .navigationTitle(model.headOID.isEmpty ? "" : model.branch ?? "detached HEAD")
-        .navigationSubtitle((model.path as NSString).abbreviatingWithTildeInPath)
+        .navigationTitle(branchTitle)
+        .navigationSubtitle(tildePath)
         .toolbar(removing: .title)   // drawn by the branch button below instead
         .toolbar {
             // Fetch, pull and push act on the branch: beside it, on the left.
@@ -44,16 +47,17 @@ struct WorktreeView: View {
                 Button { showBranches.toggle() } label: {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 4) {
-                            Text(model.headOID.isEmpty ? "" : model.branch ?? "detached HEAD").font(.headline)
+                            Text(branchTitle).font(.headline).lineLimit(1).truncationMode(.tail)
                             Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                         }
-                        Text((model.path as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(.secondary)
+                        Text(tildePath).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
+                    .frame(maxWidth: 300, alignment: .leading)   // a long branch or path truncates instead of pushing the view switch aside
                     .padding(.horizontal, 12)   // keep the two lines inside the toolbar's glass capsule
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Switch branch")
+                .help("\(branchTitle)\n\(tildePath)\nClick to switch branch")
                 .popover(isPresented: $showBranches, arrowEdge: .bottom) { BranchPicker(model: model) }
             }
             ToolbarItem(placement: .principal) {
@@ -174,7 +178,7 @@ struct BranchPicker: View {
         Button { switchTo(b) } label: {
             HStack(spacing: 6) {
                 Image(systemName: remote ? "cloud" : "arrow.triangle.branch").foregroundStyle(.secondary).frame(width: 16)
-                Text(b).lineLimit(1).truncationMode(.middle)
+                Text(b).lineLimit(1).truncationMode(.middle).help(b)
                 Spacer()
                 if b == model.branch { Image(systemName: "checkmark").foregroundStyle(.tint) }
                 else if let wt = checkedOut[b] {
