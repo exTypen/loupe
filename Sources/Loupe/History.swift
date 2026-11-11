@@ -518,6 +518,7 @@ struct CommitDetailView: View {
                                 Divider()
                                 WithFilePanel(file: f.newPath == nil || c.selector != nil ? nil : FileTarget(worktree: model.path, path: f.path, rev: c.sha)) {
                                     if f.isBinary { ContentUnavailableView("Binary File", systemImage: "doc.zipper") }
+                                    else if let lfs = LFSDiff(f) { LFSObjectView(lfs: lfs, dir: model.path, path: f.path) }
                                     else if f.lines.isEmpty { ContentUnavailableView("No Content Changes", systemImage: "doc", description: Text("Mode change or rename only.")) }
                                     else {
                                         let key = c.sha + " " + f.path

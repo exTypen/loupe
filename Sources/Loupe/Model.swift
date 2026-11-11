@@ -242,6 +242,8 @@ final class WorktreeModel {
     var remoteDetected = false
     var pulls = PullListModel()
     @ObservationIgnored lazy var history = HistoryModel(path: path)
+    @ObservationIgnored lazy var lfs = LFSModel(path: path)
+    @ObservationIgnored lazy var submodules = SubmoduleModel(path: path)
 
     private var watcher: FSWatcher?
     private var refreshTask: Task<Void, Never>?
@@ -268,6 +270,8 @@ final class WorktreeModel {
             let stashes = (try? await Git.string(["stash", "list", "--format=%H"], in: path)) ?? ""
             stashCount = stashes.split(separator: "\n").count
             await detectOperation()
+            await lfs.refresh(env: gitAuth)
+            await submodules.refresh()
             if s.files != files { files = s.files }
             if selectedFileID == nil || !files.contains(where: { $0.id == selectedFileID }) {
                 // Keep the same path selected when it moves between staged/unstaged.
@@ -540,8 +544,7 @@ final class FSWatcher {
             guard let info else { return }
             let me = Unmanaged<FSWatcher>.fromOpaque(info).takeUnretainedValue()
             let paths = unsafeBitCast(rawPaths, to: NSArray.self) as? [String] ?? []
-            // Object-store churn (fetch, gc) and lock files don't change what we display.
-            guard paths.contains(where: { !$0.contains("/.git/objects/") && !$0.hasSuffix(".lock") }) else { return }
+            guard paths.contains(where: { !FSWatcher.isNoise($0) }) else { return }
             me.callback(paths.contains { ($0 as NSString).deletingLastPathComponent.hasSuffix("/.git/worktrees") })
         }
         stream = FSEventStreamCreate(nil, cb, &ctx, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.15,
@@ -550,6 +553,15 @@ final class FSWatcher {
             FSEventStreamSetDispatchQueue(stream, DispatchQueue.global(qos: .utility))
             FSEventStreamStart(stream)
         }
+    }
+
+    /// Object-store churn (fetch, gc, LFS downloads), a submodule's too under .git/modules/, and lock files don't
+    /// change what we display.
+    static func isNoise(_ p: String) -> Bool {
+        if p.hasSuffix(".lock") || p.contains("/.git/objects/") || p.contains("/.git/lfs/") { return true }
+        guard let r = p.range(of: "/.git/modules/") else { return false }
+        let inner = p[r.upperBound...]
+        return inner.contains("/objects/") || inner.contains("/lfs/")
     }
 
     deinit {
