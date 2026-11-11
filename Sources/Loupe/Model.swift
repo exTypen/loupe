@@ -265,6 +265,7 @@ final class WorktreeModel {
         do {
             let s = try await Git.status(in: path)
             branch = s.branch; headOID = s.oid; ahead = s.ahead; behind = s.behind
+            undo.prune(branch: s.branch, oid: s.oid)
             let stashes = (try? await Git.string(["stash", "list", "--format=%H"], in: path)) ?? ""
             stashCount = stashes.split(separator: "\n").count
             await detectOperation()
@@ -323,8 +324,11 @@ final class WorktreeModel {
     /// `git <op> --continue` with the prepared message, or `--abort`.
     func finishOperation(abort: Bool) async {
         guard let op = operation else { return }
+        let start = abort ? nil : await UndoStack.preOperationHead(op, in: path)
         await perform(abort ? "Aborting" : "Continuing") {
-            try await Git.run(["-c", "core.editor=true", op.command, abort ? "--abort" : "--continue"], in: path, env: ["GIT_EDITOR": "true"])
+            try await undo.run(start.map { .reset(op.undoLabel, offerRevert: op != .merge && op != .rebase, from: $0) }) {
+                try await Git.run(["-c", "core.editor=true", op.command, abort ? "--abort" : "--continue"], in: path, env: ["GIT_EDITOR": "true"])
+            }
         }
         await history.reload()
     }
@@ -373,26 +377,28 @@ final class WorktreeModel {
     }
 
     func stage(_ fs: [FileChange]) async {
-        await perform("Staging") { try await Git.run(["add", "-A", "--"] + fs.map(\.path), in: path) }
+        await perform("Staging") {
+            try await undo.run(.files(Self.filesLabel("Stage", fs), [], index: true, toast: false)) { try await Git.run(["add", "-A", "--"] + fs.map(\.path), in: path) }
+        }
     }
 
     func unstage(_ fs: [FileChange]) async {
         // restore --staged fails on an unborn branch; rm --cached handles the initial commit.
         let hasHead = (try? await Git.run(["rev-parse", "--verify", "HEAD"], in: path)) != nil
-        await perform("Unstaging") {
+        await perform("Unstaging") { try await undo.run(.files(Self.filesLabel("Unstage", fs), [], index: true, toast: false)) {
             if hasHead { try await Git.run(["restore", "--staged", "--"] + fs.flatMap { [$0.path] + ($0.origPath.map { [$0] } ?? []) }, in: path) }
             else { try await Git.run(["rm", "--cached", "-r", "-q", "--"] + fs.map(\.path), in: path) }
-        }
+        } }
     }
 
     func discard(_ fs: [FileChange]) async {
-        await perform("Discarding") {
+        await perform("Discarding") { try await undo.run(.files(Self.filesLabel("Discard of", fs), fs.flatMap { [$0.path] + ($0.origPath.map { [$0] } ?? []) })) {
             let untracked = fs.filter { $0.kind == .untracked }.map(\.path)
             let tracked = fs.filter { $0.kind != .untracked }.map(\.path)
             if !tracked.isEmpty { try await Git.run(["restore", "--worktree", "--"] + tracked, in: path) }
             // Untracked files go to the Trash, not oblivion.
             for p in untracked { try FileManager.default.trashItem(at: URL(fileURLWithPath: path).appendingPathComponent(p), resultingItemURL: nil) }
-        }
+        } }
     }
 
     /// Stage, unstage or discard just these diff lines (indices into the shown diff's `lines`): a hunk or a selection.
@@ -408,14 +414,25 @@ final class WorktreeModel {
         case .unstage: args = ["apply", "--cached", "--reverse", "--whitespace=nowarn", "-"]
         case .discard: args = ["apply", "--reverse", "--whitespace=nowarn", "-"]
         }
-        await perform(action == .stage ? "Staging" : action == .unstage ? "Unstaging" : "Discarding") { try await Git.run(args, in: path, stdin: patch) }
+        let name = (f.path as NSString).lastPathComponent
+        let recipe: UndoStack.Recipe = action == .discard ? .files("Discard in \(name)", [f.path])
+            : .files("\(action == .stage ? "Stage" : "Unstage") in \(name)", [], index: true, toast: false)
+        await perform(action == .stage ? "Staging" : action == .unstage ? "Unstaging" : "Discarding") {
+            try await undo.run(recipe) { try await Git.run(args, in: path, stdin: patch) }
+        }
     }
 
     func commit() async {
         let msg = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !msg.isEmpty else { return }
+        let amending = amend
         await perform("Committing") {
-            try await Git.run(["commit", "-F", "-"] + (amend ? ["--amend"] : []), in: path, stdin: Data(msg.utf8))
+            // Undo keeps the changes staged and puts the message back.
+            try await undo.run(.reset(amending ? "Amend" : "Commit", soft: true, offerRevert: !amending) {
+                self.commitMessage = msg; self.amend = amending
+            }) {
+                try await Git.run(["commit", "-F", "-"] + (amending ? ["--amend"] : []), in: path, stdin: Data(msg.utf8))
+            }
             commitMessage = ""; amend = false
         }
     }
@@ -443,7 +460,9 @@ final class WorktreeModel {
     }
 
     func remoteOp(_ label: String, _ args: [String]) async {
-        await perform(label) { try await Git.run(args, in: path, env: gitAuth) }
+        await perform(label) {   // a pull moves HEAD: undo goes back (the pulled commits stay on the remote)
+            try await undo.run(args.first == "pull" ? .reset("Pull", published: false) : nil) { try await Git.run(args, in: path, env: gitAuth) }
+        }
         await app.refreshWorktrees(repo: app.repo(containing: path) ?? path)
     }
 

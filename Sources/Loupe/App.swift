@@ -77,6 +77,7 @@ struct LoupeApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open Repository…") { openRepository(app) }.shortcut(.openRepository)
             }
+            CommandGroup(replacing: .undoRedo) { UndoCommands(app: app) }
             CommandGroup(after: .sidebar) {
                 // NavigationSplitView's own sidebar button goes through the split view controller; so does this.
                 Button("Toggle Sidebar") { NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil) }
