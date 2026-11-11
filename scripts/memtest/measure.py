@@ -24,6 +24,8 @@ ap.add_argument("--tag", default=None)
 ap.add_argument("--pause", type=float, default=None)
 ap.add_argument("--port", type=int, default=8765)
 ap.add_argument("--no-msl", action="store_true", help="without MallocStackLogging (less overhead, no leak stacks)")
+ap.add_argument("--max-footprint", type=float, default=16000, help="MB: stop early (with the end measurements) past this, so the machine never swaps")
+ap.add_argument("--set", action="append", default=[], metavar="KEY=JSON", help="override a scenario key, e.g. minifiedFile='\"large.txt\"'")
 ap.add_argument("--timeout", type=float, default=6 * 3600)
 a = ap.parse_args()
 
@@ -63,6 +65,9 @@ if a.steps:
     sc["steps"] = a.steps.split(",")
 if a.pause is not None:
     sc["pause"] = a.pause
+for kv in a.set:
+    k, v = kv.split("=", 1)
+    sc[k] = json.loads(v)
 scen = os.path.join(OUT, "scenario.json")
 json.dump(sc, open(scen, "w"), indent=1)
 
@@ -172,7 +177,10 @@ for line in app.stdout:
         if i in leaks_at and i != a.iterations:
             n, b = leaks(f"iter{i}"); leak_rows.append((f"iter {i}", n, b))
             last_iter_t = time.time()
-    elif ev == "finished":
+        if fp and fp > a.max_footprint:
+            say(f"footprint {fp} MB is past --max-footprint {a.max_footprint:.0f}: stopping after iteration {i}")
+            ev = "finished"
+    if ev == "finished":
         say("finished: final measurements")
         n, b = leaks("end", graph=True); leak_rows.append(("end", n, b))
         tool("heap", ["heap", "-s", str(pid)], "heap-end.txt")
@@ -211,6 +219,8 @@ def parse_heap(path):
 
 
 h0, h1 = parse_heap(os.path.join(OUT, "heap-start.txt")), parse_heap(os.path.join(OUT, "heap-end.txt"))
+if not h1:
+    say("no heap-end.txt (the run didn't finish): no heap growth table")
 growth = sorted(((k, h1.get(k, (0, 0))[0] - h0.get(k, (0, 0))[0], h1.get(k, (0, 0))[1] - h0.get(k, (0, 0))[1]) for k in set(h0) | set(h1)),
                 key=lambda x: -x[2])
 with open(os.path.join(OUT, "heap-growth.txt"), "w") as f:
