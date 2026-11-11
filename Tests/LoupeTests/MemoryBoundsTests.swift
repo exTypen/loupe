@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import ImageIO
+import CoreGraphics
 @testable import Loupe
 
 /// Caps, eviction and cancellation that keep memory bounded (scripts/memtest found each of these growing without bound).
@@ -178,5 +180,21 @@ struct GitCancellationTests {
         #expect(m.problems.map(\.line) == ["new"])
         #expect(m.problems[0].range.location == m.storage.length - 100)
         #expect(m.truncatedBytes > 0)
+    }
+}
+
+struct LFSPreviewTests {
+    @Test func previewIsDecodedSmall() throws {
+        let w = 3000, h = 1500
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-thumb-\(UUID().uuidString).png")
+        let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, ctx.makeImage()!, nil); #expect(CGImageDestinationFinalize(dest))
+        let (t, size) = try #require(LFSObjectView.thumbnail(url.path))
+        #expect(max(t.width, t.height) <= LFSObjectView.previewPixels)
+        #expect(size == CGSize(width: w, height: h))
+        try? FileManager.default.removeItem(at: url)
     }
 }

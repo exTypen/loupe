@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 import AppKit
 
 // MARK: - Git LFS: detection, pointers, locks
@@ -268,17 +269,32 @@ struct LFSObjectView: View {
         let common = (try? await Git.string(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: dir))?.trimmingCharacters(in: .whitespacesAndNewlines)
         let disk = newInWorktree ? (dir as NSString).appendingPathComponent(path) : nil
         let sides = [(lfs.old, nil as String?), (lfs.new, disk)].compactMap { p, f in p.map { ($0, f) } }
+        struct Thumbs: @unchecked Sendable { var images: [String: (CGImage, CGSize)] }   // CGImage is immutable
         let found = await Task.detached(priority: .userInitiated) {
-            var out: [String: Data] = [:]
+            var out: [String: (CGImage, CGSize)] = [:]
             for (p, file) in sides where p.size < 64 << 20 {
                 let fm = FileManager.default
                 let object = common.map { p.objectPath(commonDir: $0) }.flatMap { fm.fileExists(atPath: $0) ? $0 : nil }
                 // The file on disk is that version only when it's the object itself, not a pointer.
                 let onDisk = file.flatMap { f in (try? fm.attributesOfItem(atPath: f)[.size] as? NSNumber)?.int64Value == p.size ? f : nil }
-                if let src = object ?? onDisk, let data = fm.contents(atPath: src) { out[p.oid] = data }
+                if let src = object ?? onDisk, let t = Self.thumbnail(src) { out[p.oid] = t }
             }
-            return out
+            return Thumbs(images: out)
         }.value
-        images = found.compactMapValues(NSImage.init(data:))
+        images = found.images.mapValues { NSImage(cgImage: $0.0, size: $0.1) }   // sized as the original: the tooltip gives its dimensions
+    }
+
+    static let previewPixels = 720
+
+    /// A preview at most `previewPixels` on its long side, decoded at that size (a 60 MB PNG no longer decodes whole),
+    /// and the original's pixel size.
+    nonisolated static func thumbnail(_ path: String, maxPixels: Int = previewPixels) -> (CGImage, CGSize)? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceThumbnailMaxPixelSize: maxPixels, kCGImageSourceShouldCacheImmediately: true]
+        guard let t = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        let w = props?[kCGImagePropertyPixelWidth] as? Int ?? t.width, h = props?[kCGImagePropertyPixelHeight] as? Int ?? t.height
+        return (t, CGSize(width: w, height: h))
     }
 }
