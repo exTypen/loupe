@@ -96,3 +96,28 @@ struct GitCancellationTests {
         #expect(!running.wasCancelled)
     }
 }
+
+@MainActor struct PullDetailsEvictionTests {
+    static func pr(_ n: Int) -> PullRequest {
+        PullRequest(id: n, number: n, title: "t", body: nil, state: "open", draft: nil, user: FUser(login: "a", avatar_url: nil),
+                    head: FBranchRef(ref: "b", sha: "1", label: nil), base: FBranchRef(ref: "main", sha: "0", label: nil),
+                    additions: nil, deletions: nil, changed_files: nil, comments: nil, mergeable: nil, merged: nil, merged_at: nil,
+                    requested_reviewers: nil, html_url: "", updated_at: "", created_at: nil)
+    }
+
+    @Test func keepsOnlyTheMostRecent() {
+        let l = PullListModel()
+        let c = ForgejoClient(baseURL: "http://127.0.0.1:1", token: "x")
+        let r = RemoteRepo(remoteURL: "http://127.0.0.1:1/o/r.git")!
+        let local = LocalCheckout(dir: "/tmp", remote: "origin")
+        for n in 1...5 { l.selected = n; _ = l.detail(for: Self.pr(n), client: c, repo: r, local: local) }
+        #expect(Set(l.details.keys) == [4, 5])
+        let five = l.details[5]
+        _ = l.detail(for: Self.pr(4), client: c, repo: r, local: local)   // reopening reuses
+        l.selected = 3; _ = l.detail(for: Self.pr(3), client: c, repo: r, local: local)
+        #expect(Set(l.details.keys) == [3, 4])
+        #expect(five != nil)
+        l.selected = nil
+        #expect(l.details.count <= PullListModel.keptDetails)
+    }
+}

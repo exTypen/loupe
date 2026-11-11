@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import CryptoKit
 
 @MainActor @Observable
 final class PullListModel {
@@ -12,8 +13,12 @@ final class PullListModel {
     var loadingMore = false
     private var page = 1
     private var exhausted = false
-    var selected: Int?                         // PR number
-    var details: [Int: PullRequestModel] = [:]
+    var selected: Int? { didSet { if selected == nil { trimDetails() } } }   // PR number
+    // Opened PRs, most recent last. A 5,000-file PR's model holds hundreds of MB: only the last few stay, and going
+    // back to the list lets go of the rest. Not observed: filled from a view body, and nothing redraws for it.
+    @ObservationIgnored var details: [Int: PullRequestModel] = [:]
+    @ObservationIgnored private var recentDetails: [Int] = []
+    static let keptDetails = 2
     @ObservationIgnored private var inFlight: String?   // state of the load running now
     @ObservationIgnored private var again = false
     @ObservationIgnored private var saving: Task<Void, Never>?
@@ -83,10 +88,20 @@ final class PullListModel {
     }
 
     func detail(for pr: PullRequest, client: ForgejoClient, repo: RemoteRepo, local: LocalCheckout) -> PullRequestModel {
+        recentDetails.removeAll { $0 == pr.number }
+        recentDetails.append(pr.number)
         if let d = details[pr.number] { return d }
         let d = PullRequestModel(pr: pr, client: client, repo: repo, local: local)
         details[pr.number] = d
+        trimDetails()
         return d
+    }
+
+    /// Keeps the open PR and the most recently opened ones, up to `keptDetails`.
+    func trimDetails() {
+        let keep = Set(recentDetails.suffix(Self.keptDetails) + (selected.map { [$0] } ?? []))
+        recentDetails.removeAll { !keep.contains($0) }
+        for n in details.keys where !keep.contains(n) { details[n] = nil }
     }
 }
 
@@ -101,7 +116,7 @@ final class PullRequestModel {
     var files: [FileDiff] = [] { didSet { fileDerived = nil; viewedDerived = nil; viewedUnder = [:]; commentableCache = nil } }   // tree order (dirs first), so next/prev follows the sidebar
     var collapsed: Set<String> = []
     private var index: [String: Int] = [:]
-    @ObservationIgnored private var lastDiff: Data?
+    @ObservationIgnored private var lastDiffDigest: Data?   // of the diff the files came from: a poll with the same one changes nothing
     @ObservationIgnored private var localDiffSHA: String?   // head the local fallback diff was made at
     private var fingerprints: [String: UInt64] = [:] { didSet { viewedDerived = nil; viewedUnder = [:] } }
     @ObservationIgnored private var reloadQueued = false
@@ -218,14 +233,18 @@ final class PullRequestModel {
             async let commitsReq = client.pullCommits(repo, pr.number)
             pr = try await prReq
             if checks.sha != pr.head.sha { checks.sha = pr.head.sha; Task { await checks.refresh() } }   // new push
-            let data = try await diffData()
             // Polling: an unchanged diff must not rebuild the table (scroll, selection and highlighting would reset).
-            if data != lastDiff { lastDiff = data
-            (files, fingerprints) = await Task.detached(priority: .userInitiated) {
-                let fs = DiffParser.parse(data).sorted { FileTree.treeOrder($0.path, $1.path) }
-                return (fs, Dictionary(fs.map { ($0.path, Self.fingerprint($0)) }, uniquingKeysWith: { a, _ in a }))
-            }.value
-            index = Dictionary(files.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { a, _ in a })
+            // nil: the local diff of a head already diffed.
+            if let data = try await diffData() {
+                let digest = await Task.detached(priority: .userInitiated) { Data(SHA256.hash(data: data)) }.value
+                if digest != lastDiffDigest {
+                    lastDiffDigest = digest
+                    (files, fingerprints) = await Task.detached(priority: .userInitiated) {
+                        let fs = DiffParser.parse(data).sorted { FileTree.treeOrder($0.path, $1.path) }
+                        return (fs, Dictionary(fs.map { ($0.path, Self.fingerprint($0)) }, uniquingKeysWith: { a, _ in a }))
+                    }.value
+                    index = Dictionary(files.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { a, _ in a })
+                }
             }
             if selectedPath == nil || !files.contains(where: { $0.path == selectedPath }) {
                 selectedPath = files.first { !isViewed($0) }?.path ?? files.first?.path
@@ -240,8 +259,9 @@ final class PullRequestModel {
     }
 
     /// The server's diff, or for a PR too big for GitHub to serve, the same three-dot diff computed by local git.
-    private func diffData() async throws -> Data {
-        if localDiffSHA == pr.head.sha, let lastDiff { return lastDiff }   // polling: no new push, skip the fetch
+    /// nil when the local fallback already diffed this head (polling, no new push: skip the work).
+    private func diffData() async throws -> Data? {
+        if localDiffSHA == pr.head.sha, lastDiffDigest != nil { return nil }
         do { return try await client.diff(repo, pr.number) } catch is ForgejoClient.DiffTooLarge {}
         try await fetchHead()
         // Diff from the base sha, not the branch tip: once the PR is merged the tip contains it and `tip...head` is
