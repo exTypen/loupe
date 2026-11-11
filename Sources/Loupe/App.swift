@@ -164,6 +164,7 @@ struct ContentView: View {
         NavigationSplitView {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 360)
+                .background(NoSidebarTitlebarSeparator())
         } detail: {
             detail
         }
@@ -703,4 +704,38 @@ struct AddWorktreeSheet: View {
     private func isLocalBranch(_ b: String) async throws -> Bool {
         (try? await Git.run(["show-ref", "--verify", "--quiet", "refs/heads/\(b)"], in: repo)) != nil
     }
+}
+
+/// In full screen the toolbar moves to its own window and AppKit draws the sidebar split item's titlebar separator:
+/// a dark hairline across the sidebar under the toolbar. Windowed, the unified toolbar hides it. Turn it off on the
+/// split item itself (SwiftUI exposes no modifier), and again after full-screen transitions, which rebuild it.
+struct NoSidebarTitlebarSeparator: NSViewRepresentable {
+    final class Probe: NSView {
+        private var observers: [NSObjectProtocol] = []
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            guard let window else { return }
+            apply()
+            for name in [NSWindow.didEnterFullScreenNotification, NSWindow.willEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.apply() }
+                })
+            }
+        }
+        private func apply() {
+            var v: NSView? = self
+            while let cur = v {   // the nearest split view controller holding this column
+                if let split = (cur.nextResponder as? NSSplitViewController) ?? (cur as? NSSplitView)?.delegate as? NSSplitViewController {
+                    split.splitViewItems.filter { $0.behavior == .sidebar }.forEach { $0.titlebarSeparatorStyle = .none }
+                    return
+                }
+                v = cur.superview
+            }
+        }
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    }
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ v: Probe, context: Context) {}
 }

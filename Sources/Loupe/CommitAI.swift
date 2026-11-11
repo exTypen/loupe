@@ -192,8 +192,9 @@ enum CommitAI {
         if amend, (try? await Git.run(["rev-parse", "--verify", "-q", "HEAD~1"], in: dir)) != nil { diffArgs += ["--cached", "HEAD~1"] }
         else if hasStaged { diffArgs.append("--cached") }
         else if (try? await Git.run(["rev-parse", "--verify", "-q", "HEAD"], in: dir)) != nil { diffArgs.append("HEAD") }
-        async let diff = Git.string(diffArgs, in: dir)
-        async let stat = Git.string(diffArgs.filter { $0 != "-U2" } + ["--stat"], in: dir)
+        let args = diffArgs
+        async let diff = Git.string(args, in: dir)
+        async let stat = Git.string(args.filter { $0 != "-U2" } + ["--stat"], in: dir)
         async let recent = Git.run(["log", "-n", "15", "--format=%s"], in: dir, allowFailure: true)
         async let untracked = hasStaged || amend ? "" : Git.string(["ls-files", "--others", "--exclude-standard"], in: dir)
         var patch = try await diff
