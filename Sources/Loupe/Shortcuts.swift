@@ -51,6 +51,7 @@ struct Shortcut: Codable, Hashable {
 enum ShortcutAction: String, CaseIterable, Identifiable {
     case openRepository, goToWorktree, toggleSidebar, changesTab, historyTab, pullsTab, refresh, commit, nextFile, previousFile, markViewed, back
     case fullMode, navigateBack, navigateForward
+    case nextConflict, previousConflict, useOurs, useTheirs
     var id: String { rawValue }
 
     var title: String {
@@ -70,6 +71,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .fullMode: "Compact / Full Mode"
         case .navigateBack: "Navigate Back"
         case .navigateForward: "Navigate Forward"
+        case .nextConflict: "Next Conflict"
+        case .previousConflict: "Previous Conflict"
+        case .useOurs: "Use Ours for Conflict"
+        case .useTheirs: "Use Theirs for Conflict"
         }
     }
 
@@ -77,7 +82,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         switch self {
         case .openRepository, .goToWorktree, .toggleSidebar, .refresh: "General"
         case .changesTab, .historyTab, .pullsTab: "Tabs"
-        case .commit: "Changes"
+        case .commit, .nextConflict, .previousConflict, .useOurs, .useTheirs: "Changes"
         case .nextFile, .previousFile, .markViewed, .back, .fullMode, .navigateBack, .navigateForward: "Review"
         }
     }
@@ -99,6 +104,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .fullMode: Shortcut("f", [.command, .option])
         case .navigateBack: Shortcut("-", .control)
         case .navigateForward: Shortcut("-", [.control, .shift])
+        case .nextConflict: Shortcut("down", [.command, .option])
+        case .previousConflict: Shortcut("up", [.command, .option])
+        case .useOurs: Shortcut("left", [.command, .option])
+        case .useTheirs: Shortcut("right", [.command, .option])
         }
     }
 }
