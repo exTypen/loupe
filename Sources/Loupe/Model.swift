@@ -47,7 +47,7 @@ final class AppModel {
     var checksOverlay: (model: ChecksModel, baseURL: String)?   // window-wide CI modal
     var tokens: [String: String] = [:]                          // account id → token, read from the Keychain once at launch
     var tokensLoaded = false
-    private var models: [String: WorktreeModel] = [:]
+    @ObservationIgnored private var models: [String: WorktreeModel] = [:]   // a cache filled during view updates; nothing observes it
 
     init() {
         selection = space.selection

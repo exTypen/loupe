@@ -10,6 +10,9 @@ import AppKit
     let fj17 = CIFeatures.detect(github: false, version: "17.0.0-100-2254cb0+gitea-1.22.0")
     #expect(fj17.forge == .forgejo && !fj17.githubShaped && fj17.actions)
     #expect(fj17.rerunRun && fj17.rerunJob && fj17.cancel && !fj17.rerunFailed)
+    // Newer Forgejo releases report a bare version, without "+gitea-": still Forgejo, not Gitea.
+    let bare = CIFeatures.detect(github: false, version: "17.0.0")
+    #expect(bare.forge == .forgejo && !bare.githubShaped && bare.rerunRun)
     let fj16 = CIFeatures.detect(github: false, version: "16.0.2+gitea-1.22.0")
     #expect(fj16.cancel && !fj16.rerunRun && !fj16.rerunJob)
     let fj11 = CIFeatures.detect(github: false, version: "11.0.16+gitea-1.22.0")

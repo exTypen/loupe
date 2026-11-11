@@ -25,7 +25,9 @@ struct CIFeatures: Equatable, Sendable {
     static func detect(github: Bool, version: String?) -> CIFeatures {
         if github { return CIFeatures(forge: .github, version: nil, rerunRun: true, rerunFailed: true, rerunJob: true, cancel: true) }
         guard let version, let v = numbers(version) else { return CIFeatures(forge: .forgejo, version: version) }
-        if version.contains("+gitea-") || version.localizedCaseInsensitiveContains("forgejo") {
+        // Gitea has always been 1.x; Forgejo started at 7 and newer releases drop the "+gitea-" suffix, so a plain
+        // "17.0.0" is Forgejo too (taking it for Gitea decoded Forgejo's runs as GitHub's and failed every refresh).
+        if v.major >= 2 || version.contains("+gitea-") || version.localizedCaseInsensitiveContains("forgejo") {
             return CIFeatures(forge: .forgejo, version: version, rerunRun: v.major >= 17, rerunJob: v.major >= 17, cancel: v.major >= 16)
         }
         let at = { (major: Int, minor: Int) in v.major > major || v.major == major && v.minor >= minor }

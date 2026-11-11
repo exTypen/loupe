@@ -18,6 +18,11 @@ swift build -c release
 APP=build/Loupe.app
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/Loupe "$APP/Contents/MacOS/Loupe"
+# macOS draws an app in its pre-26 look (no Liquid Glass sidebar, toolbar or controls) unless the binary says it was
+# built with the macOS 26+ SDK. Since Xcode 27.2, SwiftPM's link stamps LC_BUILD_VERSION's sdk with the deployment
+# target (15.0) instead, so stamp the SDK we actually built against. Signing below covers the rewritten binary.
+xcrun vtool -set-build-version macos 15.0 "$(xcrun --show-sdk-version)" -replace \
+  -output "$APP/Contents/MacOS/Loupe" "$APP/Contents/MacOS/Loupe"
 # ditto keeps the framework's Versions/Current symlinks, which codesign requires.
 ditto .build/release/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
 otool -l "$APP/Contents/MacOS/Loupe" | grep -q "@executable_path/../Frameworks" \
