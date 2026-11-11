@@ -58,3 +58,41 @@ struct CodeIndexBoundsTests {
         #expect(await t.value.isEmpty)
     }
 }
+
+struct GitCancellationTests {
+    @Test func readOnlyDetection() {
+        #expect(Git.isReadOnly(["show", "HEAD:a"]))
+        #expect(Git.isReadOnly(["-c", "core.quotepath=off", "diff", "--no-color"]))
+        #expect(!Git.isReadOnly(["commit", "-m", "x"]))
+        #expect(!Git.isReadOnly(["-c", "core.editor=true", "rebase", "--continue"]))
+    }
+
+    /// Cancelling stops a running process at once.
+    @Test func cancellingStopsTheProcess() throws {
+        let running = Git.RunningProcess(killable: true)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sleep"); p.arguments = ["30"]
+        #expect(try running.start(p))
+        let start = Date()
+        running.cancel()
+        p.waitUntilExit()
+        #expect(Date().timeIntervalSince(start) < 3)
+        #expect(running.wasCancelled)
+    }
+
+    /// A read cancelled before it starts never launches git.
+    @Test func cancelledBeforeLaunch() async {
+        let t = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await Git.run(["status"], in: FileManager.default.temporaryDirectory.path)
+        }
+        let r = await t.result
+        if case .failure(let e) = r { #expect(e is CancellationError) } else { Issue.record("expected cancellation") }
+    }
+
+    @Test func writesAreNotKilled() async throws {
+        let running = Git.RunningProcess(killable: false)
+        running.cancel()
+        #expect(!running.wasCancelled)
+    }
+}

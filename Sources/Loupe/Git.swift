@@ -18,7 +18,10 @@ enum Git {
     @discardableResult
     static func run(_ args: [String], in dir: String, stdin: Data? = nil, allowFailure: Bool = false, env extra: [String: String] = [:]) async throws -> Data {
         let enqueued = Date()
-        return try await withCheckedThrowingContinuation { cont in
+        // A cancelled read (the view that asked went away) stops its git: otherwise a `git show` of a huge file kept
+        // running and buffering after nobody wanted it. Commands that change the repository always run to the end.
+        let running = RunningProcess(killable: isReadOnly(args))
+        return try await withTaskCancellationHandler { try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: binary)
@@ -36,7 +39,8 @@ enum Git {
                 p.standardError = err
                 p.standardInput = stdin == nil ? FileHandle.nullDevice : inp
                 let started = Date()
-                do { try p.run() } catch { cont.resume(throwing: error); return }
+                do { guard try running.start(p) else { cont.resume(throwing: CancellationError()); return } }
+                catch { cont.resume(throwing: error); return }
                 if let stdin {
                     DispatchQueue.global().async {
                         inp.fileHandleForWriting.write(stdin)
@@ -52,14 +56,52 @@ enum Git {
                 p.waitUntilExit()
                 g.wait()
                 if trace { FileHandle.standardError.write(Data(String(format: "[git %.0fms queued+run] %@ (%@)\n", Date().timeIntervalSince(enqueued) * 1000, args.prefix(3).joined(separator: " "), String(format: "%.0fms run", Date().timeIntervalSince(started) * 1000)).utf8)) }
-                if p.terminationStatus != 0 && !allowFailure {
+                if running.wasCancelled {
+                    cont.resume(throwing: CancellationError())
+                } else if p.terminationStatus != 0 && !allowFailure {
                     let msg = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                     cont.resume(throwing: GitError(message: msg.isEmpty ? "git \(args.first ?? "") failed (\(p.terminationStatus))" : msg))
                 } else {
                     cont.resume(returning: outData)
                 }
             }
+        } } onCancel: { running.cancel() }
+    }
+
+    /// Subcommands that only read: safe to stop halfway.
+    static func isReadOnly(_ args: [String]) -> Bool {
+        var i = 0
+        while i < args.count, args[i].hasPrefix("-") { i += args[i] == "-c" || args[i] == "-C" ? 2 : 1 }
+        guard i < args.count else { return false }
+        return ["show", "diff", "log", "grep", "ls-files", "ls-tree", "cat-file", "rev-list", "blame", "diff-tree",
+                "merge-base", "for-each-ref", "status", "rev-parse", "show-ref"].contains(args[i])
+    }
+
+    /// The process behind one `run`, for its cancellation handler (which can fire before the process exists).
+    final class RunningProcess: @unchecked Sendable {
+        private let lock = NSLock()
+        private var process: Process?
+        private var cancelled = false
+        let killable: Bool
+        init(killable: Bool) { self.killable = killable }
+
+        /// Launches `p` unless the run was already cancelled (false then).
+        func start(_ p: Process) throws -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if cancelled && killable { return false }
+            try p.run()
+            process = p
+            return true
         }
+
+        func cancel() {
+            lock.lock(); defer { lock.unlock() }
+            guard killable else { return }
+            cancelled = true
+            if let p = process, p.isRunning { p.terminate() }
+        }
+
+        var wasCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     }
 
     static func string(_ args: [String], in dir: String) async throws -> String {
