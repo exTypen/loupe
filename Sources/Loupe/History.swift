@@ -236,8 +236,8 @@ final class HistoryModel {
     // MARK: Actions on the worktree
 
     /// Runs a git command that may stop on conflicts; conflicts aren't an error, they're work for the Changes tab.
-    private func run(_ args: [String]) async {
-        do { try await Git.run(args, in: path) }
+    private func run(_ args: [String], undo: UndoStack.Recipe? = nil) async {
+        do { try await UndoStack.for(path).run(undo) { try await Git.run(args, in: path) } }
         catch {
             let unmerged = (try? await Git.string(["diff", "--name-only", "--diff-filter=U"], in: path)) ?? ""
             if unmerged.isEmpty { self.error = error.localizedDescription } else { stoppedOnConflicts = true }
@@ -245,10 +245,18 @@ final class HistoryModel {
         await reload()
     }
 
-    func cherryPick(_ c: Commit) async { await run(["cherry-pick"] + (c.parents.count > 1 ? ["-m", "1"] : []) + [c.sha]) }
-    func revert(_ c: Commit) async { await run(["revert", "--no-edit"] + (c.parents.count > 1 ? ["-m", "1"] : []) + [c.sha]) }
-    func applyStash(_ c: Commit, pop: Bool) async { if let s = c.selector { await run(["stash", pop ? "pop" : "apply", s]) } }
-    func dropStash(_ c: Commit) async { if let s = c.selector { await run(["stash", "drop", s]) } }
+    func cherryPick(_ c: Commit) async {
+        await run(["cherry-pick"] + (c.parents.count > 1 ? ["-m", "1"] : []) + [c.sha], undo: .reset("Cherry-pick of \(c.short)", offerRevert: true))
+    }
+    func revert(_ c: Commit) async {
+        await run(["revert", "--no-edit"] + (c.parents.count > 1 ? ["-m", "1"] : []) + [c.sha], undo: .reset("Revert of \(c.short)", offerRevert: true))
+    }
+    func applyStash(_ c: Commit, pop: Bool) async {
+        if let s = c.selector { await run(["stash", pop ? "pop" : "apply", s], undo: .stash(pop ? "Pop Stash" : "Apply Stash", sha: c.sha, message: c.subject, applied: true, dropped: pop)) }
+    }
+    func dropStash(_ c: Commit) async {
+        if let s = c.selector { await run(["stash", "drop", s], undo: .stash("Drop Stash", sha: c.sha, message: c.subject, applied: false, dropped: true)) }
+    }
 
     func move(_ delta: Int) {
         guard let i = commits.firstIndex(where: { $0.sha == selectedSHA }) else { return select(commits.first?.sha) }
@@ -314,7 +322,7 @@ struct HistoryView: View {
         .onChange(of: model.stoppedOnConflicts) { _, stopped in if stopped { model.stoppedOnConflicts = false; tab = "changes" } }
         .confirmationDialog("Drop \(dropping?.selector ?? "stash")?", isPresented: Binding(get: { dropping != nil }, set: { if !$0 { dropping = nil } })) {
             Button("Drop Stash", role: .destructive) { if let d = dropping { Task { await model.dropStash(d) } } }
-        } message: { Text("The stashed changes are deleted.") }
+        } message: { Text("The stash is removed from the list. Edit › Undo brings it back.") }
         .alert("Git", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }

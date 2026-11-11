@@ -16,6 +16,7 @@ struct WorktreeView: View {
             default: ChangesView(model: model)
             }
         }
+        .overlay(alignment: .bottom) { UndoToast(model: model) }
         .navigationTitle(model.headOID.isEmpty ? "" : model.branch ?? "detached HEAD")
         .navigationSubtitle((model.path as NSString).abbreviatingWithTildeInPath)
         .toolbar(removing: .title)   // drawn by the branch button below instead
@@ -203,7 +204,11 @@ struct BranchPicker: View {
                 // "origin/x" with no local x (those are hidden) → new local x tracking it.
                 let args = remotes.contains(b) ? ["switch", "-c", String(b.split(separator: "/", maxSplits: 1)[1]), "--track", b] : ["switch", b]
                 // Conflicting uncommitted changes, or a branch checked out in another worktree: git refuses and says why.
-                try await Git.run(args, in: model.path)
+                let back = model.branch.map { ["switch", $0] } ?? ["switch", "--detach", model.headOID], dir = model.path
+                try await model.undo.track {
+                    try await Git.run(args, in: dir)
+                    await model.recordUndo("Switch to \(b)") { try await Git.run(back, in: dir) }
+                }
                 await app.refreshWorktrees(repo: repo)
                 dismiss()
             } catch { self.error = error.localizedDescription }
@@ -289,7 +294,7 @@ struct ChangesView: View {
             Button("Discard \(confirmDiscard?.count ?? 0) file(s)", role: .destructive) {
                 if let fs = confirmDiscard { Task { await model.discard(fs) } }
             }
-        } message: { Text("Tracked changes are reverted; untracked files are moved to the Trash.") }
+        } message: { Text("Tracked changes are reverted; untracked files are moved to the Trash. Edit › Undo brings them back.") }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in
             let list = model.listed
             guard let d = n.object as? Int, let i = list.firstIndex(where: { $0.id == model.selectedFileID }) else { return }
@@ -495,7 +500,7 @@ struct DiffPane: View {
                                       if a == .discard {
                                           let alert = NSAlert()
                                           alert.messageText = "Discard these changes?"
-                                          alert.informativeText = "The change is removed from the working tree. This can't be undone."
+                                          alert.informativeText = "The change is removed from the working tree. Edit › Undo brings it back."
                                           alert.addButton(withTitle: "Discard").hasDestructiveAction = true
                                           alert.addButton(withTitle: "Cancel")
                                           guard alert.runModal() == .alertFirstButtonReturn else { return }
