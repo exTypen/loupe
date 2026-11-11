@@ -22,13 +22,15 @@ let package = Package(
     dependencies: [
         // The grammars depend on this URL (it redirects to tree-sitter/swift-tree-sitter); one identity avoids a clash.
         .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.25.0"),
+        // Auto-update. A binary framework: scripts/bundle.sh embeds it in Contents/Frameworks.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.1"),
     ] + grammars.map { g in
         g.version.contains("-") ? .package(url: g.url, revision: g.version) : .package(url: g.url, exact: Version(g.version)!)
     },
     targets: [
         .executableTarget(
             name: "Loupe",
-            dependencies: [.product(name: "SwiftTreeSitter", package: "SwiftTreeSitter")]
+            dependencies: [.product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"), .product(name: "Sparkle", package: "Sparkle")]
                 + grammars.map { .product(name: $0.product, package: $0.package) },
             path: "Sources/Loupe",
             swiftSettings: [.swiftLanguageMode(.v5)]

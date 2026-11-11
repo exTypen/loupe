@@ -48,6 +48,7 @@ struct GeneralSettings: View {
             .pickerStyle(.segmented)
             .onChange(of: appearance) { (Appearance(rawValue: appearance) ?? .system).apply() }
             CommitAISettings()
+            UpdateSettings()
         }
         .formStyle(.grouped)
     }

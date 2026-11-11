@@ -4,16 +4,28 @@
 # Signing identity: $LOUPE_SIGN_ID, else the first "Developer ID Application" certificate, else the first
 # "Apple Development" one, else ad-hoc. A stable identity matters: the Keychain ACL on stored tokens is tied to
 # the code signature, and an ad-hoc signature changes on every build, so each launch re-prompts for access.
+# Auto-update: the Sparkle EdDSA public key comes from $LOUPE_SPARKLE_PUBLIC_KEY, else scripts/sparkle-public-key.txt
+# (one-time key setup is described in scripts/release.sh). Without a key the app builds but hides updating.
 set -e
 cd "$(dirname "$0")/.."
 VERSION="${LOUPE_VERSION:-0.1.0}"
-BUILD="${LOUPE_BUILD:-1}"
+# CFBundleVersion must grow with every release (Sparkle compares it): x.y.z → x*10000 + y*100 + z, so 0.8.0 → 800.
+BUILD="${LOUPE_BUILD:-$(echo "$VERSION" | awk -F. '{ print $1 * 10000 + $2 * 100 + $3 }')}"
 
 swift build -c release
 APP=build/Loupe.app
-rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/Loupe "$APP/Contents/MacOS/Loupe"
+# ditto keeps the framework's Versions/Current symlinks, which codesign requires.
+ditto .build/release/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
+otool -l "$APP/Contents/MacOS/Loupe" | grep -q "@executable_path/../Frameworks" \
+  || install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/Loupe"
 cp scripts/AppIcon.icns "$APP/Contents/Resources/"
+
+SPARKLE_KEY="${LOUPE_SPARKLE_PUBLIC_KEY:-$(grep -v '^#' scripts/sparkle-public-key.txt 2>/dev/null | tr -d '[:space:]')}"
+if [ -n "$SPARKLE_KEY" ]; then SPARKLE_KEY_PLIST="<key>SUPublicEDKey</key><string>$SPARKLE_KEY</string>"
+else echo "warning: no Sparkle public key (LOUPE_SPARKLE_PUBLIC_KEY or scripts/sparkle-public-key.txt): this build will not offer updates" >&2; fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,6 +42,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
+  <key>SUFeedURL</key><string>https://github.com/exTypen/loupe/releases/latest/download/appcast.xml</string>
+  ${SPARKLE_KEY_PLIST:-}
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>86400</integer>
 </dict></plist>
 PLIST
 
@@ -37,10 +53,19 @@ identity() { security find-identity -v -p codesigning | awk -F'"' -v k="$1" 'ind
 SIGN_ID="${LOUPE_SIGN_ID:-$(identity "Developer ID Application")}"
 SIGN_ID="${SIGN_ID:-$(identity "Apple Development")}"
 case "$SIGN_ID" in
-  # Notarization requires the hardened runtime and a secure timestamp.
-  "Developer ID Application"*) codesign --force --options runtime --timestamp -s "$SIGN_ID" "$APP" ;;
-  *) codesign --force -s "${SIGN_ID:--}" "$APP" ;;
+  # Notarization requires the hardened runtime and a secure timestamp, on nested code too.
+  "Developer ID Application"*) sign() { codesign --force --options runtime --timestamp -s "$SIGN_ID" "$@"; } ;;
+  *) sign() { codesign --force -s "${SIGN_ID:--}" "$@"; } ;;
 esac
+# Inside-out, as Sparkle documents: its helpers, the framework, then the app. Not --deep, which drops entitlements.
+SP="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+sign "$SP/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$SP/XPCServices/Downloader.xpc"
+sign "$SP/Autoupdate"
+sign "$SP/Updater.app"
+sign "$APP/Contents/Frameworks/Sparkle.framework"
+sign "$APP"
+codesign --verify --deep --strict "$APP"
 echo "Signed with: ${SIGN_ID:-ad-hoc}"
-echo "Built $APP ($VERSION)"
+echo "Built $APP ($VERSION, build $BUILD)"
 if [ "$1" = "--install" ]; then rm -rf /Applications/Loupe.app && cp -R "$APP" /Applications/ && echo "Installed /Applications/Loupe.app"; fi
