@@ -76,12 +76,22 @@ enum RebaseTodo {
     /// Index of the first item the plan changes (order or action), nil when the plan does nothing. Commits before
     /// it keep their SHAs: git fast-forwards over unchanged picks.
     static func firstChange(original: [String], plan: [RebaseItem]) -> Int? {
+        var first: Int? = plan.count < original.count ? plan.count : nil
         for (i, item) in plan.enumerated() {
-            if i >= original.count || original[i] != item.sha { return i }
-            if item.action == .reword, item.effectiveMessage != item.message { return i }
-            if item.action != .pick && item.action != .reword { return i }
+            if i >= original.count || original[i] != item.sha
+                || (item.action == .reword && item.effectiveMessage != item.message)
+                || (item.action != .pick && item.action != .reword) { first = i; break }
         }
-        return plan.count < original.count ? plan.count : nil
+        // A squash or fixup also rewrites the commit it melds into, which may sit before the first change.
+        var head: Int?
+        for (i, item) in plan.enumerated() {
+            switch item.action {
+            case .pick, .reword, .edit: head = i
+            case .squash, .fixup: if let h = head, h < (first ?? .max) { first = h }
+            case .drop: break
+            }
+        }
+        return first
     }
 
     /// The commits the plan rewrites that a remote already has.
@@ -122,7 +132,7 @@ extension Git {
     static func rebaseRange(from oldest: String, in dir: String) async throws -> RebaseRange {
         let base = (try? await string(["rev-parse", "--verify", "-q", "\(oldest)^"], in: dir))?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rev = base.map { "\($0)..HEAD" } ?? "HEAD"
-        async let log = string(["log", "--reverse", "-n", "\(rebaseLimit + 1)", "--format=%H%x1f%P%x1f%B%x1e", rev, "--"], in: dir)
+        async let log = string(["log", "--no-show-signature", "--reverse", "-n", "\(rebaseLimit + 1)", "--format=%H%x1f%P%x1f%B%x1e", rev, "--"], in: dir)
         async let local = string(["rev-list", "-n", "\(rebaseLimit + 1)", rev, "--not", "--remotes", "--"], in: dir)
         let items = RebaseTodo.parseLog(try await log)
         if items.count > rebaseLimit { throw GitError(message: "More than \(rebaseLimit) commits to rewrite. Use a terminal for a rebase this big.") }
@@ -141,6 +151,13 @@ extension Git {
     /// hook) and waits in the git dir for Continue or Abort.
     @discardableResult
     static func runRebase(_ range: RebaseRange, plan: [RebaseItem], in dir: String) async throws -> Bool {
+        let gitDir = try await string(["rev-parse", "--path-format=absolute", "--git-dir"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+        func has(_ name: String) -> Bool { FileManager.default.fileExists(atPath: (gitDir as NSString).appendingPathComponent(name)) }
+        // Otherwise git's "already a rebase in progress" would look like our own stop below.
+        if let busy = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].first(where: has) {
+            throw GitError(message: busy.hasPrefix("rebase") ? "A rebase is already in progress. Continue or abort it first."
+                                                             : "A \(busy == "MERGE_HEAD" ? "merge" : busy == "REVERT_HEAD" ? "revert" : "cherry-pick") is in progress. Finish or abort it first.")
+        }
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-rebase-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
         let built = try RebaseTodo.build(plan, messageDir: tmp)
@@ -151,8 +168,7 @@ extension Git {
         var failure: Error?
         do { try await run(["rebase", "-i", "--autostash", "--no-autosquash", range.base ?? "--root"], in: dir, env: env) }
         catch { failure = error }
-        let gitDir = try await string(["rev-parse", "--path-format=absolute", "--git-dir"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
-        let stopped = FileManager.default.fileExists(atPath: (gitDir as NSString).appendingPathComponent("rebase-merge"))
+        let stopped = has("rebase-merge")
         // The exec lines still to run read their messages from here; keep it until the rebase is over.
         if !stopped { try? FileManager.default.removeItem(atPath: tmp) }
         if let failure, !stopped { throw failure }
@@ -200,17 +216,18 @@ final class Rebaser {
         var text: String
     }
 
-    unowned let history: HistoryModel
+    // weak: a rebase still running when the worktree goes away must not touch a freed model
+    weak var history: HistoryModel?
+    let path: String
     var local: Set<String> = []       // HEAD's commits no remote has: these can be dragged
     var dragging: String?
-    var dropTarget: (sha: String, zone: RebaseTodo.Zone)?
+    var dropTarget: (sha: String, zone: RebaseTodo.Zone, fixup: Bool)?
     var pending: Pending?
     var planner: Planner?
     var reword: Reword?
     var running = false
 
-    init(history: HistoryModel) { self.history = history }
-    private var path: String { history.path }
+    init(history: HistoryModel) { self.history = history; path = history.path }
 
     func refreshLocal() async {
         let out = (try? await Git.string(["rev-list", "-n", "\(Git.rebaseLimit)", "HEAD", "--not", "--remotes", "--"], in: path)) ?? ""
@@ -222,12 +239,12 @@ final class Rebaser {
         do {
             let range = try await Git.rebaseRange(from: oldest, in: path)
             submit(label, range: range, plan: change(range.items))
-        } catch { history.error = error.localizedDescription }
+        } catch { history?.error = error.localizedDescription }
     }
 
     func submit(_ label: String, range: RebaseRange, plan: [RebaseItem], confirmed: Bool = false) {
         guard RebaseTodo.firstChange(original: range.items.map(\.sha), plan: plan) != nil else { return }
-        do { _ = try RebaseTodo.build(plan, messageDir: "/") } catch { history.error = error.localizedDescription; return }
+        do { _ = try RebaseTodo.build(plan, messageDir: "/") } catch { history?.error = error.localizedDescription; return }
         let pushed = RebaseTodo.rewrittenPushed(range, plan: plan)
         let dropping = plan.filter { $0.action == .drop }
         if !confirmed, !pushed.isEmpty || !dropping.isEmpty {
@@ -244,16 +261,16 @@ final class Rebaser {
             let head = try await Git.string(["rev-parse", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
             Rewrites.record(label, sha: head, in: path)
             // An edit or a conflict waits in Changes, where the banner offers Continue / Abort.
-            if try await Git.runRebase(range, plan: plan, in: path) { history.stoppedOnConflicts = true }
-        } catch { history.error = error.localizedDescription }
-        await history.reload()
+            if try await Git.runRebase(range, plan: plan, in: path) { history?.stoppedOnConflicts = true }
+        } catch { history?.error = error.localizedDescription }
+        await history?.reload()
         await refreshLocal()
     }
 
     // MARK: Entry points
 
     func drop(_ sha: String, zone: RebaseTodo.Zone, onto target: String, fixup: Bool) async {
-        guard let oldest = history.commits.last(where: { $0.sha == sha || $0.sha == target })?.sha else { return }
+        guard let oldest = history?.commits.last(where: { $0.sha == sha || $0.sha == target })?.sha else { return }
         let label = zone == .onto ? (fixup ? "Fixup" : "Squash") : "Reorder Commits"
         await rewrite(label, from: oldest) { RebaseTodo.move($0, sha, to: zone, of: target, fixup: fixup) }
     }
@@ -273,8 +290,8 @@ final class Rebaser {
     /// Swaps the commit with its child (up) or its parent (down).
     func shift(_ c: Commit, up: Bool) async {
         if up {
-            guard let i = history.commits.firstIndex(where: { $0.sha == c.sha }), i > 0 else { return }
-            let child = history.commits[i - 1].sha
+            guard let commits = history?.commits, let i = commits.firstIndex(where: { $0.sha == c.sha }), i > 0 else { return }
+            let child = commits[i - 1].sha
             await rewrite("Move Commit Up", from: c.sha) { RebaseTodo.move($0, c.sha, to: .above, of: child) }
         } else {
             guard let p = c.parents.first else { return }
@@ -297,7 +314,7 @@ final class Rebaser {
         do {
             let range = try await Git.rebaseRange(from: c.sha, in: path)
             planner = Planner(range: range, items: range.items.reversed())
-        } catch { history.error = error.localizedDescription }
+        } catch { history?.error = error.localizedDescription }
     }
 }
 
@@ -336,7 +353,7 @@ struct RebaseDragRow: ViewModifier {
                 RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 2)
                     .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
                     .overlay(alignment: .trailing) {
-                        Text(NSEvent.modifierFlags.contains(.option) ? "Fixup" : "Squash")
+                        Text(t.fixup ? "Fixup" : "Squash")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.white)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Color.accentColor, in: Capsule()).padding(.trailing, 6)
@@ -361,16 +378,21 @@ struct RebaseDragRow: ViewModifier {
         }
         func dropUpdated(info: DropInfo) -> DropProposal? {
             guard validateDrop(info: info) else { return DropProposal(operation: .forbidden) }
-            let z = zone(info)
-            if rebaser.dropTarget?.sha != target || rebaser.dropTarget?.zone != z { rebaser.dropTarget = (target, z) }
+            let z = zone(info), f = NSEvent.modifierFlags.contains(.option)
+            if let t = rebaser.dropTarget, t.sha == target, t.zone == z, t.fixup == f {} else { rebaser.dropTarget = (target, z, f) }
             return DropProposal(operation: .move)
         }
         func dropExited(info: DropInfo) { if rebaser.dropTarget?.sha == target { rebaser.dropTarget = nil } }
         func performDrop(info: DropInfo) -> Bool {
             defer { rebaser.dropTarget = nil; rebaser.dragging = nil }
             guard validateDrop(info: info), let d = rebaser.dragging else { return false }
-            let z = zone(info), fixup = NSEvent.modifierFlags.contains(.option)
-            Task { await rebaser.drop(d, zone: z, onto: target, fixup: fixup) }
+            // `dragging` outlives a drag dropped elsewhere (no end callback), so only act when the payload is that commit.
+            guard let provider = info.itemProviders(for: [.text]).first else { return false }
+            let z = zone(info), fixup = NSEvent.modifierFlags.contains(.option), rebaser = rebaser, target = target
+            _ = provider.loadObject(ofClass: NSString.self) { s, _ in
+                let sha = (s as? NSString).map { $0 as String }
+                Task { @MainActor in if sha == d { await rebaser.drop(d, zone: z, onto: target, fixup: fixup) } }
+            }
             return true
         }
     }

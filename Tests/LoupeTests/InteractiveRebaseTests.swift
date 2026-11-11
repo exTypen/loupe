@@ -180,3 +180,28 @@ private struct Repo {
     try await r.commit("d")
     await #expect(throws: GitError.self) { try await Git.rebaseRange(from: try await r.sha("HEAD~3"), in: r.dir) }
 }
+
+@Test func meldingIntoAPushedCommitCountsAsRewritingIt() {
+    let items = ["p", "c"].map { item($0, $0.uppercased()) }
+    let range = RebaseRange(base: "x", items: items, pushed: ["p"])   // Squash into Parent of a local commit
+    var plan = items; plan[1].action = .fixup
+    #expect(RebaseTodo.firstChange(original: ["p", "c"], plan: plan) == 0)
+    #expect(RebaseTodo.rewrittenPushed(range, plan: plan).map(\.sha) == ["p"])
+    // Past a dropped commit too: c melds into a.
+    let three = ["a", "b", "c"].map { item($0, $0.uppercased()) }
+    plan = three; plan[1].action = .drop; plan[2].action = .squash
+    #expect(RebaseTodo.firstChange(original: ["a", "b", "c"], plan: plan) == 0)
+}
+
+@Test func runRebaseRefusesWhileAnotherRebaseWaits() async throws {
+    let r = try await Repo()
+    defer { r.remove() }
+    try await r.commit("a")
+    try await r.commit("b")
+    try await r.commit("c")
+    #expect(try await r.plan(from: "HEAD~1") { items in var p = items; p[0].action = .edit; return p })
+    let stoppedAt = try await r.sha("HEAD")
+    await #expect(throws: GitError.self) { _ = try await r.plan(from: "HEAD") { items in var p = items; p[0].action = .drop; return p } }
+    #expect(try await r.sha("HEAD") == stoppedAt)
+    try await r.git("rebase", "--abort")
+}
