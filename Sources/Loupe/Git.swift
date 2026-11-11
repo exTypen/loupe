@@ -1,5 +1,10 @@
 import Foundation
 
+extension Error {
+    /// What to show for a failure, or nil for a cancellation: a task stopped because its view moved on is not an error.
+    var userMessage: String? { self is CancellationError ? nil : localizedDescription }
+}
+
 struct GitError: LocalizedError {
     let message: String
     var errorDescription: String? { message }

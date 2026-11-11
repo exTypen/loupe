@@ -97,7 +97,7 @@ final class ChecksModel {
                 .sorted { ($0.state, $0.status.context.lowercased()) < ($1.state, $1.status.context.lowercased()) }
             lastUpdated = Date()
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     private func actionRuns(_ f: CIFeatures) async throws -> [ActionRun] {
@@ -236,7 +236,7 @@ final class JobLogModel {
             await append(data)
             return true
         } catch {
-            if isRunning || waitingForLog { waitingForLog = true } else { self.error = error.localizedDescription }   // poll() gives up after its grace
+            if isRunning || waitingForLog { waitingForLog = true } else { self.error = error.userMessage ?? self.error }   // poll() gives up after its grace
             return false
         }
     }
@@ -269,7 +269,7 @@ final class JobLogModel {
             problems = Array((found + problems.map { LogProblem(line: $0.line, range: NSRange(location: $0.range.location + shift, length: $0.range.length), warning: $0.warning) }).suffix(Self.maxProblems))
             truncatedBytes = 0
             version += 1
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     private func append(_ data: Data) async {
@@ -312,7 +312,7 @@ final class JobLogModel {
             problems = Array(found.suffix(Self.maxProblems))
             truncatedBytes = 0; trimmed = false
             version += 1
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// A live tail past `maxShown`: drop the oldest quarter (from a line start), so a job that logs for hours doesn't

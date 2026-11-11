@@ -610,7 +610,7 @@ struct PROverview: View {
                 target = (tip?.isEmpty == false ? tip! : pull.pr.base.sha, pull.pr.base.ref)
                 base = try await Git.string(["merge-base", pull.pr.base.sha, pull.pr.head.sha], in: pull.local.dir)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.userMessage ?? self.error }
         }
     }
 }

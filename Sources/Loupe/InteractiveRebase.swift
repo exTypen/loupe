@@ -248,12 +248,12 @@ final class Rebaser {
         do {
             let range = try await Git.rebaseRange(from: oldest, in: path)
             submit(label, range: range, plan: change(range.items))
-        } catch { history?.error = error.localizedDescription }
+        } catch { history?.error = error.userMessage ?? history?.error }
     }
 
     func submit(_ label: String, range: RebaseRange, plan: [RebaseItem], confirmed: Bool = false) {
         guard RebaseTodo.firstChange(original: range.items.map(\.sha), plan: plan) != nil else { return }
-        do { _ = try RebaseTodo.build(plan, messageDir: "/") } catch { history?.error = error.localizedDescription; return }
+        do { _ = try RebaseTodo.build(plan, messageDir: "/") } catch { history?.error = error.userMessage ?? history?.error; return }
         let pushed = RebaseTodo.rewrittenPushed(range, plan: plan)
         let dropping = plan.filter { $0.action == .drop }
         if !confirmed, !pushed.isEmpty || !dropping.isEmpty {
@@ -277,7 +277,7 @@ final class Rebaser {
                 stopped = try await Git.runRebase(range, plan: plan, in: path)
             }
             if stopped { history?.stoppedOnConflicts = true }
-        } catch { history?.error = error.localizedDescription }
+        } catch { history?.error = error.userMessage ?? history?.error }
         await history?.reload()
         await refreshLocal()
     }
@@ -329,7 +329,7 @@ final class Rebaser {
         do {
             let range = try await Git.rebaseRange(from: c.sha, in: path)
             planner = Planner(range: range, items: range.items.reversed())
-        } catch { history?.error = error.localizedDescription }
+        } catch { history?.error = error.userMessage ?? history?.error }
     }
 }
 

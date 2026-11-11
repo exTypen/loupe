@@ -359,7 +359,7 @@ struct Sidebar: View {
 
     private func remove(force: Bool) {
         guard let r = removing else { return }
-        Task { do { try await app.removeWorktree(repo: r.repo, path: r.wt.path, force: force) } catch { app.error = error.localizedDescription } }
+        Task { do { try await app.removeWorktree(repo: r.repo, path: r.wt.path, force: force) } catch { app.error = error.userMessage ?? app.error } }
     }
 
     @ViewBuilder private func worktreeMenu(repo: String, wt: Worktree) -> some View {
@@ -697,7 +697,7 @@ struct AddWorktreeSheet: View {
                     try await app.addWorktree(repo: repo, path: path, branch: branch, base: base, newBranch: newBranch)
                 }
                 dismiss()
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.userMessage ?? self.error }
         }
     }
 

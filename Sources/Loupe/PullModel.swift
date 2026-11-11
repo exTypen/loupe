@@ -50,7 +50,7 @@ final class PullListModel {
             pulls = all; page = p; exhausted = all.count < p * ForgejoClient.pullPage
             error = nil; lastUpdated = Date()
             if st == "open" { saveCache(repo) }
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     func loadMore(_ client: ForgejoClient, _ repo: RemoteRepo) async {
@@ -61,7 +61,7 @@ final class PullListModel {
             let seen = Set(pulls.map(\.id))
             pulls += next.filter { !seen.contains($0.id) }
             page += 1; exhausted = next.count < ForgejoClient.pullPage
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     // MARK: Disk cache (open list only) — the window shows the last known list instantly at launch.
@@ -260,7 +260,7 @@ final class PullRequestModel {
             if let c = try? await commitsReq { commits = c }   // the timeline does without them rather than fail the load
             comments = try await client.reviewComments(repo, pr.number, reviews: reviews)
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// The server's diff, or for a PR too big for GitHub to serve, the same three-dot diff computed by local git.
@@ -343,7 +343,7 @@ final class PullRequestModel {
             treeDirs = dirs
             tree = paths; treeSHA = sha; treeError = nil
             applyDefaultCollapse()
-        } catch { treeError = error.localizedDescription }
+        } catch { treeError = error.userMessage ?? treeError }
     }
 
     /// The whole file at the head: changed files as a full-context diff, the rest as plain lines.
@@ -367,7 +367,7 @@ final class PullRequestModel {
                 f = await Task.detached { Self.plainFile(path, data) }.value
             }
             fullFiles[path] = f
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = error.userMessage ?? self.error }
     }
 
     /// A full-context diff without its single hunk header row: the file reads top to bottom.
@@ -420,7 +420,7 @@ final class PullRequestModel {
     /// ⌘-click / Go to Definition / Find References on `word` in `path`.
     func navigate(_ word: String, _ action: CodeAction, from path: String) async {
         navBusy = word; defer { navBusy = nil }
-        do { try await fetchHead() } catch { self.error = error.localizedDescription; return }
+        do { try await fetchHead() } catch { self.error = error.userMessage ?? self.error; return }
         let (dir, head) = (local.dir, pr.head.sha)
         if action == .definition {
             let defs = await CodeNavigator.definitions(of: word, at: head, in: dir, from: path)
@@ -502,16 +502,16 @@ final class PullRequestModel {
             drafts = []
             await load()
             return true
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { self.error = error.userMessage ?? self.error; return false }
     }
 
     func postComment(_ body: String) async {
         do { try await client.addIssueComment(repo, pr.number, body: body); conversation = try await client.issueComments(repo, pr.number) }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = error.userMessage ?? self.error }
     }
 
     func merge(_ style: ForgejoClient.MergeStyle) async {
         do { try await client.merge(repo, pr.number, style: style); await load() }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = error.userMessage ?? self.error }
     }
 }
