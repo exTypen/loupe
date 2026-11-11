@@ -198,3 +198,16 @@ struct LFSPreviewTests {
         try? FileManager.default.removeItem(at: url)
     }
 }
+
+@MainActor struct PullDefaultsTests {
+    @Test func emptyDraftsAndViewedRemoveTheirKeys() {
+        let r = RemoteRepo(remoteURL: "http://127.0.0.1:1/o/r\(UUID().uuidString.prefix(6)).git")!
+        let m = PullRequestModel(pr: PullDetailsEvictionTests.pr(7), client: ForgejoClient(baseURL: "http://127.0.0.1:1", token: "x"), repo: r,
+                                 local: LocalCheckout(dir: "/tmp", remote: "origin"))
+        let vk = "viewed:\(r.host)/\(r.owner)/\(r.name)#7", dk = "drafts:\(r.host)/\(r.owner)/\(r.name)#7"
+        m.viewed = ["a": 1]; #expect(UserDefaults.standard.object(forKey: vk) != nil)
+        m.viewed = [:]; #expect(UserDefaults.standard.object(forKey: vk) == nil)
+        m.drafts = [DraftComment(path: "a", newLine: 1, oldLine: nil, body: "x")]; #expect(UserDefaults.standard.object(forKey: dk) != nil)
+        m.drafts = []; #expect(UserDefaults.standard.object(forKey: dk) == nil)
+    }
+}
