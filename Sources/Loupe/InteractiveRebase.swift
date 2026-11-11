@@ -261,7 +261,13 @@ final class Rebaser {
             let head = try await Git.string(["rev-parse", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
             Rewrites.record(label, sha: head, in: path)
             // An edit or a conflict waits in Changes, where the banner offers Continue / Abort.
-            if try await Git.runRebase(range, plan: plan, in: path) { history?.stoppedOnConflicts = true }
+            // A rebase that finishes here is undone by Edit › Undo (reset --keep to `head`); one that stops is
+            // recorded by Continue in Changes, from the rebase's orig-head.
+            var stopped = false
+            try await UndoStack.for(path).run(.reset(label, from: head)) {
+                stopped = try await Git.runRebase(range, plan: plan, in: path)
+            }
+            if stopped { history?.stoppedOnConflicts = true }
         } catch { history?.error = error.localizedDescription }
         await history?.reload()
         await refreshLocal()

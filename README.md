@@ -18,16 +18,18 @@ helper holds.
 
 ![Two spaces, each with its own repositories and accounts](docs/spaces.png)
 
-**Review big pull requests on the desktop.** Viewed files that become unviewed again when a new push changes
-them, inline comments, drafts that survive restarts, Approve and Request Changes, merge, and CI checks with
-live Forgejo Actions logs. It works the same on GitHub, Forgejo and Gitea, and pull requests GitHub's web UI
-won't show (over 300 files or 20,000 lines) are diffed locally.
+**Forgejo and Gitea, treated like GitHub.** Open, review and merge pull requests on all three: viewed files that
+become unviewed again when a new push changes them, inline comments, drafts that survive restarts, Approve and
+Request Changes. CI jobs, steps and live logs show in the app on every forge, with Re-run and Cancel.
 
 ![CI checks for a pull request](docs/checks.png)
 
 **Built for many worktrees.** Every repository lists all its worktrees with their branch, ahead/behind counts
 and uncommitted changes. ⌘K jumps between them, and a pull request checks out into its own worktree in one
 click.
+
+**The whole git workflow.** Drag commits in History to reorder or squash them, resolve conflicts in a three-way
+merge editor, undo what Loupe did with ⌘Z, and work with Git LFS and submodules.
 
 **Fast, and native.** A SwiftUI app with an AppKit diff renderer. A 150,000-line file opens in under a second
 and scrolls smoothly.
@@ -61,8 +63,24 @@ exactly as they do in your terminal.
 - Stage, unstage or discard a hunk, a selection of lines, or whole files; select several files to act on them
   at once.
 - Commit with a summary and a description, or amend. Stash everything or just the selected files.
-- When a merge, cherry-pick, revert or rebase stops on conflicts, a banner offers Abort and Continue, and each
-  conflict shows its two sides with Use Current, Use Incoming and Use Both.
+- When a merge, cherry-pick, revert or rebase stops on conflicts, a banner offers Abort and Continue.
+- **Three-way merge editor**: a conflicted file opens with Ours and Theirs side by side, read from the index stages,
+  with Base on a toggle. The merged result is below and editable, with changes that merged on their own already
+  in and marked. For each conflict: Use Ours/Theirs, either order of both, Use Base, pick single lines, or review
+  an AI suggestion. "Conflict 2 of 5" with ⌥⌘↑/↓, sides named for the merge, rebase or cherry-pick.
+  Delete/modify, both-added, binary, symlink and submodule conflicts get their own choices, Reset brings the
+  markers back, and Merge Tool opens your git mergetool.
+- **Undo**: Edit › Undo (⌘Z outside text fields) takes back the last thing Loupe did to a worktree: a discard of
+  files, hunks or lines (untracked files too), stage/unstage, commit or amend, cherry-pick, revert, a rebase, a
+  continued merge, pull, a branch switch, a stash drop or pop. Everything before the action is kept as git
+  objects. Undo refuses to rewrite pushed history (it offers Revert instead) and refuses to overwrite files edited
+  since. After a discard or stash drop, a toast offers Undo.
+- **Git LFS**: an LFS file's diff shows the object's size, id and an image preview instead of the pointer text.
+  Right-click a file to track it or its extension with LFS, or to lock and unlock it; locks show their owner in the
+  file list. A banner says so when the repository uses LFS and git-lfs isn't installed.
+- **Submodules** appear in Changes with the commits between the recorded and the checked-out commit; open one as
+  its own repository, update it to the recorded commit or stage the new pointer. A banner offers to initialize
+  submodules that were never checked out.
 
 ![Resolving a cherry-pick conflict](docs/conflicts.png)
 
@@ -73,25 +91,43 @@ exactly as they do in your terminal.
 - The current branch, all branches, any single branch, or your stashes, with a commit graph and each commit's
   full diff. Search by message or author.
 - Cherry-pick a commit onto your branch, or revert one. Apply, pop or drop a stash.
-- Blame and file history for any file in their own window. Blame can step back to before a commit; file
+- **Interactive rebase, by hand or by drag.** Drag a commit that isn't pushed yet above or below another to
+  reorder it, or onto one to squash into it (hold ⌥ to fixup). Right-click a commit for Reword…, Edit (Stop
+  Here), Squash or Fixup into Parent, Move Up/Down and Drop…. Interactive Rebase from Here… opens a planner with an
+  action and an editable message for each commit. No editor ever opens, uncommitted changes are stashed and put
+  back, Loupe asks before rewriting commits a remote already has, and stops land in Changes with Continue and
+  Abort.
+- Blame as a gutter in the diff, and file history beside it. Blame can step back to before a commit; file
   history follows renames.
 
 ![Blame](docs/blame.png)
 - Start a new worktree from any commit.
 
 **Pull requests**
+- **Create pull requests** from the banner over Changes, a worktree's context menu or the Pull Requests list.
+  Loupe picks the base, pushes the branch first if the remote doesn't have it, and fills the title from a lone
+  commit or the branch name and the description from the repository's PR template. Drafts are supported (a
+  "WIP:" prefix on Forgejo and Gitea), and your AI tool can write the title and description.
 - List and filter pull requests, then open one full-width with a collapsible file tree.
 - Mark files as viewed and jump to the next unviewed one.
 - Review comments render inline at their lines. Right-click a line and choose Add Comment to write one.
 - Submit as Comment, Approve or Request Changes; merge; read and reply in the conversation tab.
 - Check out, open in the browser or copy the link from the header.
-- See CI status. Forgejo Actions logs stream live inside the app; GitHub checks open in the browser.
+- **CI on every forge**: GitHub Actions, Forgejo and Gitea 1.25+ show jobs, steps and the live log in the app. Log
+  groups fold like on the web, and errors and warnings are click-to-jump lines. Re-run Job, Re-run Failed Jobs,
+  Re-run All Jobs and Cancel Run are there wherever the server's API allows them. Checks from other GitHub apps
+  show their summary and annotations.
 
 **Performance**
 - The diff is a virtualized `NSTableView` whose rows draw themselves; the parser handles 200,000 diff lines in
   about 40 ms.
-- GitHub refuses to serve diffs over 300 files or 20,000 lines. Loupe fetches the pull request and computes
-  the same diff locally instead.
+- GitHub's API refuses diffs over 300 files or 20,000 lines. Loupe fetches the pull request and computes the
+  same diff locally instead.
+
+**Updates**
+- Loupe updates itself with Sparkle: it checks the GitHub release feed once a day, and "Check for Updates…" sits
+  under About in the app menu. Settings › General turns automatic checks and automatic download-and-install on or
+  off. Every update is EdDSA-signed and verified before it replaces the app.
 
 ## Install
 
