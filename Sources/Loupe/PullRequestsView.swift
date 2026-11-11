@@ -81,7 +81,7 @@ struct PullBrowser: View {
                     }
                     .padding(10)
                     Divider()
-                    List(selection: $list.selected) {
+                    List(selection: weakBinding(list, \.selected, ifGone: nil)) {
                         // PRs from the selected worktree's branch first, then other local worktrees', then the rest.
                         let current = visible.filter { $0.head.ref == model.branch }
                         let local = visible.filter { $0.head.ref != model.branch && worktreeBranches.contains($0.head.ref) }
@@ -451,7 +451,7 @@ private struct PullTree: View {
             ? pull.filteredTree
             : pull.filteredFiles.map(\.path)
         let collapsed = pull.fullMode ? $pull.fullCollapsed : $pull.collapsed
-        return FileTreeList(paths: paths, selection: $pull.selectedPath,
+        return FileTreeList(paths: paths, selection: weakBinding(pull, \.selectedPath, ifGone: nil),
                             collapsed: pull.filter.isEmpty ? collapsed : .constant([]),
                             dirMenu: { dir in
                                 let p = pull.viewedProgress(under: dir)

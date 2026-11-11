@@ -221,3 +221,11 @@ struct ResizableSplit<Leading: View, Trailing: View>: View {
         }
     }
 }
+
+/// A List selection that holds its model weakly. NavigationSplitView keeps the selection binding of every List it has
+/// shown in its columns, for as long as the window lives: one made with `$model.x` (or a closure capturing a view)
+/// pinned that model and the view's state forever, so each worktree or tab switch left the old views' state behind
+/// (and a pull request's 5,000-file model after Loupe had let it go).
+@MainActor func weakBinding<O: AnyObject, V>(_ o: O, _ kp: ReferenceWritableKeyPath<O, V>, ifGone: V) -> Binding<V> {
+    Binding(get: { [weak o] in o?[keyPath: kp] ?? ifGone }, set: { [weak o] v in o?[keyPath: kp] = v })
+}
