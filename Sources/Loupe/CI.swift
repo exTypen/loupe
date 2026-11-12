@@ -559,7 +559,7 @@ struct ChecksBadge: View {
                 if s.total == 0 { Image(systemName: "circle.dashed").foregroundStyle(.secondary); Text("Checks") }
                 else {
                     if s.failing > 0 { Label(String(s.failing), systemImage: "xmark.circle.fill").foregroundStyle(.red) }
-                    if s.running > 0 { Label(String(s.running), systemImage: "circle.fill").foregroundStyle(.orange).symbolEffect(.pulse) }
+                    if s.running > 0 { Label(String(s.running), systemImage: "circle.fill").foregroundStyle(.orange) }   // no pulse: a job can run for an hour, and an endless animation re-lays out the window every frame
                     if s.queued > 0 { Label(String(s.queued), systemImage: "circle.dashed").foregroundStyle(.secondary) }
                     Label(String(s.passed), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     Text("checks").foregroundStyle(.secondary)
@@ -652,7 +652,7 @@ struct StateIcon: View {
     var body: some View {
         switch state {
         case .failing: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-        case .running: Image(systemName: "circle.fill").foregroundStyle(.orange).symbolEffect(.pulse).help("Running")
+        case .running: Image(systemName: "circle.fill").foregroundStyle(.orange).help("Running")
         case .pending: Image(systemName: "circle.dashed").foregroundStyle(.secondary).help("Queued / waiting")
         case .success: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .skipped: Image(systemName: "minus.circle").foregroundStyle(.tertiary)

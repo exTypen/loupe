@@ -333,7 +333,8 @@ private struct PullHeader: View {
                 .help("Open in Browser or Copy Link")
                 Spacer()
                 HStack(spacing: 8) {
-                    ProgressView().controlSize(.small).opacity(pull.loading ? 1 : 0)
+                    // Only exists while loading: a spinner hidden with opacity keeps animating, and re-lays out the window every frame.
+                    ZStack { if pull.loading { ProgressView().controlSize(.small) } }.frame(width: 16, height: 16)
                     Button { Task { await worktree.checkoutInWorktree(pull.pr) } } label: { Label("Check Out", systemImage: "arrow.triangle.branch") }
                         .help("Check Out in New Worktree")
                     if pull.pr.state == "open" {
