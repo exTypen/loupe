@@ -2,7 +2,10 @@ import Foundation
 
 extension Error {
     /// What to show for a failure, or nil for a cancellation: a task stopped because its view moved on is not an error.
-    var userMessage: String? { self is CancellationError ? nil : localizedDescription }
+    var userMessage: String? {
+        if self is CancellationError || (self as? URLError)?.code == .cancelled { return nil }   // URLSession says "cancelled"
+        return localizedDescription
+    }
 }
 
 struct GitError: LocalizedError {

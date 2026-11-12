@@ -103,7 +103,7 @@ struct PullBrowser: View {
                     .listStyle(.inset)
                     .overlay {
                         if list.loading && list.pulls.isEmpty { ProgressView() }
-                        else if let e = list.error { ContentUnavailableView("Couldn't Load", systemImage: "exclamationmark.triangle", description: Text(e)) }
+                        else if let e = list.error, list.pulls.isEmpty { ContentUnavailableView("Couldn't Load", systemImage: "exclamationmark.triangle", description: Text(e)) }
                         else if visible.isEmpty { ContentUnavailableView(list.mine ? "No Pull Requests by You" : "No Pull Requests", systemImage: "arrow.triangle.pull") }
                     }
                 }
