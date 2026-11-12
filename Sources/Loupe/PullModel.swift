@@ -237,7 +237,9 @@ final class PullRequestModel {
             async let convReq = client.issueComments(repo, pr.number)
             async let commitsReq = client.pullCommits(repo, pr.number)
             pr = try await prReq
-            if checks.sha != pr.head.sha { checks.sha = pr.head.sha; Task { await checks.refresh() } }   // new push
+            // Every reload (poll, focus, refresh button) brings the checks up to date too, not only a new push.
+            if checks.sha != pr.head.sha { checks.sha = pr.head.sha }
+            Task { await checks.refresh() }
             // Polling: an unchanged diff must not rebuild the table (scroll, selection and highlighting would reset).
             // nil: the local diff of a head already diffed.
             if let data = try await diffData() {
