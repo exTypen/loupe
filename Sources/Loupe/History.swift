@@ -134,6 +134,7 @@ enum Graph {
 final class HistoryModel {
     let path: String
     var commits: [Commit] = []
+    @ObservationIgnored var loadedKey = ""   // HEAD and refs version the list was last loaded for
     var graph: [GraphRow] = []          // parallel to commits; empty for stashes
     var graphWidth = 0                   // lanes, capped
     var scope = HistoryScope.current
@@ -323,7 +324,13 @@ struct HistoryView: View {
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: worktree.headOID) { await model.reload(); await model.rebase.refreshLocal() }
+        .task(id: "\(worktree.headOID) \(worktree.refsVersion)") {
+            // Coming back to History with nothing moved shows what's loaded: no git log, refs and rebase scan per visit.
+            let key = "\(worktree.headOID) \(worktree.refsVersion)"
+            guard key != model.loadedKey || model.commits.isEmpty else { return }
+            model.loadedKey = key
+            await model.reload(); await model.rebase.refreshLocal()
+        }
         .modifier(RebaseSheets(rebaser: model.rebase))
         .onChange(of: model.search) { _, s in if s.isEmpty { Task { await model.reload() } } }
         .onReceive(NotificationCenter.default.publisher(for: .moveFile)) { n in if let d = n.object as? Int { model.move(d) } }

@@ -283,6 +283,9 @@ final class WorktreeModel {
 
     // MARK: Status / diff
 
+    var refsVersion = 0                   // bumps after fetch / pull / push
+    @ObservationIgnored var aheadKey = ""         // "Create Pull Request" availability, per HEAD and refs
+    @ObservationIgnored var aheadCache = false
     var statusVersion = 0                 // bumps on every status refresh: the Overview of uncommitted work follows edits
 
     func refreshStatus() async {
@@ -494,6 +497,7 @@ final class WorktreeModel {
         await perform(label) {   // a pull moves HEAD: undo goes back (the pulled commits stay on the remote)
             try await undo.run(args.first == "pull" ? .reset("Pull", published: false) : nil) { try await Git.run(args, in: path, env: gitAuth) }
         }
+        refsVersion += 1   // fetch / pull / push move remote refs without moving HEAD: History reloads on its next showing
         await app.refreshWorktrees(repo: app.repo(containing: path) ?? path)
     }
 
