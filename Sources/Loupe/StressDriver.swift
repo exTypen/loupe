@@ -142,6 +142,7 @@ private struct StressRun {
         switch step {
         case "worktrees": await worktrees()
         case "tabs": await tabs()
+        case "tabsonly": await tabsOnly()
         case "history": await history()
         case "bigfile": await bigFile()
         case "prs": await prs()
@@ -167,6 +168,11 @@ private struct StressRun {
         for wt in [s.big, s.conflict] {
             for t in ["changes", "history", "pulls", "changes"] { await select(wt, tab: t); await pause() }
         }
+    }
+
+    /// Only the view switch, on one worktree: what a person flipping Changes / History / Pull Requests does.
+    func tabsOnly() async {
+        for t in ["history", "pulls", "changes"] { await select(s.big, tab: t); await pause(1) }
     }
 
     /// The 5,000-file commit: Overview, Compact/Full, Diff/Before/After; then All Branches.

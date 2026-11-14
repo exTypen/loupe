@@ -113,7 +113,10 @@ struct PullBrowser: View {
         // Keep the list in sync with the server: poll while visible, and refresh on returning to the app or the list.
         .task(id: list.state) {
             list.restoreCache(remote)   // instant list from the last session; the fetch below replaces it
-            await list.load(client, remote)
+            // Coming back to the tab within a poll interval shows what's loaded; the loop below keeps it fresh.
+            if list.loadedState != list.state || Date().timeIntervalSince(list.lastUpdated ?? .distantPast) > 30 {
+                await list.load(client, remote)
+            }
             // Only the open list auto-refreshes: closed/all are paged and refreshing would throw away scrolled pages.
             while !Task.isCancelled, list.state == "open" {
                 try? await Task.sleep(for: .seconds(60))
@@ -121,7 +124,12 @@ struct PullBrowser: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await list.load(client, remote) } }
-        .task(id: model.headOID) { canCreate = await model.aheadOfDefault() != nil }
+        .task(id: "\(model.headOID) \(model.refsVersion)") {
+            let key = "\(model.headOID) \(model.refsVersion)"
+            guard model.aheadKey != key else { canCreate = model.aheadCache; return }
+            canCreate = await model.aheadOfDefault() != nil
+            model.aheadKey = key; model.aheadCache = canCreate
+        }
         .onChange(of: list.selected) { _, sel in if sel == nil { Task { await list.load(client, remote) } } }
         .onReceive(NotificationCenter.default.publisher(for: .refresh)) { _ in Task { await list.load(client, remote) } }
     }
@@ -281,9 +289,11 @@ struct PullDetailView: View {
             default: PullFilesPane(pull: pull)
             }
         }
-        // Always refresh on open (cached content stays on screen meanwhile), then keep polling while it's open:
-        // new pushes dismiss approvals and re-request reviewers, and the header must reflect that.
+        // Refresh on open (cached content stays on screen meanwhile) unless it was loaded in the last 30 s (a quick
+        // round trip through another tab), then keep polling while it's open: new pushes dismiss approvals and
+        // re-request reviewers, and the header must reflect that.
         .task {
+            if Date().timeIntervalSince(pull.lastLoaded ?? .distantPast) < 30 { try? await Task.sleep(for: .seconds(60)) }
             while !Task.isCancelled {
                 await pull.load()
                 try? await Task.sleep(for: .seconds(60))

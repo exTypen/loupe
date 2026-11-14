@@ -151,6 +151,18 @@ struct DiffTableView: NSViewRepresentable {
         var highlights: [Int: NSRange] = [:]     // line index → changed span (intra-line diff)
         var syntax: [[SyntaxSpan]] = []          // per line; empty until the background pass finishes
         private var syntaxTask: Task<Void, Never>?
+        /// The last few files' intra-line highlights and syntax, by file uid. Switching Changes / History / Pull Requests
+        /// makes a new table and Coordinator for the same file: without this every switch redid both passes.
+        /// Only touched on the main thread (rebuild and the syntax task's main-actor tail).
+        nonisolated(unsafe) private static var derived: [(uid: UUID, highlights: [Int: NSRange], syntax: [[SyntaxSpan]]?)] = []
+        private static func remember(_ uid: UUID, highlights: [Int: NSRange]? = nil, syntax: [[SyntaxSpan]]? = nil) {
+            var e = derived.first { $0.uid == uid } ?? (uid, [:], nil)
+            if let highlights { e.highlights = highlights }
+            if let syntax { e.syntax = syntax }
+            derived.removeAll { $0.uid == uid }
+            derived.append(e)
+            if derived.count > 3 { derived.removeFirst() }
+        }
         var contentWidth: CGFloat = 0
         var numberWidth: CGFloat = 0
         var revealed: UUID?
@@ -236,7 +248,11 @@ struct DiffTableView: NSViewRepresentable {
         }
 
         func rebuild(file: FileDiff, comments: [InlineComment], hunkActions: [HunkAction]) {
-            if fileUID != file.uid { highlights = DiffTableView.intraLineHighlights(file); lineCache.removeAllObjects(); searchTexts = nil }
+            if fileUID != file.uid {
+                if let d = Self.derived.first(where: { $0.uid == file.uid }) { highlights = d.highlights }
+                else { highlights = DiffTableView.intraLineHighlights(file); Self.remember(file.uid, highlights: highlights) }
+                lineCache.removeAllObjects(); searchTexts = nil
+            }
             // Before / After draw plain code: no intra-line highlight in the cached lines.
             if lineCacheSide != side { lineCache.removeAllObjects(); lineCacheSide = side }
             self.file = file; fileUID = file.uid; path = file.path
@@ -312,12 +328,14 @@ struct DiffTableView: NSViewRepresentable {
             syntaxFileUID = file.uid
             guard let lang = Language.forPath(file.path) else { return }
             let uid = file.uid
+            if let cached = Self.derived.first(where: { $0.uid == uid })?.syntax { syntax = cached; return }
             // On the main actor: the Coordinator isn't isolated, so a bare Task would land the result on a background
             // thread, racing `draw` for `syntax` and touching the table off-main (memory corruption, crashes far away).
             syntaxTask = Task { @MainActor [weak self] in
                 let spans = await Task.detached(priority: .userInitiated) { Syntax.highlight(file, language: lang) }.value
                 guard let self, !Task.isCancelled, self.fileUID == uid, self.table != nil else { return }
                 self.syntax = spans
+                Self.remember(uid, syntax: spans)
                 self.lineCache.removeAllObjects()
                 self.redrawVisible()
             }

@@ -10,6 +10,7 @@ final class PullListModel {
     var loading = false
     var error: String?
     var lastUpdated: Date?
+    @ObservationIgnored var loadedState: String?   // the state `pulls` holds
     var loadingMore = false
     private var page = 1
     private var exhausted = false
@@ -47,9 +48,11 @@ final class PullListModel {
                 while all.count == p * ForgejoClient.pullPage { p += 1; all += try await client.pulls(repo, state: st, page: p) }
             }
             guard st == state else { return }   // state switched mid-flight
-            pulls = all; page = p; exhausted = all.count < p * ForgejoClient.pullPage
-            error = nil; lastUpdated = Date()
-            if st == "open" { saveCache(repo) }
+            let changed = all != pulls
+            if changed { pulls = all }   // an unchanged poll must not re-render the list or rewrite the cache
+            page = p; exhausted = all.count < p * ForgejoClient.pullPage
+            error = nil; lastUpdated = Date(); loadedState = st
+            if st == "open", changed { saveCache(repo) }
         } catch { self.error = error.userMessage ?? self.error }
     }
 
@@ -230,6 +233,8 @@ final class PullRequestModel {
         repeat { reloadQueued = false; await loadOnce() } while reloadQueued
     }
 
+    @ObservationIgnored var lastLoaded: Date?
+
     private func loadOnce() async {
         do {
             async let prReq = client.pull(repo, pr.number)
@@ -261,7 +266,7 @@ final class PullRequestModel {
             conversation = try await convReq
             if let c = try? await commitsReq { commits = c }   // the timeline does without them rather than fail the load
             comments = try await client.reviewComments(repo, pr.number, reviews: reviews)
-            error = nil
+            error = nil; lastLoaded = Date()   // a failed load is retried on the next showing
         } catch { self.error = error.userMessage ?? self.error }
     }
 
