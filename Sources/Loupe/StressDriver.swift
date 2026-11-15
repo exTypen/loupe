@@ -143,6 +143,7 @@ private struct StressRun {
         case "worktrees": await worktrees()
         case "tabs": await tabs()
         case "tabsonly": await tabsOnly()
+        case "mergepr": await mergePR()
         case "idle": await pause(30)   // nothing driven: background work only (file events, polls)
         case "history": await history()
         case "bigfile": await bigFile()
@@ -235,6 +236,26 @@ private struct StressRun {
             l.selected = nil
             await pause(0.5)
         }
+    }
+
+    /// What the Merge button does once confirmed: merge on the forge, leave the PR, show the base branch's History with
+    /// the merge on top and selected. Prints what it ended up showing.
+    func mergePR() async {
+        let l = await openPulls()
+        guard let n = s.prs.first(where: { k in l.pulls.contains { $0.number == k && $0.state == "open" } }) else { mark("merge-no-open-pr"); return }
+        l.selected = n
+        await wait("pr \(n)") { l.details[n]?.files.isEmpty == false }
+        guard let p = l.details[n] else { return }
+        let base = p.pr.base.ref, t = Date(), m = model(s.big)
+        guard await p.merge(.merge) else { mark("merge-failed \(p.error ?? "")"); return }
+        l.selected = nil
+        await m.showMerged(into: base)
+        let ok = await wait("merged history", 30) { m.history.selectedSHA != nil && m.history.selectedSHA == m.history.commits.first?.sha }
+        let top = m.history.commits.first
+        mark(String(format: "merged pr=%d ok=%@ secs=%.1f tab=%@ scope=%@ top=%@ error=%@", n, ok ? "yes" : "no", Date().timeIntervalSince(t),
+                    UserDefaults.standard.string(forKey: "tab") ?? "-", m.history.scope.title.replacingOccurrences(of: " ", with: "_"),
+                    (top?.subject ?? "-").replacingOccurrences(of: " ", with: "_"), (m.error ?? "none").replacingOccurrences(of: " ", with: "_")))
+        await pause(3)
     }
 
     /// PR #1: 5,000 files, hundreds of inline comments. Files, Full mode, Overview, Conversation.

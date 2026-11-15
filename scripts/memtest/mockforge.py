@@ -58,8 +58,8 @@ def pr_json(n):
     if not 1 <= n <= total:
         return None
     ref, sha = pr_head(n)
-    state = "open" if n <= args.open else "closed"
-    merged = state == "closed" and n % 3 == 0
+    state = "open" if n <= args.open and n not in MERGED else "closed"
+    merged = n in MERGED or (state == "closed" and n % 3 == 0)
     body = (f"## Summary\n\nPull request {n} changes `{ref}`.\n\n- point one\n- point two with **bold** and `code`\n\n"
             + "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 6)
     return {"id": 100000 + n, "number": n, "title": f"{'Rewrite 5000 generated files' if n == 1 else 'Feature ' + ref} (#{n})",
@@ -69,6 +69,46 @@ def pr_json(n):
             "comments": 100 if n == 1 else 5, "mergeable": True, "merged": merged, "merged_at": TS if merged else None,
             "requested_reviewers": [user("bob"), user("carol")], "html_url": f"{BASE}/acme/big/pulls/{n}",
             "updated_at": TS, "created_at": TS}
+
+
+MERGED = {}   # PR number → merge commit, for PRs merged through POST /pulls/N/merge
+_merge_lock = threading.Lock()
+
+
+def merge_pr(n):
+    """A real merge commit of the PR head onto main in the served repo (no working tree touched): what a forge does."""
+    with _merge_lock:
+        if n in MERGED:
+            return MERGED[n]
+        ref, head = pr_head(n)
+        main = git("rev-parse", "main").decode().strip()
+        tree = git("merge-tree", "--write-tree", main, head).decode().split("\n")[0]
+        c = git("commit-tree", tree, "-p", main, "-p", head, "-m", f"Merge pull request '{ref}' (#{n}) from {ref} into main").decode().strip()
+        git("update-ref", "refs/heads/main", c, main)
+        MERGED[n] = c
+        return c
+
+
+def git_backend(h, method):
+    """Smart HTTP git for the served repo (git http-backend as CGI), so fetches from Loupe's test copy really work."""
+    u = urlsplit(h.path)
+    n = int(h.headers.get("Content-Length") or 0)
+    body = h.rfile.read(n) if n else b""
+    env = {"GIT_PROJECT_ROOT": args.repo, "GIT_HTTP_EXPORT_ALL": "1", "PATH_INFO": "/.git" + u.path.split(".git", 1)[1],
+           "QUERY_STRING": u.query, "REQUEST_METHOD": method, "CONTENT_TYPE": h.headers.get("Content-Type", ""),
+           "CONTENT_LENGTH": str(len(body)), "HTTP_GIT_PROTOCOL": h.headers.get("Git-Protocol", ""), "PATH": "/usr/bin:/bin:/opt/homebrew/bin"}
+    out = subprocess.run([GIT, "http-backend"], input=body, env=env, stdout=subprocess.PIPE).stdout
+    head, _, payload = out.partition(b"\r\n\r\n")
+    status, headers = 200, []
+    for line in head.decode().split("\r\n"):
+        k, _, v = line.partition(": ")
+        if k.lower() == "status": status = int(v.split()[0])
+        elif k: headers.append((k, v))
+    h.send_response(status)
+    for k, v in headers: h.send_header(k, v)
+    h.send_header("Content-Length", str(len(payload)))
+    h.end_headers()
+    h.wfile.write(payload)
 
 
 _diffs, _diff_lock = {}, threading.Lock()
@@ -213,6 +253,13 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"message": "not found (mock)"})
 
     def do_POST(self):
+        if ".git/git-upload-pack" in self.path:
+            return git_backend(self, "POST")
+        m = re.match(r"^/api/v1/repos/[\w.-]+/big/pulls/(\d+)/merge$", self.path)
+        if m:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            merge_pr(int(m.group(1)))
+            return self.send(200, {})
         n = int(self.headers.get("Content-Length") or 0)
         self.rfile.read(n)
         if self.path.endswith("/info/lfs/locks/verify"):
@@ -220,6 +267,8 @@ class H(BaseHTTPRequestHandler):
         self.send(201, {"message": "mock: ignored"})
 
     def do_GET(self):
+        if ".git/info/refs" in self.path:
+            return git_backend(self, "GET")
         u = urlsplit(self.path)
         p, q = u.path, parse_qs(u.query)
         m = re.match(r"^/avatars/([\w.-]+)\.png$", p)
@@ -228,7 +277,7 @@ class H(BaseHTTPRequestHandler):
         if re.match(r"^/[\w.-]+/[\w.-]+\.git/info/lfs/locks$", p):   # git lfs locks (LFSModel)
             return self.send(200, {"locks": []}, "application/vnd.git-lfs+json")
         if p == "/api/v1/version":
-            return self.send(200, {"version": "11.0.0+gitea-1.22.0"})
+            return self.send(200, {"version": "11.0.0+gitea-1.22.0", "mock": "loupe-memtest"})   # how cpu.py knows it's us
         if p == "/api/v1/user":
             return self.send(200, user("alice"))
         m = re.match(r"^/api/v1/repos/([\w.-]+)/([\w.-]+)(/.*)?$", p)
