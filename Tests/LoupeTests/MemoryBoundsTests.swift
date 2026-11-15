@@ -219,7 +219,7 @@ struct FSWatcherTests {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-fsw-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let fired = Mutex(0)
-        var w: FSWatcher? = FSWatcher(paths: [dir]) { _ in fired.withLock { $0 += 1 } }
+        var w: FSWatcher? = FSWatcher(paths: [dir]) { _, _ in fired.withLock { $0 += 1 } }
         for k in 0..<20 {
             try "x".write(toFile: dir + "/f\(k)", atomically: false, encoding: .utf8)
             try await Task.sleep(for: .milliseconds(30))
@@ -227,7 +227,7 @@ struct FSWatcherTests {
         try await Task.sleep(for: .milliseconds(500))
         #expect(fired.withLock { $0 } > 0)
         for k in 0..<50 {   // churn: watchers created and dropped while events are in flight
-            let t = FSWatcher(paths: [dir]) { _ in }
+            let t = FSWatcher(paths: [dir]) { _, _ in }
             try "y".write(toFile: dir + "/g\(k)", atomically: false, encoding: .utf8)
             _ = t
         }

@@ -151,7 +151,7 @@ final class HistoryModel {
     var collapsed: Set<String> = []
     var detailLoading = false
     var error: String?
-    private static let page = 300
+    private static let page = 100
     private var detailTask: Task<Void, Never>?
     @ObservationIgnored lazy var rebase = Rebaser(history: self)   // interactive rebase: InteractiveRebase.swift
 
