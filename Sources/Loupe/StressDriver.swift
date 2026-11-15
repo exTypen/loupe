@@ -143,6 +143,7 @@ private struct StressRun {
         case "worktrees": await worktrees()
         case "tabs": await tabs()
         case "tabsonly": await tabsOnly()
+        case "idle": await pause(30)   // nothing driven: background work only (file events, polls)
         case "history": await history()
         case "bigfile": await bigFile()
         case "prs": await prs()
@@ -172,7 +173,8 @@ private struct StressRun {
 
     /// Only the view switch, on one worktree: what a person flipping Changes / History / Pull Requests does.
     func tabsOnly() async {
-        for t in ["history", "pulls", "changes"] { await select(s.big, tab: t); await pause(1) }
+        if app.selection != s.big { await select(s.big, tab: "changes") }
+        for t in ["history", "pulls", "changes"] { UserDefaults.standard.set(t, forKey: "tab"); await pause(1) }
     }
 
     /// The 5,000-file commit: Overview, Compact/Full, Diff/Before/After; then All Branches.

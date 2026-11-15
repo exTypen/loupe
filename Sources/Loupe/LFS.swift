@@ -98,6 +98,8 @@ final class LFSModel {
     @ObservationIgnored private var commonDir: String?
     @ObservationIgnored private var locksLoaded: Date?
     @ObservationIgnored private var loadingLocks = false
+    /// Last lock answer per repository (git common dir), shared by its worktrees.
+    private static var shared: [String: (at: Date, locks: [String: String], supported: Bool)] = [:]
 
     init(path: String) { self.path = path }
 
@@ -109,8 +111,18 @@ final class LFSModel {
         let attrs = (try? String(contentsOfFile: (path as NSString).appendingPathComponent(".gitattributes"), encoding: .utf8)) ?? ""
         let u = LFS.usesLFS(gitattributes: attrs) || commonDir.map { FileManager.default.fileExists(atPath: "\($0)/lfs/objects") } == true
         if u != used { used = u }
-        if used, LFS.installed, locksLoaded.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
+        guard used, LFS.installed else { return }
+        // Locks belong to the repository, not the worktree: one request a minute for all its worktrees (11 worktrees
+        // each asking sent ~16 requests a minute to the LFS server).
+        let key = commonDir ?? path
+        if let shared = Self.shared[key], Date().timeIntervalSince(shared.at) <= 60 {
+            if shared.supported != lockingSupported { lockingSupported = shared.supported }
+            if shared.locks != locks { locks = shared.locks }
+            return
+        }
+        if locksLoaded.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
             locksLoaded = Date()
+            Self.shared[key] = (Date(), locks, lockingSupported)   // the others wait for this one's answer
             Task { await loadLocks(env: env) }
         }
     }
@@ -129,6 +141,7 @@ final class LFSModel {
         let found = out.flatMap(LFS.parseLocks)
         if (found != nil) != lockingSupported { lockingSupported = found != nil }
         if (found ?? [:]) != locks { locks = found ?? [:] }
+        Self.shared[commonDir ?? path] = (Date(), locks, lockingSupported)
     }
 }
 

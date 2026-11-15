@@ -269,6 +269,8 @@ final class WorktreeModel {
     @ObservationIgnored lazy var submodules = SubmoduleModel(path: path)
 
     private var watcher: FSWatcher?
+    @ObservationIgnored private var watchedGitDir: String?
+    @ObservationIgnored private var ignoredDirs: Set<String> = []   // worktree-relative folders git ignores ("a/b/")
     private var refreshTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
 
@@ -558,17 +560,62 @@ final class WorktreeModel {
             // A linked worktree's index lives under the main repo's .git/worktrees/<name>, outside `path`.
             let gitDir = (try? await Git.string(["rev-parse", "--path-format=absolute", "--git-dir"], in: path))?.trimmingCharacters(in: .whitespacesAndNewlines)
             let paths = [path] + (gitDir.map { $0.hasPrefix(path) ? [] : [$0] } ?? [])
-            watcher = FSWatcher(paths: paths) { [weak self] worktreesChanged in
+            watchedGitDir = gitDir
+            watcher = FSWatcher(paths: paths) { [weak self] changed, worktreesChanged in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.scheduleRefresh()
                     if worktreesChanged { await self.app.refreshWorktrees(repo: self.app.repo(containing: self.path) ?? self.path) }
+                    if await self.affectsStatus(changed) { self.scheduleRefresh() }
                 }
             }
         }
     }
 
     func stopWatching() { watcher = nil }
+
+    /// Whether a file event can change what this worktree shows. Most can't: nix-direnv, build output and agents'
+    /// scratch files land in git-ignored directories, and the main worktree's folder holds every linked worktree
+    /// (.worktree/…), whose edits are theirs. Refreshing for those ran git status, stash, diff, LFS and submodule
+    /// checks and recomputed the views about once a second while anything worked in any worktree.
+    func affectsStatus(_ changed: [String]) async -> Bool {
+        let root = path + "/"
+        let nested = (app.worktrees[app.repo(containing: path) ?? path] ?? []).map { $0.path + "/" }.filter { $0 != root && $0.hasPrefix(root) }
+        var unknown: [String] = []   // worktree-relative paths git has to judge
+        for p in changed {
+            if p.hasSuffix("/.gitignore") || p.hasSuffix("/info/exclude") { ignoredDirs = []; return true }
+            if let g = watchedGitDir, p == g || p.hasPrefix(g + "/") {
+                if p.hasPrefix(g + "/worktrees/") { continue }   // another worktree's index and HEAD
+                return true                                      // this worktree's index, HEAD, refs, stash
+            }
+            guard p.hasPrefix(root) else { return true }
+            if nested.contains(where: { p.hasPrefix($0) }) { continue }
+            let rel = String(p.dropFirst(root.count))
+            if ignoredDirs.contains(where: { rel.hasPrefix($0) }) { continue }
+            unknown.append(rel)
+        }
+        guard !unknown.isEmpty else { return false }
+        // One check-ignore for the paths and their folders. A folder git ignores is remembered (when it holds no
+        // tracked file), so the next event under it needs no git at all.
+        var queries = Set<String>()
+        for r in unknown {
+            queries.insert(r)
+            var d = (r as NSString).deletingLastPathComponent
+            while !d.isEmpty { queries.insert(d + "/"); d = (d as NSString).deletingLastPathComponent }
+        }
+        guard let out = try? await Git.run(["check-ignore", "-z", "--stdin"], in: path, stdin: Data(queries.joined(separator: "\0").utf8), allowFailure: true)
+        else { return true }
+        let ignored = Set(out.split(separator: 0).map { String(decoding: $0, as: UTF8.self) })
+        for d in ignored where d.hasSuffix("/") && !ignoredDirs.contains(d) {
+            let tracked = (try? await Git.run(["ls-files", "-z", "--", d], in: path))?.isEmpty == false
+            if !tracked { ignoredDirs.insert(d) }
+        }
+        return unknown.contains { r in
+            if ignored.contains(r) { return false }
+            var d = (r as NSString).deletingLastPathComponent
+            while !d.isEmpty { if ignored.contains(d + "/") { return false }; d = (d as NSString).deletingLastPathComponent }
+            return true
+        }
+    }
 
     /// The sidebar moved to another worktree: let go of what's big and quick to rebuild (the shown diff, a commit's
     /// files, whole files and the tree of Full mode, opened pull requests). The status list, selections, tabs and
@@ -600,13 +647,14 @@ final class FSWatcher {
     /// What the stream calls. The stream retains it (the context's retain/release), so an event already being
     /// delivered on the FSEvents queue while the watcher goes away still finds it alive.
     private final class Handler {
-        let callback: (_ worktreesChanged: Bool) -> Void
-        init(_ c: @escaping (_ worktreesChanged: Bool) -> Void) { callback = c }
+        let callback: (_ paths: [String], _ worktreesChanged: Bool) -> Void
+        init(_ c: @escaping (_ paths: [String], _ worktreesChanged: Bool) -> Void) { callback = c }
     }
 
     /// `worktreesChanged`: a directory directly under .git/worktrees/ appeared or vanished, i.e. a worktree was added
     /// or removed (possibly from outside Loupe). Changes deeper inside, like a linked worktree's index, don't count.
-    init(paths: [String], callback: @escaping (_ worktreesChanged: Bool) -> Void) {
+    /// `paths`: what changed, without the noise.
+    init(paths: [String], callback: @escaping (_ paths: [String], _ worktreesChanged: Bool) -> Void) {
         let handler = Unmanaged.passRetained(Handler(callback))
         defer { handler.release() }   // the stream holds its own reference from here on
         var ctx = FSEventStreamContext(version: 0, info: handler.toOpaque(),
@@ -617,8 +665,9 @@ final class FSWatcher {
             guard let info else { return }
             let handler = Unmanaged<Handler>.fromOpaque(info).takeUnretainedValue()
             let paths = unsafeBitCast(rawPaths, to: NSArray.self) as? [String] ?? []
-            guard paths.contains(where: { !FSWatcher.isNoise($0) }) else { return }
-            handler.callback(paths.contains { ($0 as NSString).deletingLastPathComponent.hasSuffix("/.git/worktrees") })
+            let changed = paths.filter { !FSWatcher.isNoise($0) }
+            guard !changed.isEmpty else { return }
+            handler.callback(changed, changed.contains { ($0 as NSString).deletingLastPathComponent.hasSuffix("/.git/worktrees") })
         }
         stream = FSEventStreamCreate(nil, cb, &ctx, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.15,
                                      FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents))
