@@ -503,6 +503,16 @@ final class WorktreeModel {
         await app.refreshWorktrees(repo: app.repo(containing: path) ?? path)
     }
 
+    /// After a pull request merged on the server: fetch the branch it went into and show that branch's History, its
+    /// newest commit (the merge) selected.
+    func showMerged(into base: String) async {
+        await remoteOp("Fetching \(base)", ["fetch", remoteName, base])
+        UserDefaults.standard.set("history", forKey: "tab")
+        let scope = HistoryScope.branch("\(remoteName)/\(base)")
+        if history.scope == scope { history.selectedSHA = nil; await history.reload() }   // already there: just refresh
+        else { history.setScope(scope) }   // clears the selection: the reload selects the top commit, the merge
+    }
+
     // MARK: Remote / Forgejo
 
     func detectRemote() async {

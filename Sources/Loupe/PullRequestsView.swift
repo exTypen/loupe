@@ -410,7 +410,13 @@ private struct PullHeader: View {
         a.messageText = "\(s.rawValue.capitalized) #\(pull.pr.number) into \(pull.pr.base.ref)?"
         a.addButton(withTitle: s.rawValue.capitalized)
         a.addButton(withTitle: "Cancel")
-        if a.runModal() == .alertFirstButtonReturn { Task { await pull.merge(s) } }
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let base = pull.pr.base.ref
+        Task {
+            guard await pull.merge(s) else { return }
+            back()   // the pull request is done: no more polling a merged one
+            await worktree.showMerged(into: base)
+        }
     }
 }
 

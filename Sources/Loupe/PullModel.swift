@@ -517,8 +517,9 @@ final class PullRequestModel {
         catch { self.error = error.userMessage ?? self.error }
     }
 
-    func merge(_ style: ForgejoClient.MergeStyle) async {
-        do { try await client.merge(repo, pr.number, style: style); await load() }
-        catch { self.error = error.userMessage ?? self.error }
+    /// True once the server merged it. The caller leaves the pull request for the branch it went into.
+    func merge(_ style: ForgejoClient.MergeStyle) async -> Bool {
+        do { try await client.merge(repo, pr.number, style: style); return true }
+        catch { self.error = error.userMessage ?? self.error; return false }
     }
 }

@@ -48,9 +48,13 @@ def say(msg):
 # --- mock forge ------------------------------------------------------------------------------------------------------
 sc = json.load(open(os.path.join(M, "scenario.json")))
 forge_proc = None
-try:
-    urllib.request.urlopen(f"http://127.0.0.1:{a.port}/api/v1/version", timeout=2).read()
-except Exception:
+def forge_answer():
+    try: return urllib.request.urlopen(f"http://127.0.0.1:{a.port}/api/v1/version", timeout=2).read()
+    except Exception as e: return b"other" if hasattr(e, "code") else b""
+ans = forge_answer()
+if ans and b"loupe-memtest" not in ans:   # never send the scenario's requests to someone else's server
+    sys.exit(f"port {a.port} is in use by another server, not the mock forge: pass --port <free port>")
+if not ans:
     say("starting mock forge")
     forge_proc = subprocess.Popen([sys.executable, os.path.join(HERE, "mockforge.py"), sc["big"], "--port", str(a.port)],
                                   stdout=open(os.path.join(OUT, "forge.log"), "w"), stderr=subprocess.STDOUT)
@@ -60,6 +64,8 @@ except Exception:
         except Exception:
             time.sleep(0.2)
 
+sc["forge"] = f"http://127.0.0.1:{a.port}"
+subprocess.run(["git", "-C", sc["big"], "remote", "set-url", "origin", f"{sc['forge']}/acme/big.git"], check=True)
 sc["iterations"] = a.iterations
 if a.steps:
     sc["steps"] = a.steps.split(",")
