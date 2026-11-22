@@ -14,3 +14,9 @@ loupe-code = { path = "crates/code" }
 # Dependencies build optimized even in dev: a debug diff of 100k lines is not a useful measurement.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Highlighting and diff parsing are hot paths: debug-built they are ~10x slower (150k lines: 314 ms vs 37 ms).
+[profile.dev.package.loupe-code]
+opt-level = 2
+[profile.dev.package.loupe-core]
+opt-level = 2

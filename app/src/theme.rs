@@ -36,6 +36,17 @@ pub fn removed_bg() -> Hsla { ca(0xf8514926) }
 pub fn removed_word() -> Hsla { ca(0xf8514966) }
 pub fn hunk_bg() -> Hsla { ca(0x3b82f61a) }
 
+// Selection, find, overlays.
+pub fn selection() -> Hsla { ca(0x3b82f64d) }          // selected text (blue 30%)
+pub fn selection_inactive() -> Hsla { ca(0xffffff1f) } // selected text in an unfocused view
+pub fn find_match() -> Hsla { ca(0xe5a50a40) }         // other find matches (amber 25%)
+pub fn find_match_current() -> Hsla { ca(0xe5a50a99) } // the current find match (amber 60%)
+pub fn backdrop() -> Hsla { ca(0x00000066) }           // behind palettes, dialogs, overlays
+pub fn focus_ring() -> Hsla { ca(0x3b82f699) }         // keyboard focus outline
+
+// Syntax colors come from the selected code theme (loupe_code's theme list, EditorTheme.swift's CodeTheme),
+// not from here: the diff and code views read them from settings.
+
 // Shape and type.
 pub const RADIUS_CARD: Pixels = px(10.);
 pub const RADIUS_ROW: Pixels = px(8.);
