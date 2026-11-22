@@ -3473,9 +3473,14 @@ name = "loupe"
 version = "0.10.0"
 dependencies = [
  "gpui-kit",
+ "loupe-code",
  "loupe-core",
  "loupe-forge",
 ]
+
+[[package]]
+name = "loupe-code"
+version = "0.10.0"
 
 [[package]]
 name = "loupe-core"

@@ -33,8 +33,9 @@ agent on the port works from.
 
 ```
 crates/core   loupe-core   git CLI runner + parsers, diff, merge3, conflicts, LFS, submodules, undo,
-                           interactive rebase, worktree/status/log models, FS watching, syntax, code index,
-                           tag queries, SQL schema, YAML, change lens, file icons data. No gpui.
+                           interactive rebase, worktree/status/log models, FS watching. No gpui.
+crates/code   loupe-code   syntax highlighting, code index, tag queries, SQL schema, YAML, change lens,
+                           file icons data. No gpui.
 crates/forge  loupe-forge  Forgejo/Gitea/GitHub API, PRs, reviews, CI, PR create, accounts + Keychain,
                            commit AI. No gpui.
 app           loupe        GPUI front end. theme.rs (palette, frozen), ui/ (shared widgets), shell/ (window,

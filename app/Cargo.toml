@@ -14,4 +14,5 @@ path = "src/main.rs"
 [dependencies]
 gpui-kit.workspace = true
 loupe-core.workspace = true
+loupe-code.workspace = true
 loupe-forge.workspace = true

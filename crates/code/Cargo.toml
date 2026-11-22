@@ -1,0 +1,8 @@
+[package]
+name = "loupe-code"
+version = "0.10.0"
+edition.workspace = true
+
+# Syntax highlighting, code index (go to definition, outline), tag queries, SQL schema, YAML, change lens,
+# file icons. No UI.
+[dependencies]
