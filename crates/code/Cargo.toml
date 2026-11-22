@@ -6,3 +6,23 @@ edition.workspace = true
 # Syntax highlighting, code index (go to definition, outline), tag queries, SQL schema, YAML, change lens,
 # file icons. No UI.
 [dependencies]
+regex = "1"
+serde_json = "1"
+tree-sitter = "0.25"
+# Pinned to the versions the Swift app used (Package.swift): queries/*.scm are those releases' tags.scm, and their node
+# names must match the grammar. (Swift pinned for SwiftPM reasons too: some releases' manifests dropped the external
+# scanner, and tree-sitter-swift only ships generated sources on "-with-generated-files" tags; the crates.io
+# packages ship both, so that part doesn't apply here.)
+tree-sitter-rust = "=0.24.2"
+tree-sitter-swift = "=0.7.4"
+tree-sitter-go = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-javascript = "=0.23.1"
+tree-sitter-python = "=0.23.1"
+tree-sitter-c = "=0.24.2"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-java = "=0.23.5"
+
+[dev-dependencies]
+# Only for the measurement in tests/highlight_bench.rs (hand tokenizer vs tree-sitter-highlight).
+tree-sitter-highlight = "0.25"
