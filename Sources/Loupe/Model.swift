@@ -167,7 +167,12 @@ final class AppModel {
         guard let list = try? await Git.worktrees(in: repo) else { return }
         let wts = list.filter { !$0.isBare }
         // Worktrees removed outside Loupe (or pruned): their models, watchers and undo history go too.
-        for old in worktrees[repo] ?? [] where !wts.contains(where: { $0.path == old.path }) { forget(old.path) }
+        for old in worktrees[repo] ?? [] where !wts.contains(where: { $0.path == old.path }) {
+            forget(old.path)
+            // The selected one included: leaving the selection on a gone path made the detail view build a fresh model
+            // (git + watcher on a missing folder) for it again, and its watcher refreshed the list, forgetting it again.
+            if selection == old.path { selection = repo }
+        }
         if worktrees[repo] != wts { worktrees[repo] = wts }   // a subscript write notifies even when equal
         for wt in list where !wt.isBare { Task { await model(for: wt.path).refreshStatus() } }
     }
