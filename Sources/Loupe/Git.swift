@@ -56,13 +56,16 @@ enum Git {
                     }
                 }
                 // Drain stderr concurrently so a chatty stderr can't deadlock a big stdout.
-                var errData = Data()
+                // The reader ends when every holder of the pipe closes it: a daemon git spawned (fsmonitor) inherits it and
+                // never does, so after git exits we wait a moment, not forever (that parked ~90 threads and hung quit).
+                let errBox = LockedData()
                 let g = DispatchGroup()
                 g.enter()
-                DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+                DispatchQueue.global().async { errBox.set(err.fileHandleForReading.readDataToEndOfFile()); g.leave() }
                 let outData = out.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
-                g.wait()
+                _ = g.wait(timeout: .now() + 2)
+                let errData = errBox.get()
                 if trace { FileHandle.standardError.write(Data(String(format: "[git %.0fms queued+run] %@ (%@)\n", Date().timeIntervalSince(enqueued) * 1000, args.prefix(3).joined(separator: " "), String(format: "%.0fms run", Date().timeIntervalSince(started) * 1000)).utf8)) }
                 if running.wasCancelled {
                     cont.resume(throwing: CancellationError())
@@ -74,6 +77,13 @@ enum Git {
                 }
             }
         } } onCancel: { running.cancel() }
+    }
+
+    final class LockedData: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        func set(_ d: Data) { lock.lock(); data = d; lock.unlock() }
+        func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
     /// Subcommands that only read: safe to stop halfway.
