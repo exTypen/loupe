@@ -3,6 +3,15 @@ name = "loupe-forge"
 version = "0.10.0"
 edition.workspace = true
 
-# Forge (Forgejo / Gitea / GitHub) API clients, CI, keychain, commit AI. No UI.
+# Forge (Forgejo / Gitea / GitHub) API clients, CI, keychain, commit AI, persisted settings. No UI.
+# Self-contained on purpose: loupe-core is written in parallel, so the few git calls and diff types needed here
+# are local.
 [dependencies]
-loupe-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking HTTP from background threads. platform-verifier: certificates are checked against the macOS trust
+# store like URLSession did, so a self-hosted Forgejo behind a private CA keeps working.
+ureq = { version = "3.4", features = ["platform-verifier"] }
+security-framework = "3"
+plist = "1.10"
+uuid = { version = "1", features = ["v4"] }
