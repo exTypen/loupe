@@ -822,7 +822,7 @@ impl DiffView {
             for &k in ks {
                 let m = &f.matches[k];
                 if split && m.right != right { continue }
-                let c = if k == f.index { theme::accent().opacity(0.6) } else { theme::accent().opacity(0.25) };
+                let c = if k == f.index { theme::find_match_current() } else { theme::find_match() };
                 quads.push(div().absolute().top(px(1.)).bottom(px(1.)).rounded(px(2.)).left(cw * m.cols.start as f32 - px(1.)).w(cw * m.cols.len() as f32 + px(2.)).bg(c).into_any_element());
             }
         }
@@ -1104,8 +1104,18 @@ fn merge_layers(len: usize, layers: &[(Range<usize>, HighlightStyle)]) -> Vec<(R
     out
 }
 
-// ponytail: syntax colours from the closest theme tokens; theme.rs has no syntax palette yet (requested).
+/// The selected code theme's token colors (0xRRGGBB, TokenKind order), shared by every diff. Zero: not set yet.
+static TOKEN_RGB: [std::sync::atomic::AtomicU32; 9] = [const { std::sync::atomic::AtomicU32::new(0) }; 9];
+
+/// Sets the syntax colors every DiffView draws with (loupe_code's CodeTheme::tokens); windows redraw on their next
+/// frame, so call `cx.refresh_windows()` after a change.
+pub fn set_token_colors(rgb: [u32; 9]) {
+    for (a, v) in TOKEN_RGB.iter().zip(rgb) { a.store(v | 0xFF00_0000, std::sync::atomic::Ordering::Relaxed) }
+}
+
 fn token_color(kind: u8) -> Hsla {
+    let v = TOKEN_RGB.get(kind as usize).map_or(0, |a| a.load(std::sync::atomic::Ordering::Relaxed));
+    if v != 0 { return gpui_kit::rgb(v & 0xFF_FFFF).into() }
     match kind {
         0 => theme::purple(),           // keyword
         1 => theme::green(),            // string
@@ -1119,8 +1129,7 @@ fn token_color(kind: u8) -> Hsla {
     }
 }
 
-// ponytail: no selection token in theme.rs yet (requested); blue at 30% reads as a selection.
-fn selection_color() -> Hsla { theme::blue().opacity(0.3) }
+fn selection_color() -> Hsla { theme::selection() }
 
 /// A pill button; `on` is the selected segment.
 fn pill(id: impl Into<gpui_kit::ElementId>, label: &'static str, on: bool) -> gpui_kit::Stateful<gpui_kit::Div> {

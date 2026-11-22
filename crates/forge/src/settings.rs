@@ -61,8 +61,22 @@ pub struct Prefs {
 /// thread.
 pub fn shared() -> MutexGuard<'static, Prefs> {
     static P: OnceLock<Mutex<Prefs>> = OnceLock::new();
-    P.get_or_init(|| Mutex::new(Prefs { shared: true, ..Prefs::load_domain(DOMAIN) })).lock().unwrap()
+    let domain = SHARED_DOMAIN.get_or_init(|| DOMAIN.into());
+    P.get_or_init(|| Mutex::new(Prefs { shared: true, ..Prefs::load_domain(domain) })).lock().unwrap()
 }
+
+static SHARED_DOMAIN: OnceLock<String> = OnceLock::new();
+
+/// Points `shared()` at another domain (test and scenario runs), wiping it first. Call before anything reads
+/// settings; false when `shared()` already picked its domain.
+pub fn use_fresh_domain(domain: &str) -> bool {
+    if SHARED_DOMAIN.set(domain.into()).is_err() { return false }
+    let _ = Command::new("/usr/bin/defaults").args(["delete", domain]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    true
+}
+
+/// The domain `shared()` reads and writes.
+pub fn shared_domain() -> &'static str { SHARED_DOMAIN.get_or_init(|| DOMAIN.into()) }
 
 fn schedule_save() {
     static PENDING: AtomicBool = AtomicBool::new(false);

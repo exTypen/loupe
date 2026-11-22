@@ -6,11 +6,12 @@ use gpui_kit::{
     component::input::{Input, InputEvent, InputState},
 };
 
-use super::model::{SwitcherItem, Workspace, last_component, switcher_matches};
+use super::model::{SwitcherItem, last_component, switcher_items, switcher_matches};
+use crate::state::AppModel;
 use crate::ui;
 
 pub struct Switcher {
-    workspace: Entity<Workspace>,
+    workspace: Entity<AppModel>,
     input: Entity<InputState>,
     index: usize,
     scroll: UniformListScrollHandle,
@@ -20,7 +21,7 @@ pub struct Switcher {
 impl EventEmitter<DismissEvent> for Switcher {}
 
 impl Switcher {
-    pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: Entity<AppModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Go to worktree…"));
         input.update(cx, |i, cx| i.focus(window, cx));
         let subs = vec![cx.subscribe(&input, |this, _, e: &InputEvent, cx| match e {
@@ -38,7 +39,7 @@ impl Switcher {
 
     fn items(&self, cx: &gpui_kit::App) -> Vec<SwitcherItem> {
         let ws = self.workspace.read(cx);
-        switcher_matches(&ws.switcher_items(), &self.input.read(cx).value(), &ws.recent)
+        switcher_matches(&switcher_items(ws), &self.input.read(cx).value(), &ws.recent)
     }
 
     fn step(&mut self, d: isize, cx: &mut Context<Self>) {
@@ -54,7 +55,7 @@ impl Switcher {
     }
 
     fn open(&mut self, item: SwitcherItem, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |w, cx| { w.collapsed.remove(&item.repo); w.select(Some(item.wt.path)); cx.notify() });
+        self.workspace.update(cx, |w, cx| { w.collapsed.remove(&item.repo); w.select(Some(item.wt.path), cx) });
         cx.emit(DismissEvent);
     }
 }
@@ -62,7 +63,7 @@ impl Switcher {
 impl Render for Switcher {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.items(cx);
-        let ws = self.workspace.read(cx).clone();
+        let statuses: Vec<_> = { let ws = self.workspace.read(cx); items.iter().map(|i| ws.status(&i.wt.path)).collect() };
         let index = self.index;
         let me = cx.entity();
         let list = uniform_list("switcher", items.len(), move |range, _, _| {
@@ -70,7 +71,7 @@ impl Render for Switcher {
                 let item = items[i].clone();
                 let me = me.clone();
                 div().w_full().child(
-                    super::worktree_row_body(SharedString::from(format!("sw-{i}")), &item.repo, &item.wt, ws.status(&item.wt.path), i == index,
+                    super::worktree_row_body(SharedString::from(format!("sw-{i}")), &item.repo, &item.wt, statuses[i], i == index,
                         Some(last_component(&item.repo).to_string()))
                         .w_full()
                         .on_click(move |_, _, cx| me.update(cx, |s, cx| s.open(item.clone(), cx))))

@@ -1,5 +1,8 @@
-//! Loupe's GPUI front end. Each module has one owner during the port (docs/gpui/PORT.md).
+//! Loupe's GPUI front end. Shared: theme, ui, diff, state, shell (frozen for the view agents); views/: one module
+//! per view owner (docs/gpui/VIEWS.md).
 pub mod theme;
 pub mod ui;
 pub mod diff;
+pub mod state;
 pub mod shell;
+pub mod views;

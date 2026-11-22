@@ -3512,10 +3512,15 @@ dependencies = [
 name = "loupe"
 version = "0.10.0"
 dependencies = [
+ "futures",
  "gpui-kit",
  "loupe-code",
  "loupe-core",
  "loupe-forge",
+ "plist",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

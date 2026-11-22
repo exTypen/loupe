@@ -1,7 +1,7 @@
 //! Window, sidebar, tabs, toolbar, quick switcher, toasts (App.swift, WorktreeView in ChangesView.swift).
+pub mod branches;
 pub mod keys;
 pub mod model;
-pub mod settings;
 pub mod switcher;
 
 use std::time::Duration;
@@ -17,63 +17,80 @@ use gpui_kit::{
     },
 };
 
-use crate::{theme, ui};
+use crate::state::{AppEvent, AppModel, WorktreeModel};
+use crate::{theme, ui, views};
 use keys::*;
-use model::{Status, Worktree, Workspace, last_component, row_title, tilde};
+use model::{Status, Worktree, branch_label, last_component, row_title, tilde};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab { Changes, History, Pulls }
-
-impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Changes, Tab::History, Tab::Pulls];
-    /// The "tab" default's value.
-    pub fn key(self) -> &'static str { match self { Tab::Changes => "changes", Tab::History => "history", Tab::Pulls => "pulls" } }
-    pub fn from_key(k: &str) -> Self { match k { "history" => Tab::History, "pulls" => Tab::Pulls, _ => Tab::Changes } }
-    pub fn title(self) -> &'static str { match self { Tab::Changes => "Changes", Tab::History => "History", Tab::Pulls => "Pull Requests" } }
-}
-
-/// Overview / Files (/ Conversation) for whatever change is on screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewMode { Overview, Files, Conversation }
-
-/// Which of the toolbar's diff controls apply to what's on screen. Views showing a diff set `Shell::controls`.
-#[derive(Clone, Default)]
-pub struct DiffControls {
-    pub full: bool, // a diff is showing: Compact/Full applies
-    pub view: Option<(Vec<ViewMode>, ViewMode, std::rc::Rc<dyn Fn(ViewMode, &mut Window, &mut App)>)>,
-}
+pub use crate::state::{DiffControls, Tab, ViewMode};
 
 struct Toast { id: u64, text: SharedString, undoable: bool }
 
 pub struct Shell {
-    pub workspace: Entity<Workspace>,
-    pub tab: Tab,
-    pub full_mode: bool, // the "prFullMode" default
-    pub controls: DiffControls,
-    /// The real Changes / History / Pull Requests views, once the integrator has them; placeholders until then.
-    pub views: [Option<AnyView>; 3],
+    /// The app's model; named `workspace` since the shell's first version.
+    pub workspace: Entity<AppModel>,
+    /// The Changes / History / Pull Requests views (views::changes, views::history, views::pulls).
+    pub views: [AnyView; 3],
     sidebar_open: bool,
     focus: FocusHandle,
     filter: Entity<InputState>,
     switcher: Option<Entity<switcher::Switcher>>,
+    branches: Option<Entity<branches::BranchPicker>>,
     toast: Option<Toast>,
     toast_timer: Option<Task<()>>,
     next_toast: u64,
+    /// The selected worktree's model, observed so the toolbar and alert follow its busy / error / ahead / behind.
+    watched: Option<(Entity<WorktreeModel>, Subscription)>,
     _subs: Vec<Subscription>,
 }
 
 impl Shell {
-    pub fn new(workspace: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let workspace = cx.new(|_| workspace);
+    pub fn new(app: Entity<AppModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter worktrees"));
         let subs = vec![
-            cx.observe(&workspace, |_, _, cx| cx.notify()),
+            cx.observe(&app, |s, _, cx| { s.watch_selected(cx); cx.notify() }),
+            cx.subscribe(&app, |s, _, e: &AppEvent, cx| if let AppEvent::Toast { text, undoable } = e { s.show_toast(text.clone(), *undoable, cx) }),
             cx.subscribe(&filter, |_, _, e: &InputEvent, cx| if matches!(e, InputEvent::Change) { cx.notify() }),
         ];
+        let views = [
+            cx.new(|cx| views::changes::ChangesView::new(app.clone(), window, cx)).into(),
+            cx.new(|cx| views::history::HistoryView::new(app.clone(), window, cx)).into(),
+            cx.new(|cx| views::pulls::PullsView::new(app.clone(), window, cx)).into(),
+        ];
+        let mut subs = subs;
+        subs.extend(views::install(&app, window, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        Self { workspace, tab: Tab::Changes, full_mode: false, controls: DiffControls::default(), views: [None, None, None],
-               sidebar_open: true, focus, filter, switcher: None, toast: None, toast_timer: None, next_toast: 0, _subs: subs }
+        let mut s = Self { workspace: app, views, sidebar_open: true, focus, filter, switcher: None, branches: None,
+                           toast: None, toast_timer: None, next_toast: 0, watched: None, _subs: subs };
+        s.watch_selected(cx);
+        s
+    }
+
+    fn watch_selected(&mut self, cx: &mut Context<Self>) {
+        let m = self.workspace.read(cx).selected_model();
+        if m.as_ref().map(|m| m.entity_id()) == self.watched.as_ref().map(|w| w.0.entity_id()) { return }
+        self.watched = m.map(|m| { let sub = cx.observe(&m, |_, _, cx| cx.notify()); (m, sub) });
+    }
+
+    fn selected(&self) -> Option<Entity<WorktreeModel>> { self.watched.as_ref().map(|w| w.0.clone()) }
+
+    /// Runs `f` on the selected worktree's model (toolbar and menu actions).
+    fn on_selected(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut WorktreeModel, &mut Context<WorktreeModel>)) {
+        if let Some(m) = self.selected() { m.update(cx, f) }
+    }
+
+    fn open_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.selected() else { return };
+        if self.branches.take().is_some() { cx.notify(); return }
+        let p = cx.new(|cx| branches::BranchPicker::new(m, window, cx));
+        self._subs.push(cx.subscribe_in(&p, window, |this, _, _: &gpui_kit::DismissEvent, window, cx| {
+            this.branches = None;
+            this.focus.focus(window, cx);
+            cx.notify();
+        }));
+        self.branches = Some(p);
+        cx.notify();
     }
 
     /// "Discard of a.txt · Undo" after a destructive action (`undoable`), "Undone: …" after an undo; gone after
@@ -91,7 +108,7 @@ impl Shell {
 
     pub fn hide_toast(&mut self, cx: &mut Context<Self>) { self.toast = None; self.toast_timer = None; cx.notify() }
 
-    fn set_tab(&mut self, t: Tab, cx: &mut Context<Self>) { self.tab = t; cx.notify() }
+    fn set_tab(&mut self, t: Tab, cx: &mut Context<Self>) { self.workspace.update(cx, |a, cx| a.set_tab(t, cx)) }
 
     fn filter_text(&self, cx: &App) -> String { self.filter.read(cx).value().to_string() }
 
@@ -111,7 +128,7 @@ impl Shell {
     }
 
     fn select_nth(&mut self, n: usize, cx: &mut Context<Self>) {
-        if let Some((_, w)) = self.visible(cx).into_iter().nth(n) { self.workspace.update(cx, |ws, cx| { ws.select(Some(w.path)); cx.notify() }) }
+        if let Some((_, w)) = self.visible(cx).into_iter().nth(n) { self.workspace.update(cx, |ws, cx| ws.select(Some(w.path), cx)) }
     }
 
     fn open_repository(&mut self, cx: &mut Context<Self>) {
@@ -119,7 +136,7 @@ impl Shell {
         let ws = self.workspace.clone();
         cx.spawn(async move |_, cx| {
             if let Ok(Ok(Some(paths))) = paths.await {
-                ws.update(cx, |ws, cx| { for p in paths { ws.add_repo(&p.to_string_lossy()) } cx.notify() });
+                ws.update(cx, |ws, cx| for p in paths { ws.add_repo(p.to_string_lossy().into_owned(), cx) });
             }
         }).detach();
     }
@@ -139,9 +156,19 @@ impl Shell {
     fn title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let ws = self.workspace.read(cx);
         let wt = ws.selected_worktree().cloned();
-        let status = wt.as_ref().map(|w| ws.status(&w.path)).unwrap_or_default();
-        let tab_ix = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let tab_ix = ws.tab.index();
+        let (controls, full_mode) = (ws.controls().clone(), ws.full_mode);
+        // The model's own numbers: fresher than the sidebar's copy, and busy shows which operation runs.
+        let (behind, ahead, busy, branch) = self.selected().map(|m| { let s = &m.read(cx).state; (s.behind, s.ahead, s.busy.clone(), (s.branch.clone(), s.head_oid.clone())) })
+            .unwrap_or_default();
         let me = cx.entity();
+        let remote_button = |id: &'static str, icon: &str, label: &str, action: Box<dyn gpui_kit::Action>| {
+            let running = busy.as_deref() == Some(label);
+            title_button(id, icon)
+                .when(running, |d| d.bg(theme::selected()))
+                .when(busy.is_some(), |d| d.opacity(if running { 1. } else { 0.4 }))
+                .when(busy.is_none(), |d| d.on_click(move |_, w, cx| w.dispatch_action(action.boxed_clone(), cx)))
+        };
         TitleBar::new().h(px(42.)).bg(theme::sidebar()).border_b_0()
             .child(div().flex().items_center().size_full().pr_2()
                 // Left: the sidebar toggle, then fetch / pull / push beside the branch they act on.
@@ -149,23 +176,25 @@ impl Shell {
                     .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| { s.sidebar_open = !s.sidebar_open; cx.notify() })))
                     .when_some(wt.clone(), |d, wt| d
                         .child(div().w(px(10.)))
-                        .child(branch_button(&wt))
-                        .child(title_button("fetch", "refresh-cw").on_click(|_, w, cx| w.dispatch_action(Box::new(Fetch), cx)))
-                        .child(title_button("pull", "arrow-down").on_click(|_, w, cx| w.dispatch_action(Box::new(Pull), cx))
-                            .when(status.behind > 0, |d| d.child(ui::kbd(status.behind.to_string()).mr_1())))
-                        .child(title_button("push", "arrow-up").on_click(|_, w, cx| w.dispatch_action(Box::new(Push), cx))
-                            .when(status.ahead > 0, |d| d.child(ui::kbd(status.ahead.to_string()).mr_1())))))
+                        .child(branch_button(&wt, branch))
+                        .child(remote_button("fetch", "refresh-cw", "Fetching", Box::new(Fetch)))
+                        .child(remote_button("pull", "arrow-down", "Pulling", Box::new(Pull))
+                            .when(behind > 0, |d| d.child(ui::kbd(behind.to_string()).mr_1())))
+                        .child(remote_button("push", "arrow-up", "Pushing", Box::new(Push))
+                            .when(ahead > 0, |d| d.child(ui::kbd(ahead.to_string()).mr_1())))
+                        // What's running, in words: the only progress a git operation gives.
+                        .when_some(busy.clone(), |d, b| d.child(div().pl_1().text_size(px(12.)).text_color(theme::text_muted()).child(format!("{b}…"))))))
                 // Center: the view switch.
                 .when(wt.is_some(), |d| d.child(ui::segmented("tabs", &["Changes", "History", "Pull Requests"], tab_ix,
                     move |i, _, cx| me.update(cx, |s, cx| s.set_tab(Tab::ALL[i], cx)))))
                 // Right: Compact/Full and the view mode while a diff shows, then search and settings.
                 .child(div().flex().flex_1().items_center().justify_end().gap_1()
-                    .when(self.controls.full, |d| {
-                        let me = cx.entity();
-                        d.child(ui::segmented("mode", &["Compact", "Full"], self.full_mode as usize,
-                            move |i, _, cx| me.update(cx, |s, cx| { s.full_mode = i == 1; cx.notify() })))
+                    .when(controls.full, |d| {
+                        let app = self.workspace.clone();
+                        d.child(ui::segmented("mode", &["Compact", "Full"], full_mode as usize,
+                            move |i, _, cx| app.update(cx, |a, cx| a.set_full_mode(i == 1, cx))))
                     })
-                    .when_some(self.controls.view.clone(), |d, (modes, cur, set)| {
+                    .when_some(controls.view.clone(), |d, (modes, cur, set)| {
                         let names: Vec<&str> = modes.iter().map(|m| match m { ViewMode::Overview => "Overview", ViewMode::Files => "Files", ViewMode::Conversation => "Conversation" }).collect();
                         let sel = modes.iter().position(|m| *m == cur).unwrap_or(0);
                         d.child(ui::segmented("view", &names, sel, move |i, w, cx| set(modes[i], w, cx)))
@@ -176,25 +205,26 @@ impl Shell {
     }
 
     fn sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace.read(cx).clone();
-        let ws = &ws;
         let filtering = !self.filter_text(cx).trim().is_empty();
         let visible = self.visible(cx);
+        let ws = self.workspace.read(cx);
         let sel = ws.selection().map(str::to_string);
         let space = ws.space().clone();
         let multi = ws.spaces.len() > 1;
+        let collapsed = ws.collapsed.clone();
+        let changes: Vec<usize> = space.repos.iter().map(|r| ws.change_count(r)).collect();
+        let status: std::collections::HashMap<String, Status> = visible.iter().map(|(_, w)| (w.path.clone(), ws.status(&w.path))).collect();
         let mut n = 0;
         let mut groups = vec![];
-        for repo in &space.repos {
+        for (repo, changes) in space.repos.iter().zip(changes) {
             let rows: Vec<&Worktree> = visible.iter().filter(|(r, _)| r == repo).map(|(_, w)| w).collect();
             if filtering && rows.is_empty() { continue }
-            let expanded = filtering || !ws.collapsed.contains(repo);
-            let changes = ws.change_count(repo);
+            let expanded = filtering || !collapsed.contains(repo);
             let mut g = div().flex().flex_col().gap_px().pb_2().child(self.repo_header(repo, expanded, changes, multi, cx));
             for w in rows {
                 let hint = (n < 9).then(|| format!("⌥⌘{}", n + 1));
                 n += 1;
-                g = g.child(self.worktree_row(repo, w, ws.status(&w.path), sel.as_deref() == Some(&w.path), hint, cx));
+                g = g.child(self.worktree_row(repo, w, status[&w.path], sel.as_deref() == Some(&w.path), hint, cx));
             }
             groups.push(g);
         }
@@ -236,11 +266,11 @@ impl Shell {
                     menu = menu.separator();
                     for (id, name) in &others {
                         let (id, r, w) = (id.clone(), r2.clone(), ws2.clone());
-                        menu = menu.item(PopupMenuItem::new(format!("Move to {name}")).on_click(move |_, _, cx| w.update(cx, |w, cx| { w.move_repos(&[r.clone()], &id); cx.notify() })));
+                        menu = menu.item(PopupMenuItem::new(format!("Move to {name}")).on_click(move |_, _, cx| w.update(cx, |w, cx| w.move_repos(&[r.clone()], &id, cx))));
                     }
                 }
                 menu.separator()
-                    .item(PopupMenuItem::new("Remove from Loupe").on_click(move |_, _, cx| wa.update(cx, |w, cx| { w.remove_repo(&rb); cx.notify() })))
+                    .item(PopupMenuItem::new("Remove from Loupe").on_click(move |_, _, cx| wa.update(cx, |w, cx| w.remove_repo(&rb, cx))))
             })
             .into_any_element()
     }
@@ -253,7 +283,7 @@ impl Shell {
         worktree_row_body(SharedString::from(format!("wt-{path}")), repo, wt, st, selected, None)
             .when_some(hint, |d, h| d.child(ui::kbd(h)))
             .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
-            .on_click(move |_, _, cx| ws.update(cx, |w, cx| { w.select(Some(p1.clone())); cx.notify() }))
+            .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.select(Some(p1.clone()), cx)))
             .context_menu(move |menu, _, _| {
                 let (a, b, c, d, e) = (p2.clone(), p3.clone(), p4.clone(), p5.clone(), p6.clone());
                 menu.item(PopupMenuItem::new("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&a))))
@@ -281,25 +311,23 @@ impl Shell {
                     let w = w.clone();
                     div().id(SharedString::from(format!("space-{id}"))).p_1().cursor_pointer()
                         .tooltip(move |win, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(win, cx))
-                        .on_click(move |_, _, cx| w.update(cx, |w, cx| { w.switch_space_to(&id); cx.notify() }))
+                        .on_click(move |_, _, cx| w.update(cx, |w, cx| w.switch_space_to(&id, cx)))
                         .child(div().size(px(7.)).rounded_full().border_1()
                             .map(|d| if on { d.bg(theme::text()).border_color(theme::text()) } else { d.border_color(theme::text_faint()) }))
                 })))
-                .child(ui::icon_button("new-space", "plus").on_click(move |_, _, cx| w.update(cx, |w, cx| { w.add_space(); cx.notify() }))))
+                .child(ui::icon_button("new-space", "plus").on_click(move |_, _, cx| w.update(cx, |w, cx| { w.add_space(cx); }))))
             .into_any_element()
     }
 
     fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace.read(cx).clone();
+        let ws = self.workspace.read(cx);
         let panel = div().size_full().bg(theme::canvas()).border_l_1().border_t_1().border_color(theme::border())
             .rounded_tl(theme::RADIUS_CARD).overflow_hidden();
-        let Some(wt) = ws.selected_worktree().cloned() else {
+        if ws.selected_worktree().is_none() {
             return panel.child(ui::empty_state("git-branch", "No Worktree Selected", "Open a repository to review its changes and pull requests.")
                 .child(div().pt_2().child(ui::pill("open-repo-empty", "Open Repository…").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenRepository), cx))))).into_any_element();
         };
-        let ix = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
-        if let Some(v) = self.views[ix].clone() { return panel.child(v).into_any_element() }
-        panel.child(placeholder(self.tab, &wt, ws.status(&wt.path))).into_any_element()
+        panel.child(self.views[ws.tab.index()].clone()).into_any_element()
     }
 }
 
@@ -316,13 +344,13 @@ pub(crate) fn worktree_row_body(id: SharedString, repo: &str, wt: &Worktree, st:
         .child(ui::icon(icon).text_color(color))
         .child(div().flex().flex_col().flex_1().min_w_0()
             .child(div().truncate().child(row_title(wt, repo)))
-            .child(div().truncate().text_size(px(11.)).text_color(theme::text_faint()).child(wt.branch_label())))
+            .child(div().truncate().text_size(px(11.)).text_color(theme::text_faint()).child(branch_label(wt))))
         .child(div().flex().flex_none().items_center().gap_1p5().text_size(px(11.))
             .when(merged, |d| d.child(ui::badge_tinted("Merged", theme::purple())))
             .when(st.ahead > 0, |d| d.child(div().text_color(theme::text_muted()).child(format!("↑{}", st.ahead))))
             .when(st.behind > 0, |d| d.child(div().text_color(theme::text_muted()).child(format!("↓{}", st.behind))))
             .when(st.changes > 0, |d| d.child(ui::badge(st.changes.to_string())))
-            .when(wt.locked, |d| d.child(ui::icon("lock").size(px(11.)))))
+            .when(wt.is_locked, |d| d.child(ui::icon("lock").size(px(11.)))))
 }
 
 fn title_button(id: &'static str, icon: &str) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -331,8 +359,10 @@ fn title_button(id: &'static str, icon: &str) -> gpui_kit::Stateful<gpui_kit::Di
 }
 
 /// The branch and the worktree's folder, two lines; a click opens the branch picker.
-fn branch_button(wt: &Worktree) -> impl IntoElement {
-    let title = if wt.head.is_empty() { String::new() } else { wt.branch.clone().unwrap_or_else(|| "detached HEAD".into()) };
+/// `live`: the worktree model's branch and HEAD (fresher than the worktree list's).
+fn branch_button(wt: &Worktree, live: (Option<String>, String)) -> impl IntoElement {
+    let (branch, head) = if live.1.is_empty() { (wt.branch.clone(), wt.head.clone()) } else { live };
+    let title = if head.is_empty() { String::new() } else { branch.unwrap_or_else(|| "detached HEAD".into()) };
     div().id("branch").flex().flex_col().justify_center().h(px(34.)).px_2().max_w(px(300.)).rounded(px(7.)).cursor_pointer()
         .hover(|s| s.bg(theme::hover()))
         .on_mouse_down(MouseButton::Left, |_, w, _| w.prevent_default())
@@ -345,47 +375,6 @@ fn branch_button(wt: &Worktree) -> impl IntoElement {
 
 fn open_in(bundle: &str, path: &str) {
     let _ = std::process::Command::new("/usr/bin/open").args(["-b", bundle, path]).spawn();
-}
-
-/// What each tab shows until its view is ported: the kit, with the selected worktree's name in it.
-fn placeholder(tab: Tab, wt: &Worktree, st: Status) -> impl IntoElement {
-    use ui::LineKind::*;
-    let body = div().flex().flex_col().gap_4().w_full().max_w(px(980.)).px_6().py_6();
-    let body = match tab {
-        Tab::Changes => body
-            .child(ui::section_header("Changes", Some(st.changes)))
-            .child(ui::card()
-                .child(ui::card_header(div().flex().items_center().gap_2().child(ui::icon("file")).child(div().font_family(theme::CODE_FONT).child("app/src/shell/mod.rs")),
-                    div().flex().gap_1p5().child(div().text_color(theme::green()).child("+3")).child(div().text_color(theme::red()).child("-1")).child("1.8s")))
-                .child(div().py_1().font_family(theme::CODE_FONT).text_size(theme::CODE_SIZE).line_height(theme::CODE_LINE_HEIGHT)
-                    .child(ui::code_line(None, "@@ -39,6 +39,8 @@ impl Shell", Hunk))
-                    .child(ui::code_line(Some(39), "    pub fn new(workspace: Workspace) -> Self {", Context))
-                    .child(ui::code_line(Some(40), "        let tab = Tab::Changes;", Removed))
-                    .child(ui::code_line(Some(40), "        let tab = Tab::from_key(&saved);", Added))
-                    .child(ui::code_line(Some(41), "        let full_mode = false;", Added))
-                    .child(ui::code_line(Some(42), "        Self { workspace, tab, full_mode }", Context)))
-                .child(ui::card_footer(div().flex().gap_1p5().child(ui::icon("check").size(px(12.)).text_color(theme::green()))
-                    .child(div().text_color(theme::green()).child("Done")).child("15.1s"))))
-            .child(div().flex().gap_2().child(ui::pill("commit", "Commit")).child(ui::pill("stash", "Stash")))
-            .into_any_element(),
-        Tab::History => body
-            .child(ui::section_header(format!("History of {}", wt.branch_label()), None))
-            .child(ui::card().p_1().children([
-                ("fde8251", "Quitting Loupe no longer hangs", "2h"), ("585173a", "Merging a pull request takes you to what you merged", "5h"),
-                ("5f97dac", "Loupe no longer works in the background", "1d"), ("1d10383", "Switching views no longer redoes work", "2d"),
-            ].into_iter().enumerate().map(|(i, (sha, msg, t))| ui::list_row(("commit", i), i == 0)
-                .child(ui::code_chip(sha)).child(div().flex_1().min_w_0().truncate().child(msg)).child(ui::kbd(t)))))
-            .into_any_element(),
-        Tab::Pulls => body
-            .child(ui::section_header("Pull Requests", Some(2)))
-            .child(ui::card().p_1()
-                .child(ui::list_row("pr-1", false).child(ui::icon("git-pull-request").text_color(theme::green()))
-                    .child(div().flex_1().truncate().child("GPUI port: shell and widget kit")).child(ui::badge_tinted("gpui-shell", theme::blue())).child(ui::kbd("#42")))
-                .child(ui::list_row("pr-2", false).child(ui::icon("git-merge").text_color(theme::purple()))
-                    .child(div().flex_1().truncate().child("Idle CPU fixes")).child(ui::badge_tinted("Merged", theme::purple())).child(ui::kbd("#41"))))
-            .into_any_element(),
-    };
-    div().id("placeholder").size_full().overflow_y_scroll().flex().justify_center().child(body)
 }
 
 impl Render for Shell {
@@ -410,7 +399,17 @@ impl Render for Shell {
             .on_action(cx.listener(|s, _: &ChangesTab, _, cx| s.set_tab(Tab::Changes, cx)))
             .on_action(cx.listener(|s, _: &HistoryTab, _, cx| s.set_tab(Tab::History, cx)))
             .on_action(cx.listener(|s, _: &PullsTab, _, cx| s.set_tab(Tab::Pulls, cx)))
-            .on_action(cx.listener(|s, _: &FullMode, _, cx| { s.full_mode = !s.full_mode; cx.notify() }))
+            .on_action(cx.listener(|s, _: &FullMode, _, cx| s.workspace.update(cx, |a, cx| { let on = !a.full_mode; a.set_full_mode(on, cx) })))
+            .on_action(cx.listener(|s, _: &Fetch, _, cx| s.on_selected(cx, |m, cx| m.fetch(cx).detach())))
+            .on_action(cx.listener(|s, _: &Pull, _, cx| s.on_selected(cx, |m, cx| m.pull(cx).detach())))
+            .on_action(cx.listener(|s, _: &Push, _, cx| s.on_selected(cx, |m, cx| m.push(cx).detach())))
+            .on_action(cx.listener(|s, _: &ShowBranches, w, cx| s.open_branches(w, cx)))
+            // ⌘R: status here; History and the PR views reload on the event. Worktrees aren't re-listed (SH-38).
+            .on_action(cx.listener(|s, _: &Refresh, _, cx| {
+                s.on_selected(cx, |m, cx| m.refresh(cx));
+                s.workspace.update(cx, |a, cx| a.emit(AppEvent::Refresh, cx));
+            }))
+            .on_action(cx.listener(|s, _: &Undo, _, cx| s.on_selected(cx, |m, cx| m.undo(cx).detach())))
             .on_action(cx.listener(|s, _: &SelectWorktree1, _, cx| s.select_nth(0, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree2, _, cx| s.select_nth(1, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree3, _, cx| s.select_nth(2, cx)))
@@ -420,14 +419,13 @@ impl Render for Shell {
             .on_action(cx.listener(|s, _: &SelectWorktree7, _, cx| s.select_nth(6, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree8, _, cx| s.select_nth(7, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree9, _, cx| s.select_nth(8, cx)))
-            .on_action(cx.listener(|s, _: &OpenSettings, _, cx| settings::open(s.workspace.clone(), cx)))
+            .on_action(cx.listener(|s, _: &OpenSettings, _, cx| views::settings::open(s.workspace.clone(), cx)))
             .on_action(|_: &CloseWindow, w, _| w.remove_window())
             .on_action(|_: &Minimize, w, _| w.minimize_window())
             .on_action(|_: &Zoom, w, _| w.zoom_window())
             // A folder dropped anywhere on the window opens as a repository.
             .on_drop(cx.listener(|s, paths: &ExternalPaths, _, cx| s.workspace.update(cx, |w, cx| {
-                for p in paths.paths() { w.add_repo(&p.to_string_lossy()) }
-                cx.notify()
+                for p in paths.paths() { w.add_repo(p.to_string_lossy().into_owned(), cx) }
             })))
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(body))
@@ -438,12 +436,34 @@ impl Render for Shell {
                             .on_click(|_, w, cx| w.dispatch_action(Box::new(Undo), cx))))
                         .child(div().id("toast-close").cursor_pointer().on_click(cx.listener(|s, _, _, cx| s.hide_toast(cx)))
                             .child(ui::icon("x").size(px(12.)).text_color(theme::text_faint()))))))
+            .children(self.workspace.read(cx).overlay.clone())
+            .children(self.branches.clone())
             .children(self.switcher.clone())
+            .children(self.alert(cx))
+    }
+}
+
+impl Shell {
+    /// The "Git" alert (SH-06, SH-25): the selected worktree's error, else the app's. OK clears it.
+    fn alert(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let model = self.selected().filter(|m| m.read(cx).state.error.is_some());
+        let text = match &model { Some(m) => m.read(cx).state.error.clone()?, None => self.workspace.read(cx).error.clone()? };
+        let app = self.workspace.clone();
+        let ok = move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| match &model {
+            Some(m) => m.update(cx, |m, cx| m.clear_error(cx)),
+            None => app.update(cx, |a, cx| { a.error = None; cx.notify() }),
+        };
+        Some(div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+            .child(ui::card().w(px(420.)).p_4().gap_3().bg(theme::raised())
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Git"))
+                .child(div().id("alert-text").max_h(px(300.)).overflow_y_scroll().text_size(px(12.)).text_color(theme::text_muted()).child(text))
+                .child(div().flex().justify_end().child(ui::pill_primary("alert-ok", "OK", theme::blue()).on_click(ok))))
+            .into_any_element())
     }
 }
 
 /// The main window, 1440×900 by default, at least 860×560, with Loupe's own title bar.
-pub fn open_main_window(workspace: Workspace, cx: &mut App) {
+pub fn open_main_window(app: Entity<AppModel>, cx: &mut App) {
     use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, size};
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions { title: Some("Loupe".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(15.))) }),
@@ -452,5 +472,5 @@ pub fn open_main_window(workspace: Workspace, cx: &mut App) {
         window_min_size: Some(size(px(860.), px(560.))),
         ..Default::default()
     };
-    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(workspace, window, cx))).expect("main window");
+    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(app, window, cx))).expect("main window");
 }

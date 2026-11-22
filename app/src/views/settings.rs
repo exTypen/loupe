@@ -1,5 +1,6 @@
-//! The settings window (Settings.swift): General, Editor, Spaces, Shortcuts. Storage is the settings agent's;
-//! this is the view over `SettingsState`, the workspace's spaces and the `Shortcuts` global.
+//! The settings window (Settings.swift): General, Editor, Spaces, Shortcuts. Owner: the settings view agent
+//! (docs/gpui/VIEWS.md). Spaces edit `AppModel` (saved by it), shortcuts the `Shortcuts` global (saved by
+//! `keys::install`); `settingsTab` and `appearance` are saved here.
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
@@ -7,12 +8,13 @@ use gpui_kit::{
     component::{Sizable as _, TitleBar, input::{Input, InputEvent, InputState}},
 };
 
-use super::keys::{self, Shortcut, ShortcutAction, Shortcuts};
-use super::model::{Workspace, last_component, tilde};
+use crate::shell::keys::{self, Shortcut, ShortcutAction, Shortcuts};
+use crate::shell::model::{last_component, tilde};
+use crate::state::AppModel;
 use crate::{theme, ui};
+use loupe_forge::settings as prefs;
 
-/// What the General tab edits. ponytail: in memory; the settings agent backs it with the "appearance" and
-/// "settingsTab" defaults.
+/// The shown tab and the General tab's appearance: the "settingsTab" and "appearance" settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsState {
     pub tab: String,        // "general" | "editor" | "spaces" | "shortcuts"
@@ -23,11 +25,24 @@ impl Default for SettingsState {
     fn default() -> Self { Self { tab: "spaces".into(), appearance: "system".into() } }
 }
 
+impl SettingsState {
+    pub fn load() -> Self {
+        let p = prefs::shared();
+        let d = Self::default();
+        Self { tab: p.string("settingsTab").unwrap_or(d.tab), appearance: p.string("appearance").unwrap_or(d.appearance) }
+    }
+    pub fn save(&self) {
+        let mut p = prefs::shared();
+        p.set_string("settingsTab", &self.tab);
+        p.set_string("appearance", &self.appearance);
+    }
+}
+
 struct SettingsWindow(WindowHandle<gpui_kit::component::Root>);
 impl Global for SettingsWindow {}
 
 /// ⌘, : brings the settings window forward, opening it the first time.
-pub fn open(workspace: Entity<Workspace>, cx: &mut App) {
+pub fn open(workspace: Entity<AppModel>, cx: &mut App) {
     if let Some(h) = cx.try_global::<SettingsWindow>().map(|w| w.0) {
         if h.update(cx, |_, w, _| w.activate_window()).is_ok() { return }
     }
@@ -46,7 +61,7 @@ pub fn open(workspace: Entity<Workspace>, cx: &mut App) {
 
 pub struct Settings {
     pub state: SettingsState,
-    workspace: Entity<Workspace>,
+    workspace: Entity<AppModel>,
     selected_space: Option<String>,
     deleting: Option<String>,
     space_name: Entity<InputState>,
@@ -57,7 +72,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(workspace: Entity<AppModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let selected = Some(workspace.read(cx).current_space.clone());
         let space_name = cx.new(|cx| InputState::new(window, cx));
         let subs = vec![
@@ -70,7 +85,7 @@ impl Settings {
                 }
             }),
         ];
-        let mut s = Self { state: SettingsState::default(), workspace, selected_space: selected, deleting: None, space_name,
+        let mut s = Self { state: SettingsState::load(), workspace, selected_space: selected, deleting: None, space_name,
                            recording: None, note: None, focus: cx.focus_handle(), _subs: subs };
         // Focused from the start, so ⌘W and the other window actions reach this view.
         s.focus.focus(window, cx);
@@ -108,7 +123,7 @@ impl Settings {
             .child(ui::card()
                 .child(ui::card_header("Appearance", ""))
                 .child(row("Appearance", ui::segmented("appearance", &["System", "Light", "Dark"], sel,
-                    move |i, _, cx| me.update(cx, |s, cx| { s.state.appearance = modes[i].into(); cx.notify() })))))
+                    move |i, _, cx| me.update(cx, |s, cx| { s.state.appearance = modes[i].into(); s.state.save(); cx.notify() })))))
             .child(ui::card()
                 .child(ui::card_header("Commit Messages", ui::link_button("look-again", "Look Again")))
                 .child(div().p_3().text_color(theme::text_muted()).child("Looking for AI tools…")))
@@ -118,22 +133,22 @@ impl Settings {
     }
 
     fn spaces(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ws = self.workspace.read(cx).clone();
+        let (spaces, current) = { let ws = self.workspace.read(cx); (ws.spaces.clone(), ws.current_space.clone()) };
         let sel = self.selected_space.clone();
-        let detail = sel.as_ref().and_then(|id| ws.spaces.iter().find(|s| &s.id == id)).cloned();
-        let can_delete = sel.is_some() && ws.spaces.len() > 1;
+        let detail = sel.as_ref().and_then(|id| spaces.iter().find(|s| &s.id == id)).cloned();
+        let can_delete = sel.is_some() && spaces.len() > 1;
         div().flex().size_full().gap_4()
             .child(ui::card().w(px(200.)).flex_none()
-                .child(div().flex().flex_col().flex_1().p_1().gap_px().children(ws.spaces.iter().map(|sp| {
+                .child(div().flex().flex_col().flex_1().p_1().gap_px().children(spaces.iter().map(|sp| {
                     let id = sp.id.clone();
                     ui::list_row(SharedString::from(format!("sp-{id}")), sel.as_deref() == Some(&sp.id))
                         .child(div().flex_1().truncate().child(sp.name.clone()))
-                        .when(sp.id == ws.current_space, |d| d.child(ui::icon("check").size(px(12.))))
+                        .when(sp.id == current, |d| d.child(ui::icon("check").size(px(12.))))
                         .on_click(cx.listener(move |s, _, w, cx| { s.selected_space = Some(id.clone()); s.deleting = None; s.load_space_name(w, cx); cx.notify() }))
                 })))
                 .child(div().flex().items_center().gap_1().p_1().border_t_1().border_color(theme::border())
                     .child(ui::icon_button("space-add", "plus").on_click(cx.listener(|s, _, w, cx| {
-                        let id = s.workspace.update(cx, |ws, cx| { let id = ws.add_space(); cx.notify(); id });
+                        let id = s.workspace.update(cx, |ws, cx| ws.add_space(cx));
                         s.selected_space = Some(id); s.load_space_name(w, cx);
                     })))
                     .child(ui::icon_button("space-delete", "minus").when(!can_delete, |d| d.opacity(0.35))
@@ -150,15 +165,15 @@ impl Settings {
                                 .child(ui::pill("del-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| { s.deleting = None; cx.notify() })))
                                 .child(ui::pill_primary("del-ok", "Delete", theme::red()).on_click(cx.listener(move |s, _, w, cx| {
                                     let id = id.clone();
-                                    let cur = s.workspace.update(cx, |ws, cx| { ws.delete_space(&id); cx.notify(); ws.current_space.clone() });
+                                    let cur = s.workspace.update(cx, |ws, cx| { ws.delete_space(&id, cx); ws.current_space.clone() });
                                     s.deleting = None; s.selected_space = Some(cur); s.load_space_name(w, cx);
                                 }))))))
                         .child(ui::card()
                             .child(row("Name", div().w(px(260.)).child(Input::new(&self.space_name).small())))
-                            .when(sp.id != ws.current_space, |d| {
+                            .when(sp.id != current, |d| {
                                 let id = sp.id.clone();
                                 let w = self.workspace.clone();
-                                d.child(row("", ui::pill("switch-space", "Switch to This Space").on_click(move |_, _, cx| w.update(cx, |w, cx| { w.switch_space_to(&id); cx.notify() }))))
+                                d.child(row("", ui::pill("switch-space", "Switch to This Space").on_click(move |_, _, cx| w.update(cx, |w, cx| w.switch_space_to(&id, cx)))))
                             }))
                         .child(ui::card()
                             .child(ui::card_header("Accounts", ui::link_button("add-account", "Add Account…")))
@@ -174,7 +189,7 @@ impl Settings {
                                     .child(div().flex().flex_col().flex_1().min_w_0()
                                         .child(div().truncate().text_color(theme::text()).font_weight(FontWeight::MEDIUM).child(last_component(repo).to_string()))
                                         .child(div().truncate().text_size(px(11.)).text_color(theme::text_faint()).child(tilde(repo))))
-                                    .child(ui::pill(("remove", i), "Remove").on_click(move |_, _, cx| w.update(cx, |w, cx| { w.remove_repo(&r); cx.notify() })))
+                                    .child(ui::pill(("remove", i), "Remove").on_click(move |_, _, cx| w.update(cx, |w, cx| w.remove_repo(&r, cx))))
                             }))))
                         .into_any_element()
                 }
@@ -241,7 +256,7 @@ impl Render for Settings {
             .child(TitleBar::new().h(px(42.)).bg(theme::sidebar()).border_b_0()
                 .child(div().flex().flex_1().justify_center().pr(px(80.))
                     .child(ui::segmented("settings-tabs", &tabs.map(|t| t.1), sel,
-                        move |i, _, cx| me.update(cx, |s, cx| { s.state.tab = tabs[i].0.into(); s.recording = None; cx.notify() })))))
+                        move |i, _, cx| me.update(cx, |s, cx| { s.state.tab = tabs[i].0.into(); s.state.save(); s.recording = None; cx.notify() })))))
             .child(div().id("settings-body").flex_1().min_h_0().overflow_y_scroll().p_5().bg(theme::canvas())
                 .border_t_1().border_color(theme::border()).child(body))
     }

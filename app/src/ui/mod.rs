@@ -87,17 +87,21 @@ pub fn card_footer(child: impl IntoElement) -> Div {
 
 /// Rounded-full outlined button ("Fork from here", "Open Repository…").
 pub fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    pill_base(id, label).bg(theme::canvas()).hover(|s| s.bg(theme::raised())).active(|s| s.bg(theme::selected()))
+}
+
+// gpui allows one hover style per element, so the variants share everything but it.
+fn pill_base(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     div().id(id).flex().flex_none().items_center().justify_center().gap_1p5().h(px(28.)).px_3()
-        .rounded(theme::RADIUS_PILL).border_1().border_color(theme::border_strong()).bg(theme::canvas())
+        .rounded(theme::RADIUS_PILL).border_1().border_color(theme::border_strong())
         .text_size(px(12.5)).text_color(theme::text()).cursor_pointer()
-        .hover(|s| s.bg(theme::raised())).active(|s| s.bg(theme::selected()))
         .child(label.into())
 }
 
 /// A pill tinted with an accent: the one primary action on screen.
 pub fn pill_primary(id: impl Into<ElementId>, label: impl Into<SharedString>, color: Hsla) -> Stateful<Div> {
-    pill(id, label).border_color(color.opacity(0.6)).bg(color.opacity(0.16)).text_color(color)
-        .hover(move |s| s.bg(color.opacity(0.26)))
+    pill_base(id, label).border_color(color.opacity(0.6)).bg(color.opacity(0.16)).text_color(color)
+        .hover(move |s| s.bg(color.opacity(0.26))).active(move |s| s.bg(color.opacity(0.34)))
 }
 
 /// A count or small label in a rounded-full chip (change counts).
@@ -226,3 +230,17 @@ pub fn link_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> 
 }
 
 pub fn divider() -> Div { div().h(px(1.)).w_full().flex_none().bg(theme::border()) }
+
+/// A file's type icon (FileIcons.swift via loupe_code::icons), drawn as an image: the SVGs are multicoloured, and
+/// `svg()` would paint them as a one-colour mask. One decoded image per icon name, shared.
+pub fn file_icon(path: &str) -> gpui_kit::Img {
+    use std::{cell::RefCell, collections::HashMap, sync::Arc};
+    use gpui_kit::{Image, ImageFormat};
+    thread_local! { static CACHE: RefCell<HashMap<&'static str, Arc<Image>>> = RefCell::new(HashMap::new()); }
+    let name = loupe_code::icons::icon_name(path);
+    let image = CACHE.with(|c| c.borrow_mut().entry(name).or_insert_with(|| {
+        let svg = loupe_code::icons::svg(name).unwrap_or_else(|| loupe_code::icons::svg_for(path));
+        Arc::new(Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec()))
+    }).clone());
+    gpui_kit::img(image).size(px(14.)).flex_none()
+}

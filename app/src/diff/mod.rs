@@ -3,4 +3,4 @@ pub mod model;
 mod view;
 
 pub use model::*;
-pub use view::{DiffView, Highlighter};
+pub use view::{DiffView, Highlighter, set_token_colors};

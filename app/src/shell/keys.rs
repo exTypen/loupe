@@ -167,8 +167,8 @@ impl ShortcutAction {
     }
 }
 
-/// The user's shortcuts: only what differs from the defaults; an entry with None means "no shortcut".
-/// ponytail: in memory only; the settings agent persists `custom` under the "shortcuts" default.
+/// The user's shortcuts: only what differs from the defaults; an entry with None means "no shortcut". Saved under
+/// the "shortcuts" setting by `install`, as the Swift app's JSON ({id: {key, modifiers} | null}).
 #[derive(Default)]
 pub struct Shortcuts {
     pub custom: HashMap<String, Option<Shortcut>>,
@@ -196,6 +196,7 @@ impl Shortcuts {
 /// crates registered (text input editing keys) are kept.
 pub fn install(cx: &mut App) {
     if !cx.has_global::<Shortcuts>() { cx.set_global(Shortcuts::default()) }
+    save_shortcuts(cx.global::<Shortcuts>());
     let keymap = cx.key_bindings();
     let others: Vec<KeyBinding> = keymap.borrow().bindings().filter(|b| !b.action().name().starts_with("loupe::")).cloned().collect();
     cx.clear_key_bindings();
@@ -215,6 +216,30 @@ pub fn install(cx: &mut App) {
     let bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, false, None, cx).ok()).collect();
     cx.bind_keys(bindings);
     cx.set_menus(menus());
+}
+
+/// Reads the "shortcuts" setting into the `Shortcuts` global (before the first `install`).
+pub fn load_shortcuts(cx: &mut App) {
+    let data = loupe_forge::settings::shared().data("shortcuts").map(<[u8]>::to_vec);
+    cx.set_global(Shortcuts { custom: data.map(|d| parse_shortcuts(&d)).unwrap_or_default() });
+}
+
+fn parse_shortcuts(d: &[u8]) -> HashMap<String, Option<Shortcut>> {
+    let Ok(serde_json::Value::Object(m)) = serde_json::from_slice(d) else { return HashMap::new() };
+    m.into_iter().map(|(id, v)| {
+        let s = v.get("key").and_then(|k| k.as_str()).map(|k| Shortcut::new(k, v.get("modifiers").and_then(|m| m.as_u64()).unwrap_or(0)));
+        (id, s)
+    }).collect()
+}
+
+fn save_shortcuts(s: &Shortcuts) {
+    let m: serde_json::Map<String, serde_json::Value> = s.custom.iter().map(|(id, s)| (id.clone(), match s {
+        Some(s) => serde_json::json!({ "key": s.key, "modifiers": s.modifiers }),
+        None => serde_json::Value::Null,
+    })).collect();
+    let mut p = loupe_forge::settings::shared();
+    // Unchanged JSON still compares equal (object keys are sorted), so this writes only after a change.
+    p.set("shortcuts", Some(plist::Value::Data(serde_json::to_vec(&m).unwrap_or_default())));
 }
 
 pub fn select_worktree_action(n: usize) -> Option<Box<dyn Action>> {
@@ -271,6 +296,14 @@ mod tests {
             let parsed = Keystroke::parse(Box::leak(k.clone().into_boxed_str())).unwrap_or_else(|e| panic!("{k}: {e:?}"));
             assert_eq!(Shortcut::from_keystroke(&parsed), a.standard(), "{k}");
         }
+    }
+
+    #[test]
+    fn reads_the_swift_shortcuts_json() {
+        let m = parse_shortcuts(br#"{"refresh":{"key":"k","modifiers":1048576},"goToWorktree":null}"#);
+        assert_eq!(m["refresh"], Some(Shortcut::new("k", COMMAND)));
+        assert_eq!(m["goToWorktree"], None);
+        assert!(parse_shortcuts(b"junk").is_empty());
     }
 
     #[test]
