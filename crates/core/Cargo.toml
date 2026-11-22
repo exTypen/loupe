@@ -4,4 +4,13 @@ version = "0.10.0"
 edition.workspace = true
 
 # No gpui here: everything in this crate is plain Rust, testable with `cargo test -p loupe-core`.
+# Calls block: the app runs them on gpui's background executor.
 [dependencies]
+libc = "0.2"
+notify = "8.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+similar = "2.7"
+
+[dev-dependencies]
+tempfile = "3"
