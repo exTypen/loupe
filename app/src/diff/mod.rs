@@ -1,0 +1,1 @@
+//! The virtualized diff renderer.

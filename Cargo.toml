@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["app", "crates/core", "crates/forge"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+gpui-kit = "0.10.0"
+loupe-core = { path = "crates/core" }
+loupe-forge = { path = "crates/forge" }
+
+# Dependencies build optimized even in dev: a debug diff of 100k lines is not a useful measurement.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,8 @@
+[package]
+name = "loupe-forge"
+version = "0.10.0"
+edition.workspace = true
+
+# Forge (Forgejo / Gitea / GitHub) API clients, CI, keychain, commit AI. No UI.
+[dependencies]
+loupe-core.workspace = true

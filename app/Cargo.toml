@@ -1,0 +1,17 @@
+[package]
+name = "loupe"
+version = "0.10.0"
+edition.workspace = true
+
+[lib]
+name = "loupe_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loupe"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+loupe-core.workspace = true
+loupe-forge.workspace = true
