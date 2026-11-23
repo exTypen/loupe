@@ -13,7 +13,7 @@ gpui_kit::actions!(loupe, [
     NextConflict, PreviousConflict, UseOurs, UseTheirs,
     // Not rebindable.
     Undo, Redo, OpenSettings, CheckForUpdates, Quit, Hide, HideOthers, ShowAll, CloseWindow, Minimize, Zoom,
-    Fetch, Pull, Push, ShowBranches, NewWorktree,
+    ToggleFullScreen, Fetch, Pull, Push, ShowBranches, NewWorktree,
     SelectWorktree1, SelectWorktree2, SelectWorktree3, SelectWorktree4, SelectWorktree5,
     SelectWorktree6, SelectWorktree7, SelectWorktree8, SelectWorktree9,
 ]);
@@ -208,14 +208,26 @@ pub fn install(cx: &mut App) {
     let fixed: [(&str, Box<dyn Action>); 9] = [
         ("cmd-z", Box::new(Undo)), ("cmd-shift-z", Box::new(Redo)), ("cmd-,", Box::new(OpenSettings)),
         ("cmd-q", Box::new(Quit)), ("cmd-h", Box::new(Hide)), ("alt-cmd-h", Box::new(HideOthers)),
-        ("cmd-w", Box::new(CloseWindow)), ("cmd-m", Box::new(Minimize)), ("ctrl-cmd-f", Box::new(Zoom)),
+        ("cmd-w", Box::new(CloseWindow)), ("cmd-m", Box::new(Minimize)), ("ctrl-cmd-f", Box::new(ToggleFullScreen)),
     ];
     ours.extend(fixed.into_iter().map(|(k, a)| (k.to_string(), a)));
     // The sidebar's ⌥⌘1…9 hints: the n-th worktree shown.
     ours.extend((0..9).filter_map(|i| select_worktree_action(i).map(|a| (format!("alt-cmd-{}", i + 1), a))));
     let bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, false, None, cx).ok()).collect();
     cx.bind_keys(bindings);
-    cx.set_menus(menus());
+    let title = cx.try_global::<UndoTitle>().map_or_else(|| "Undo".to_string(), |t| t.0.clone());
+    cx.set_menus(menus(&title));
+}
+
+/// Edit › Undo reads "Undo <label>" for the selected worktree's newest action (UndoCommands in Undo.swift).
+struct UndoTitle(String);
+impl Global for UndoTitle {}
+
+/// Rebuilds the menu bar when the title changed; cheap to call on every model change.
+pub fn set_undo_title(title: String, cx: &mut App) {
+    if cx.try_global::<UndoTitle>().is_some_and(|t| t.0 == title) { return }
+    cx.set_menus(menus(&title));
+    cx.set_global(UndoTitle(title));
 }
 
 /// Reads the "shortcuts" setting into the `Shortcuts` global (before the first `install`).
@@ -249,18 +261,18 @@ pub fn select_worktree_action(n: usize) -> Option<Box<dyn Action>> {
     all.into_iter().nth(n)
 }
 
-fn menus() -> Vec<Menu> {
+fn menus(undo: &str) -> Vec<Menu> {
     fn a(name: &'static str, action: impl Action) -> MenuItem { MenuItem::action(name, action) }
     vec![
+        // No "Check for Updates…": the Swift app hides it when Sparkle isn't configured, and this build has no updater.
         Menu::new("Loupe").items([
-            a("Check for Updates…", CheckForUpdates), MenuItem::separator(),
             a("Settings…", OpenSettings), MenuItem::separator(),
             a("Hide Loupe", Hide), a("Hide Others", HideOthers), a("Show All", ShowAll), MenuItem::separator(),
             a("Quit Loupe", Quit),
         ]),
         Menu::new("File").items([a("Open Repository…", OpenRepository), MenuItem::separator(), a("Close Window", CloseWindow)]),
         Menu::new("Edit").items([
-            MenuItem::os_action("Undo", Undo, OsAction::Undo), MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::os_action(undo.to_string(), Undo, OsAction::Undo), MenuItem::os_action("Redo", Redo, OsAction::Redo),
             MenuItem::separator(),
             MenuItem::os_action("Cut", text::Cut, OsAction::Cut), MenuItem::os_action("Copy", text::Copy, OsAction::Copy),
             MenuItem::os_action("Paste", text::Paste, OsAction::Paste),
@@ -269,7 +281,8 @@ fn menus() -> Vec<Menu> {
         Menu::new("View").items([
             a("Toggle Sidebar", ToggleSidebar), MenuItem::separator(),
             a("Changes", ChangesTab), a("History", HistoryTab), a("Pull Requests", PullsTab), MenuItem::separator(),
-            a("Go to Worktree…", GoToWorktree),
+            a("Go to Worktree…", GoToWorktree), MenuItem::separator(),
+            a("Enter Full Screen", ToggleFullScreen),
         ]),
         Menu::new("Review").items([
             a("Next File", NextFile), a("Previous File", PreviousFile), a("Mark Viewed & Next", MarkViewed),

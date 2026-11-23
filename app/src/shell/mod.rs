@@ -2,18 +2,19 @@
 pub mod branches;
 pub mod keys;
 pub mod model;
+pub mod sidebar;
 pub mod switcher;
+pub mod worktrees;
 
 use std::time::Duration;
 
 use gpui_kit::{
-    AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, FontWeight,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
     component::{
-        Sizable as _, TitleBar,
-        input::{Input, InputEvent, InputState},
-        menu::{ContextMenuExt as _, PopupMenuItem},
+        TitleBar,
+        input::{InputEvent, InputState},
     },
 };
 
@@ -41,6 +42,15 @@ pub struct Shell {
     next_toast: u64,
     /// The selected worktree's model, observed so the toolbar and alert follow its busy / error / ahead / behind.
     watched: Option<(Entity<WorktreeModel>, Subscription)>,
+    modal: Option<sidebar::Modal>,
+    swipe: Option<sidebar::Swipe>,
+    slide: Option<sidebar::Slide>,
+    slide_timer: Option<Task<()>>,
+    next_slide: u64,
+    page_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The shown space's index, to slide when a dot click (or a jump) changes it; `settling`: a swipe did.
+    last_space: usize,
+    settling: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -48,7 +58,7 @@ impl Shell {
     pub fn new(app: Entity<AppModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter worktrees"));
         let subs = vec![
-            cx.observe(&app, |s, _, cx| { s.watch_selected(cx); cx.notify() }),
+            cx.observe(&app, |s, _, cx| { s.watch_selected(cx); s.follow_space(cx); s.update_undo_title(cx); cx.notify() }),
             cx.subscribe(&app, |s, _, e: &AppEvent, cx| if let AppEvent::Toast { text, undoable } = e { s.show_toast(text.clone(), *undoable, cx) }),
             cx.subscribe(&filter, |_, _, e: &InputEvent, cx| if matches!(e, InputEvent::Change) { cx.notify() }),
         ];
@@ -62,7 +72,9 @@ impl Shell {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut s = Self { workspace: app, views, sidebar_open: true, focus, filter, switcher: None, branches: None,
-                           toast: None, toast_timer: None, next_toast: 0, watched: None, _subs: subs };
+                           toast: None, toast_timer: None, next_toast: 0, watched: None, modal: None, swipe: None, slide: None,
+                           slide_timer: None, next_slide: 0, page_width: Default::default(), last_space: 0, settling: false, _subs: subs };
+        s.last_space = s.space_index(cx);
         s.watch_selected(cx);
         s
     }
@@ -70,7 +82,39 @@ impl Shell {
     fn watch_selected(&mut self, cx: &mut Context<Self>) {
         let m = self.workspace.read(cx).selected_model();
         if m.as_ref().map(|m| m.entity_id()) == self.watched.as_ref().map(|w| w.0.entity_id()) { return }
-        self.watched = m.map(|m| { let sub = cx.observe(&m, |_, _, cx| cx.notify()); (m, sub) });
+        self.watched = m.map(|m| { let sub = cx.observe(&m, |s, _, cx| { s.update_undo_title(cx); cx.notify() }); (m, sub) });
+    }
+
+    fn space_index(&self, cx: &App) -> usize {
+        let ws = self.workspace.read(cx);
+        ws.spaces.iter().position(|s| s.id == ws.current_space).unwrap_or(0)
+    }
+
+    /// A dot click, ⌘K or a PR checkout changed the space: slide the pages from the old one (a swipe already did).
+    fn follow_space(&mut self, cx: &mut Context<Self>) {
+        let ix = self.space_index(cx);
+        if ix == self.last_space { return }
+        let old = std::mem::replace(&mut self.last_space, ix);
+        if std::mem::take(&mut self.settling) { return }
+        let step = ix as isize - old as isize;
+        self.start_slide(old, step, step as f32 * self.page_width.get(), cx);
+    }
+
+    /// Edit › "Undo <label>" follows the selected worktree's stack.
+    fn update_undo_title(&mut self, cx: &mut Context<Self>) {
+        let t = self.selected().and_then(|m| m.read(cx).undo_title()).unwrap_or_else(|| "Undo".into());
+        keys::set_undo_title(t, cx);
+    }
+
+    /// ⌘Z (UndoCommands): a text field undoes its own typing (its binding wins); with nothing to undo, a beep;
+    /// a refused undo explains why and offers a revert when the commit is already pushed.
+    fn undo(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = self.selected().filter(|m| m.read(cx).undo_title().is_some()) else { return beep() };
+        let t = m.update(cx, |m, cx| m.undo_or_refusal(cx));
+        cx.spawn(async move |this, cx| {
+            let Some(r) = t.await else { return };
+            this.update(cx, |s, cx| { s.modal = Some(sidebar::Modal::CantUndo { message: r.message, revert: r.revert }); cx.notify() }).ok();
+        }).detach();
     }
 
     fn selected(&self) -> Option<Entity<WorktreeModel>> { self.watched.as_ref().map(|w| w.0.clone()) }
@@ -112,19 +156,10 @@ impl Shell {
 
     fn filter_text(&self, cx: &App) -> String { self.filter.read(cx).value().to_string() }
 
-    /// The worktrees the sidebar shows, in order: what ⌥⌘1…9 pick from.
+    /// The worktrees the shown space lists, in order: what ⌥⌘1…9 pick from.
     fn visible(&self, cx: &App) -> Vec<(String, Worktree)> {
         let ws = self.workspace.read(cx);
-        let q = self.filter_text(cx).to_lowercase();
-        let tokens: Vec<&str> = q.split(' ').filter(|t| !t.is_empty()).collect();
-        ws.repo_paths().iter().flat_map(|r| {
-            // Filtering looks inside collapsed repos too: a match shouldn't hide behind a chevron.
-            let open = !tokens.is_empty() || !ws.collapsed.contains(r);
-            ws.worktrees_of(r).iter().filter(move |_| open).filter(|w| {
-                let hay = format!("{} {} {}", last_component(r), w.branch.as_deref().unwrap_or(""), w.name()).to_lowercase();
-                tokens.iter().all(|t| hay.contains(t))
-            }).map(|w| (r.clone(), w.clone())).collect::<Vec<_>>()
-        }).collect()
+        visible_in(ws, ws.repo_paths(), &self.filter_text(cx))
     }
 
     fn select_nth(&mut self, n: usize, cx: &mut Context<Self>) {
@@ -204,121 +239,6 @@ impl Shell {
             .into_any_element()
     }
 
-    fn sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let filtering = !self.filter_text(cx).trim().is_empty();
-        let visible = self.visible(cx);
-        let ws = self.workspace.read(cx);
-        let sel = ws.selection().map(str::to_string);
-        let space = ws.space().clone();
-        let multi = ws.spaces.len() > 1;
-        let collapsed = ws.collapsed.clone();
-        let changes: Vec<usize> = space.repos.iter().map(|r| ws.change_count(r)).collect();
-        let status: std::collections::HashMap<String, Status> = visible.iter().map(|(_, w)| (w.path.clone(), ws.status(&w.path))).collect();
-        let mut n = 0;
-        let mut groups = vec![];
-        for (repo, changes) in space.repos.iter().zip(changes) {
-            let rows: Vec<&Worktree> = visible.iter().filter(|(r, _)| r == repo).map(|(_, w)| w).collect();
-            if filtering && rows.is_empty() { continue }
-            let expanded = filtering || !collapsed.contains(repo);
-            let mut g = div().flex().flex_col().gap_px().pb_2().child(self.repo_header(repo, expanded, changes, multi, cx));
-            for w in rows {
-                let hint = (n < 9).then(|| format!("⌥⌘{}", n + 1));
-                n += 1;
-                g = g.child(self.worktree_row(repo, w, status[&w.path], sel.as_deref() == Some(&w.path), hint, cx));
-            }
-            groups.push(g);
-        }
-        let empty = space.repos.is_empty();
-        div().flex().flex_col().size_full().bg(theme::sidebar())
-            .when(multi, |d| d.child(div().px_4().pt_1().pb_1().text_size(px(15.)).font_weight(FontWeight::BOLD).child(space.name.clone())))
-            .child(div().id("sidebar-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll().px_2().pt_1()
-                .children(groups)
-                .when(empty, |d| d.child(div().px_3().py_2().text_color(theme::text_faint()).child("No repositories")))
-                .when(filtering && n == 0 && !empty, |d| d.child(div().px_3().py_2().text_color(theme::text_faint()).child("No matches"))))
-            .child(self.sidebar_footer(cx))
-            .into_any_element()
-    }
-
-    fn repo_header(&self, repo: &str, expanded: bool, changes: usize, multi: bool, cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace.clone();
-        let r = repo.to_string();
-        let name = last_component(repo).to_string();
-        let others: Vec<(String, String)> = self.workspace.read(cx).spaces.iter()
-            .filter(|s| !s.repos.contains(&r)).map(|s| (s.id.clone(), s.name.clone())).collect();
-        let (r1, r2, ws1, ws2) = (r.clone(), r.clone(), ws.clone(), ws.clone());
-        div().id(SharedString::from(format!("repo-{repo}"))).group("repo").flex().items_center().gap_1().h(px(28.)).px_2()
-            .rounded(theme::RADIUS_ROW).cursor_pointer().text_color(theme::text())
-            .on_click(move |_, _, cx| ws1.update(cx, |w, cx| { if !w.collapsed.remove(&r1) { w.collapsed.insert(r1.clone()); } cx.notify() }))
-            .child(ui::icon(if expanded { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(theme::text_faint()))
-            .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(name.clone()))
-            // Collapsed: still show whether anything in this repo has uncommitted work.
-            .when(!expanded && changes > 0, |d| d.child(ui::badge(changes.to_string())))
-            .child(div().id("add-wt").flex().items_center().justify_center().size(px(20.)).rounded(px(5.))
-                .opacity(0.).group_hover("repo", |s| s.opacity(1.)).hover(|s| s.bg(theme::hover()))
-                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("New Worktree in {name}…")).build(w, cx))
-                .on_click(|_, w, cx| { cx.stop_propagation(); w.dispatch_action(Box::new(NewWorktree), cx) })
-                .child(ui::icon("plus").size(px(12.))))
-            .context_menu(move |mut menu, _, _| {
-                let (ra, rb, wa) = (r2.clone(), r2.clone(), ws2.clone());
-                menu = menu.item(PopupMenuItem::new("New Worktree…").on_click(|_, w, cx| w.dispatch_action(Box::new(NewWorktree), cx)))
-                    .item(PopupMenuItem::new("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&ra))));
-                if multi {
-                    menu = menu.separator();
-                    for (id, name) in &others {
-                        let (id, r, w) = (id.clone(), r2.clone(), ws2.clone());
-                        menu = menu.item(PopupMenuItem::new(format!("Move to {name}")).on_click(move |_, _, cx| w.update(cx, |w, cx| w.move_repos(&[r.clone()], &id, cx))));
-                    }
-                }
-                menu.separator()
-                    .item(PopupMenuItem::new("Remove from Loupe").on_click(move |_, _, cx| wa.update(cx, |w, cx| w.remove_repo(&rb, cx))))
-            })
-            .into_any_element()
-    }
-
-    fn worktree_row(&self, repo: &str, wt: &Worktree, st: Status, selected: bool, hint: Option<String>, _cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace.clone();
-        let path = wt.path.clone();
-        let (p1, p2, p3, p4, p5, p6) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
-        let tip: SharedString = match &wt.branch { Some(b) => format!("{}\n{b}", wt.path), None => wt.path.clone() }.into();
-        worktree_row_body(SharedString::from(format!("wt-{path}")), repo, wt, st, selected, None)
-            .when_some(hint, |d, h| d.child(ui::kbd(h)))
-            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
-            .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.select(Some(p1.clone()), cx)))
-            .context_menu(move |menu, _, _| {
-                let (a, b, c, d, e) = (p2.clone(), p3.clone(), p4.clone(), p5.clone(), p6.clone());
-                menu.item(PopupMenuItem::new("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&a))))
-                    .item(PopupMenuItem::new("Open in Terminal").on_click(move |_, _, _| open_in("com.apple.Terminal", &b)))
-                    .item(PopupMenuItem::new("Open in Zed").on_click(move |_, _, _| open_in("dev.zed.Zed", &c)))
-                    .item(PopupMenuItem::new("Open in VS Code").on_click(move |_, _, _| open_in("com.microsoft.VSCode", &d)))
-                    .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(e.clone()))))
-            })
-            .into_any_element()
-    }
-
-    fn sidebar_footer(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let ws = self.workspace.read(cx);
-        let current = ws.current_space.clone();
-        let spaces: Vec<(String, String)> = ws.spaces.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
-        let w = self.workspace.clone();
-        div().flex().flex_col().gap_2().p_2().flex_none()
-            .child(div().flex().items_center().gap_2().h(px(30.)).px_2p5().rounded(theme::RADIUS_ROW).bg(theme::raised())
-                .child(ui::icon("search").size(px(13.)).text_color(theme::text_faint()))
-                .child(div().flex_1().child(Input::new(&self.filter).appearance(false).small().cleanable(true))))
-            .child(div().flex().items_center().gap_1()
-                .child(ui::icon_button("open-repo", "folder-plus").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenRepository), cx)))
-                .child(div().flex_1().flex().justify_center().gap_1().children(spaces.into_iter().map(|(id, name)| {
-                    let on = id == current;
-                    let w = w.clone();
-                    div().id(SharedString::from(format!("space-{id}"))).p_1().cursor_pointer()
-                        .tooltip(move |win, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(win, cx))
-                        .on_click(move |_, _, cx| w.update(cx, |w, cx| w.switch_space_to(&id, cx)))
-                        .child(div().size(px(7.)).rounded_full().border_1()
-                            .map(|d| if on { d.bg(theme::text()).border_color(theme::text()) } else { d.border_color(theme::text_faint()) }))
-                })))
-                .child(ui::icon_button("new-space", "plus").on_click(move |_, _, cx| w.update(cx, |w, cx| { w.add_space(cx); }))))
-            .into_any_element()
-    }
-
     fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let ws = self.workspace.read(cx);
         let panel = div().size_full().bg(theme::canvas()).border_l_1().border_t_1().border_color(theme::border())
@@ -328,6 +248,30 @@ impl Shell {
                 .child(div().pt_2().child(ui::pill("open-repo-empty", "Open Repository…").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenRepository), cx))))).into_any_element();
         };
         panel.child(self.views[ws.tab.index()].clone()).into_any_element()
+    }
+}
+
+/// `repos`' listed worktrees in sidebar order: inside expanded repos, or every repo while the filter matches.
+pub(crate) fn visible_in(ws: &AppModel, repos: &[String], filter: &str) -> Vec<(String, Worktree)> {
+    let q = filter.to_lowercase();
+    let tokens: Vec<&str> = q.split(' ').filter(|t| !t.is_empty()).collect();
+    repos.iter().flat_map(|r| {
+        // Filtering looks inside collapsed repos too: a match shouldn't hide behind a chevron.
+        let open = !tokens.is_empty() || !ws.collapsed.contains(r);
+        ws.worktrees_of(r).iter().filter(move |_| open).filter(|w| {
+            let hay = format!("{} {} {}", last_component(r), w.branch.as_deref().unwrap_or(""), w.name()).to_lowercase();
+            tokens.iter().all(|t| hay.contains(t))
+        }).map(|w| (r.clone(), w.clone())).collect::<Vec<_>>()
+    }).collect()
+}
+
+/// NSBeep: ⌘Z with nothing to undo.
+fn beep() {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "AppKit", kind = "framework")]
+        unsafe extern "C" { fn NSBeep(); }
+        unsafe { NSBeep() }
     }
 }
 
@@ -373,7 +317,7 @@ fn branch_button(wt: &Worktree, live: (Option<String>, String)) -> impl IntoElem
         .child(div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(theme::text_faint()).child(tilde(&wt.path)))
 }
 
-fn open_in(bundle: &str, path: &str) {
+pub(crate) fn open_in(bundle: &str, path: &str) {
     let _ = std::process::Command::new("/usr/bin/open").args(["-b", bundle, path]).spawn();
 }
 
@@ -409,7 +353,14 @@ impl Render for Shell {
                 s.on_selected(cx, |m, cx| m.refresh(cx));
                 s.workspace.update(cx, |a, cx| a.emit(AppEvent::Refresh, cx));
             }))
-            .on_action(cx.listener(|s, _: &Undo, _, cx| s.on_selected(cx, |m, cx| m.undo(cx).detach())))
+            .on_action(cx.listener(|s, _: &Undo, _, cx| s.undo(cx)))
+            // No git redo (as in the Swift app); text fields take ⇧⌘Z themselves.
+            .on_action(|_: &Redo, _, _| beep())
+            .on_action(cx.listener(|s, _: &NewWorktree, w, cx| {
+                let repo = s.workspace.read(cx).selected_model().map(|m| m.read(cx).repo.clone());
+                if let Some(r) = repo { worktrees::open_add_worktree(&s.workspace, r, String::new(), w, cx) }
+            }))
+            .on_action(|_: &ToggleFullScreen, w, _| w.toggle_fullscreen())
             .on_action(cx.listener(|s, _: &SelectWorktree1, _, cx| s.select_nth(0, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree2, _, cx| s.select_nth(1, cx)))
             .on_action(cx.listener(|s, _: &SelectWorktree3, _, cx| s.select_nth(2, cx)))
@@ -439,6 +390,7 @@ impl Render for Shell {
             .children(self.workspace.read(cx).overlay.clone())
             .children(self.branches.clone())
             .children(self.switcher.clone())
+            .children(self.modal_view(cx))
             .children(self.alert(cx))
     }
 }
@@ -447,6 +399,8 @@ impl Shell {
     /// The "Git" alert (SH-06, SH-25): the selected worktree's error, else the app's. OK clears it.
     fn alert(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let model = self.selected().filter(|m| m.read(cx).state.error.is_some());
+        // Swift: app-level failures are titled "Error", a worktree's git failures "Git".
+        let title = if model.is_some() { "Git" } else { "Error" };
         let text = match &model { Some(m) => m.read(cx).state.error.clone()?, None => self.workspace.read(cx).error.clone()? };
         let app = self.workspace.clone();
         let ok = move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| match &model {
@@ -455,7 +409,7 @@ impl Shell {
         };
         Some(div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
             .child(ui::card().w(px(420.)).p_4().gap_3().bg(theme::raised())
-                .child(div().font_weight(FontWeight::SEMIBOLD).child("Git"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().id("alert-text").max_h(px(300.)).overflow_y_scroll().text_size(px(12.)).text_color(theme::text_muted()).child(text))
                 .child(div().flex().justify_end().child(ui::pill_primary("alert-ok", "OK", theme::blue()).on_click(ok))))
             .into_any_element())
@@ -473,4 +427,36 @@ pub fn open_main_window(app: Entity<AppModel>, cx: &mut App) {
         ..Default::default()
     };
     gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(app, window, cx))).expect("main window");
+}
+
+impl WorktreeModel {
+    /// ⌘Z: like `undo`, but a refusal comes back to the caller (the "Can't Undo" dialog) instead of the Git alert.
+    pub fn undo_or_refusal(&mut self, cx: &mut Context<Self>) -> Task<Option<loupe_core::undo::UndoRefusal>> {
+        let t = self.perform("Undoing", |p| Ok::<_, String>(loupe_core::model::undo_last(p)), cx);
+        cx.spawn(async move |this, cx| {
+            match t.await? {
+                Ok(Some(undone)) => {
+                    this.update(cx, |m, cx| if let Some((msg, amend)) = undone.message && m.state.commit_message.is_empty() {
+                        m.state.commit_message = msg;
+                        m.state.amend = amend;
+                        cx.notify();
+                    }).ok();
+                    None
+                }
+                Ok(None) => None,
+                Err(loupe_core::Error::Refused(r)) => Some(r),
+                Err(e) => { this.update(cx, |m, cx| m.set_error(e, cx)).ok(); None }
+            }
+        })
+    }
+
+    /// The refused undo's "Revert Commit". Recorded for ⌘Z like a revert from History (the Swift app's wasn't:
+    /// FLOWS.md §14 History #6).
+    pub fn revert_refused(&mut self, sha: String, cx: &mut Context<Self>) -> Task<Option<()>> {
+        use loupe_core::undo::{Recipe, Reset, UndoStack};
+        let label = format!("Revert of {}", &sha[..sha.len().min(7)]);
+        self.perform("Reverting", move |p| UndoStack::for_path(p).run(
+            Some(Recipe::Reset(Reset { offer_revert: true, ..Reset::new(label) })),
+            || loupe_core::history::revert_sha(p, &sha)), cx)
+    }
 }
