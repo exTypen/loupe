@@ -127,6 +127,15 @@ fn git(dir: &str, args: &[&str], env: &[(String, String)], cancel: Option<&Cance
     loupe_forge::git::run(args, dir, env, cancel)
 }
 
+/// `pull::fetch_head`, one at a time in this app and tried twice: Full mode's tree and file, the Overview and
+/// navigation all ask at once, and two `git fetch`es into the same remote ref fail with "cannot lock ref" (so does
+/// one racing another app's fetch of the repo).
+pub(super) fn fetch_head(pr: &PullRequest, local: &LocalCheckout) -> loupe_forge::Result<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    pull::fetch_head(pr, local, None).or_else(|_| pull::fetch_head(pr, local, None))
+}
+
 /// Status letter and colour of a changed file (A/D/R/M from its paths).
 pub fn badge(f: &core::FileDiff) -> (&'static str, gpui_kit::Hsla) {
     match (&f.old_path, &f.new_path) {
@@ -433,7 +442,7 @@ impl PullDetail {
         self._tree = Some(cx.spawn(async move |this, cx| {
             let sha = pr.head.sha.clone();
             let r = cx.background_executor().spawn(async move {
-                pull::fetch_head(&pr, &local, None)?;
+                fetch_head(&pr, &local)?;
                 let out = git(&local.dir, &["ls-tree", "-r", "-z", "--name-only", &pr.head.sha], &[], None)?;
                 let mut set: HashSet<String> = out.split(|&b| b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
                 set.extend(changed); // deleted files stay reachable
@@ -475,7 +484,7 @@ impl PullDetail {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let r = cx.background_executor().spawn(async move {
-                pull::fetch_head(&pr, &local, None)?;
+                fetch_head(&pr, &local)?;
                 let f = match changed {
                     // Binary, or deleted: the PR's diff already shows everything.
                     Some(c) if c.is_binary || c.new_path.is_none() => (*c).clone(),
@@ -533,7 +542,7 @@ impl PullDetail {
         let task = cx.spawn(async move |this, cx| {
             let w = word.clone();
             let r = cx.background_executor().spawn(async move {
-                pull::fetch_head(&pr, &local, None)?;
+                fetch_head(&pr, &local)?;
                 let head = Some(pr.head.sha.as_str());
                 let defs = if action == CodeAction::Definition { loupe_code::index::definitions(&w, head, &local.dir, &from, &c2) } else { vec![] };
                 if !defs.is_empty() { return Ok(Err(defs)) }
