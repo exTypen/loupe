@@ -1034,6 +1034,10 @@ impl DiffView {
     }
 }
 
+impl gpui_kit::Focusable for DiffView {
+    fn focus_handle(&self, _: &App) -> FocusHandle { self.focus.clone() }
+}
+
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Settings › Editor changed the font: re-measure and re-lay the rows (their heights follow the line height).
