@@ -265,6 +265,9 @@ pub(crate) fn visible_in(ws: &AppModel, repos: &[String], filter: &str) -> Vec<(
     }).collect()
 }
 
+/// Focus is in a text input (gpui-component's "Input" key context).
+fn in_text(w: &Window) -> bool { w.context_stack().iter().any(|c| c.contains("Input")) }
+
 /// NSBeep: ⌘Z with nothing to undo.
 fn beep() {
     #[cfg(target_os = "macos")]
@@ -353,9 +356,11 @@ impl Render for Shell {
                 s.on_selected(cx, |m, cx| m.refresh(cx));
                 s.workspace.update(cx, |a, cx| a.emit(AppEvent::Refresh, cx));
             }))
-            .on_action(cx.listener(|s, _: &Undo, _, cx| s.undo(cx)))
+            // ⌘Z in a text field never gets here (keys::NOT_IN_TEXT); Edit › Undo clicked while one has focus does,
+            // and goes to the field, as Swift's undo: went to the first responder.
+            .on_action(cx.listener(|s, _: &Undo, w, cx| if in_text(w) { w.dispatch_action(Box::new(gpui_kit::component::input::Undo), cx) } else { s.undo(cx) }))
             // No git redo (as in the Swift app); text fields take ⇧⌘Z themselves.
-            .on_action(|_: &Redo, _, _| beep())
+            .on_action(|_: &Redo, w, cx| if in_text(w) { w.dispatch_action(Box::new(gpui_kit::component::input::Redo), cx) } else { beep() })
             .on_action(cx.listener(|s, _: &NewWorktree, w, cx| {
                 let repo = s.workspace.read(cx).selected_model().map(|m| m.read(cx).repo.clone());
                 if let Some(r) = repo { worktrees::open_add_worktree(&s.workspace, r, String::new(), w, cx) }
