@@ -130,6 +130,8 @@ fn git(dir: &str, args: &[&str], env: &[(String, String)], cancel: Option<&Cance
 /// `pull::fetch_head`, one at a time in this app and tried twice: Full mode's tree and file, the Overview and
 /// navigation all ask at once, and two `git fetch`es into the same remote ref fail with "cannot lock ref" (so does
 /// one racing another app's fetch of the repo).
+/// ponytail: gpui-i-core (e6412aa) serializes and retries `pull::fetch_head` per repository in the crate; once that
+/// merges, this wrapper and its process-wide lock go and callers use `pull::fetch_head` directly.
 pub(super) fn fetch_head(pr: &PullRequest, local: &LocalCheckout) -> loupe_forge::Result<()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
