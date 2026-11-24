@@ -28,7 +28,7 @@ on the fixture with a temporary probe that printed `offer()` / `show_menu_item()
 | PC-16 | `push --set-upstream` with the space's credentials, then refresh; rejection shows git's stderr in red, label stays (`swift-pc16-pushing.png`, `swift-pc16-rejected.png`) | Same push and env (`app.git_auth`); rejection shows the same stderr, label stays (`gpui-pc16-rejected.png`). Success also bumps `refs_version` so the PR-tab/banner offer key moves. Live: spike pushed, `origin/spike/sqlite-fts` = HEAD 88a03b7 | same (plus the §14 PullCreate.swift:255 refs bump) |
 | PC-17 | POST /pulls, sheet closes, worktree selected, Pull Requests tab, new PR #39 opened (`swift-pc17-after.png`). The flows mock decodes fine here (the old memtest mock in §14 didn't) | Same POST body (forge log), sheet closes, `AppEvent::OpenPull{worktree, number}` selects spike and switches to Pull Requests (`gpui-v2-pc17-after.png`). The PR detail itself is the Pulls owner's view (a stub on this branch) | same |
 | PC-18 | At load or on 409/422: red "A pull request for this branch already exists." + "#N title" + "Open Pull Request" (`swift-pc18-load.png`, `swift-pc18-create.png`) | Same section and texts (`gpui-pc18-load.png`, `gpui-pc18-create.png`); Open emits `OpenPull` (`gpui-pc18-open.png`) | same |
-| PC-19 | Red "Forgejo 422: branch feat/webhooks does not exist" (`swift-pc19-error.png`); Gitea also labelled Forgejo | Same text (`gpui-pc19-error.png`); error cleared at each create. Text isn't selectable (gpui text) | same (Gitea label stays: it comes from `loupe_forge::Client`, a frozen crate) |
+| PC-19 | Red "Forgejo 422: branch feat/webhooks does not exist" (`swift-pc19-error.png`); Gitea also labelled Forgejo | Same text (`gpui-pc19-error.png`); error cleared at each create. Text isn't selectable (gpui text) Gitea servers now read "Gitea 422: …": `Client::server_name` asks GET /version once per server (test `gitea_servers_are_named_gitea`; the mock is Forgejo, so the shot is unchanged) | fixed-swift-bug (§14 Forgejo.swift:208) |
 | PC-20 | Cancel/Esc close; an in-flight push/create still navigates later (`swift-pc20-cancel.png`, `swift-pc20-esc.png`) | Cancel/Esc close and re-check the offer; the sheet's task is dropped with it, so a create that lands later no longer navigates (a push already started still finishes) (`gpui-pc20-esc.png`) | fixed-swift-bug (§14 PullCreate.swift:363) |
 
 Performance: with the sheet open, `ps -o %cpu=,time=` read `0.0 0:00.32` twice, 10 s apart; with the app idle after
@@ -44,5 +44,4 @@ reloads only on a base change, and closing it drops its tasks.
   `.children(pr_create::banner(&model, cx))` (PC-01..04).
 - `views/pulls.rs` list toolbar: a "plus" icon button after the filter, shown when
   `pr_create::can_create(&model, cx)`, tooltip "Create a pull request for <branch>", emitting `CreatePull` (PC-05).
-- `loupe_forge::Client::name()` says "Forgejo" for Gitea servers (§14 Forgejo.swift:208); a `gitea` flag would fix
-  PC-19's label.
+- Done (i-core): `loupe_forge::Client::is_gitea` / `server_name` label Gitea servers "Gitea" (PC-19).
