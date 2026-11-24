@@ -293,13 +293,11 @@ pub fn render(d: &mut PullDetail, window: &mut Window, cx: &mut Context<PullDeta
         children.push(div().w_full().max_w(px(MAX_WIDTH)).px_5().child(row(e, d, now, cx)).into_any_element());
     }
     children.push(div().h(px(16.)).into_any_element());
-    let last = children.len() - 1;
-    // It opens at the newest: once laid out, scroll to the end.
+    // It opens at the newest, and a posted comment shows: scroll to the end (applied in this frame's prepaint,
+    // after the new rows are laid out).
     if !d.conv_at_bottom {
         d.conv_at_bottom = true;
-        let h = d.conv_scroll.clone();
-        window.on_next_frame(move |_, _| h.scroll_to_item(last));
-        cx.notify();
+        d.conv_scroll.scroll_to_bottom();
     }
     let sending = d.composer.sending;
     let can_send = !sending && !d.composer.input.read(cx).value().trim().is_empty();
