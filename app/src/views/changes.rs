@@ -334,7 +334,12 @@ impl Render for ChangesView {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|v, _, _, _| v.end_drag()))
             // The confirmation sheet answers Return and Esc wherever focus is in this view.
-            .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, w, cx| {
+                // DV-32: ⌘F finds in the shown diff even while the list has focus (Swift's window-wide key monitor).
+                if e.keystroke.key == "f" && e.keystroke.modifiers.platform && !e.keystroke.modifiers.shift && v.confirm.is_none() {
+                    let d = if v.app.read(cx).full_mode { v.full.view() } else { v.diff.clone() };
+                    if let Some(d) = d { d.update(cx, |d, cx| d.open_find(w, cx)); cx.stop_propagation(); return }
+                }
                 // SS-01: Esc closes the stash popover, as a popover does.
                 if v.stash_open && e.keystroke.key == "escape" { v.stash_open = false; cx.notify(); cx.stop_propagation(); return }
                 if v.confirm.is_none() { return }
