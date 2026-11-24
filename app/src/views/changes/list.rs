@@ -136,6 +136,8 @@ impl ChangesView {
 
     /// Plain click selects one; ⌘ toggles; ⇧ extends from the last plain click (list order).
     fn click(&mut self, id: &str, mods: Modifiers, cx: &mut Context<Self>) {
+        // Every list click ends a peek, the already-selected row too (its selection doesn't change).
+        if let Some(b) = self.browser() { b.update(cx, |b, cx| b.end_peek(cx)) }
         let Some(m) = self.selected() else { return };
         let (listed, old, current) = {
             let s = &m.read(cx).state;

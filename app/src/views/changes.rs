@@ -75,9 +75,11 @@ pub struct ChangesView {
     drag: Option<(Drag, f32, f32)>, // what, mouse x at the start, width at the start
     // Overview and Full mode
     overview: bool,
-    ov: overview::State,
+    ov: Option<Entity<crate::views::code::ChangeOverview>>,
     pending_reveal: Option<(String, u32)>,
-    full: full::State,
+    /// The worktree's code browser: Full mode, ⌘-click and its results, peeking (full.rs).
+    browser: Option<(Entity<crate::views::code::CodeBrowser>, Vec<Subscription>)>,
+    was_full: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -108,7 +110,7 @@ impl ChangesView {
             summary, description, stash_msg, stash_open: false, stash_untracked: true, ai_paths: loupe_forge::ai::installed(),
             generating: None, diff: None, pane: Default::default(), panel: inspector::Panel::load(),
             list_width: pref_f32("changesListWidth", 300.).clamp(220., 380.), drag: None,
-            overview: false, ov: Default::default(), pending_reveal: None, full: Default::default(), _subs: subs,
+            overview: false, ov: None, pending_reveal: None, browser: None, was_full: false, _subs: subs,
         };
         // CM-08: the AI tools are looked up once, off the main thread.
         if v.ai_paths.is_none() {
@@ -132,9 +134,11 @@ impl ChangesView {
             self.confirm = None;
             self.stash_open = false;
             self.pane = Default::default();
-            self.ov = Default::default();
-            self.full = Default::default();
+            self.ov = None;
             self.overview = false;
+            self.was_full = self.app.read(cx).full_mode;
+            self.browser = None;
+            if let Some(m) = self.selected() { self.attach_browser(&m, window, cx) }
         }
         self.sync(window, cx);
     }
@@ -155,21 +159,21 @@ impl ChangesView {
             return;
         };
         let (sel, empty) = { let s = &m.read(cx).state; (s.selected_file_id.clone(), s.files().is_empty()) };
-        if sel != self.shown_id {
+        let sel_changed = sel != self.shown_id;
+        if sel_changed {
             // CH-09: picking a file shows its diff; FI-04: another file drops the History pick.
             if sel.is_some() { self.overview = false }
             self.shown_id = sel.clone();
             self.panel.picked = None;
-            if !self.app.read(cx).full_mode && let Some(f) = m.read(cx).state.selected_file() { self.full.follow(&f.path) }
         }
-        if empty { self.overview = false }
+        if empty || !self.overview { self.overview = false; self.ov = None }
         let full_mode = self.app.read(cx).full_mode;
+        self.update_browser(&m, sel_changed, cx);
         self.share_lfs_locks(&m, cx);
         self.update_diff(&m, cx);
         self.update_pane(&m, cx);
         self.update_panel(&m, cx);
         if self.overview { self.update_overview(&m, cx) }
-        if full_mode { self.update_full(&m, cx) } else { self.leave_full(cx) }
         self.set_controls(empty, sel.is_some() || full_mode, cx);
         cx.notify();
     }
@@ -313,22 +317,28 @@ impl Render for ChangesView {
         let full_mode = self.app.read(cx).full_mode;
         let stash_count = m.read(cx).state.stash_count;
         let left = div().flex().flex_col().w(px(self.list_width)).flex_none().h_full().min_h_0()
-            .child(if full_mode { self.render_tree(&m, cx) } else { self.render_list(&m, window, cx) })
+            .child(if full_mode { self.render_tree(cx) } else { self.render_list(&m, window, cx) })
             .when(stash_count > 0, |d| d.child(self.stashes_link(stash_count, cx)))
             .child(ui::divider())
             .child(self.render_commit_box(&m, window, cx));
-        let right = div().flex_1().min_w(px(360.)).h_full().min_h_0().p_2()
-            .child(if self.overview { self.render_overview(&m, cx) }
-                   else if full_mode { self.render_full_pane(&m, window, cx) }
-                   else { self.render_pane(&m, window, cx) });
+        let browser = self.browser();
+        let peek = browser.as_ref().is_some_and(|b| b.read(cx).peeking());
+        let right = div().flex_1().min_w(px(360.)).h_full().min_h_0().p_2().flex().flex_col()
+            .child(div().flex_1().min_h_0().child(
+                if self.overview { self.render_overview() }
+                else if full_mode { self.render_full_pane(&m, window, cx) }
+                // A jump to a file the change doesn't touch shows it here, in place (CB-15).
+                else if peek && let Some(b) = browser.clone() { ui::card().size_full().child(b).into_any_element() }
+                else { self.render_pane(&m, window, cx) }))
+            // Definitions / references under the Compact diff (the browser shows its own in Full and peek).
+            .when(!full_mode && !peek && !self.overview, |d| d.children(browser.as_ref().and_then(|b| crate::views::code::CodeBrowser::results_panel(b, cx))));
         div().id("changes").relative().flex().flex_col().size_full().font_weight(FontWeight::NORMAL)
             .on_action(cx.listener(|v, _: &Commit, _, cx| v.commit(cx)))
             .on_action(cx.listener(|v, _: &NextFile, _, cx| v.move_file(1, cx)))
             .on_action(cx.listener(|v, _: &PreviousFile, _, cx| v.move_file(-1, cx)))
-            // CH-42: ⌘W closes the open tab in Full mode (nothing when none is open); elsewhere it closes the window.
-            .on_action(cx.listener(|v, a: &CloseWindow, w, cx| {
-                if v.app.read(cx).full_mode { v.close_tab(cx) } else { let _ = a; w.remove_window() }
-            }))
+            // CH-42: in Full mode ⌘W closes the open tab (nothing when none is open): the browser intercepts it.
+            // Elsewhere it closes the window.
+            .on_action(cx.listener(|v, _: &CloseWindow, w, cx| if !v.app.read(cx).full_mode { w.remove_window() }))
             .on_mouse_move(cx.listener(|v, e: &gpui_kit::MouseMoveEvent, _, cx| {
                 if v.drag.is_some() { if e.pressed_button == Some(MouseButton::Left) { v.drag_to(f32::from(e.position.x), cx) } else { v.end_drag() } }
             }))
@@ -337,7 +347,7 @@ impl Render for ChangesView {
             .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, w, cx| {
                 // DV-32: ⌘F finds in the shown diff even while the list has focus (Swift's window-wide key monitor).
                 if e.keystroke.key == "f" && e.keystroke.modifiers.platform && !e.keystroke.modifiers.shift && v.confirm.is_none() {
-                    let d = if v.app.read(cx).full_mode { v.full.view() } else { v.diff.clone() };
+                    let d = if v.app.read(cx).full_mode { v.full_view(cx) } else { v.diff.clone() };
                     if let Some(d) = d { d.update(cx, |d, cx| d.open_find(w, cx)); cx.stop_propagation(); return }
                 }
                 // SS-01: Esc closes the stash popover, as a popover does.
