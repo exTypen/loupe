@@ -15,6 +15,7 @@ mod inspector;
 mod list;
 mod overview;
 mod pane;
+pub mod stash;
 pub mod tree;
 
 use std::collections::{BTreeSet, HashSet};
