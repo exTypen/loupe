@@ -1,8 +1,8 @@
 //! LOUPE_STRESS=<scenario.json>: the test mode every flow is checked in, and the memory/CPU stress driver
 //! (StressDriver.swift, scripts/memtest). The app then:
 //! - uses its own settings domain, wiped at launch, and never the real `dev.extypen.loupe` domain or the Keychain.
-//!   The domain is `dev.extypen.loupe.flows-gpui`, or `LOUPE_STRESS_DOMAIN` when set (scripts/flows gives every
-//!   fixture folder its own, so parallel copies don't share their tab or Full mode);
+//!   The domain is `dev.extypen.loupe.flows-gpui.<folder>`, after the scenario file's folder ([`domain_for`]), so
+//!   parallel copies on different fixtures don't share their tab or Full mode;
 //! - opens the scenario's repos in the default space (the `big` one selected) with an in-memory account for the
 //!   mock forge (`forge`, `user`, `token`), and talks plain http to it (ureq allows it);
 //! - runs the scenario's steps ([`run`]) and prints `LOUPE_STRESS <event> … t=<secs>` lines on stdout, the protocol
@@ -19,6 +19,15 @@ use super::{AppEvent, AppModel, Tab};
 use crate::diff::DiffSide;
 
 pub const DOMAIN: &str = "dev.extypen.loupe.flows-gpui";
+
+/// The settings domain of the scenario at `path`: [`DOMAIN`] plus its folder's name, cut to the characters a domain
+/// takes (run-swift.sh names its LoupeFlows copy's bundle id the same way).
+/// ponytail: two fixtures in same-named folders (/a/flows, /b/flows) share one; add a path hash if that happens.
+pub fn domain_for(path: &str) -> String {
+    let dir = std::path::Path::new(path).parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let slug: String = dir.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
+    if slug.is_empty() { DOMAIN.into() } else { format!("{DOMAIN}.{slug}") }
+}
 
 /// StressDriver.Scenario. Missing fields default (the flows fixture and older scenarios leave some out); extra ones
 /// (`fixture`, `worktrees`) are ignored.
@@ -58,19 +67,15 @@ impl Default for Scenario {
     }
 }
 
-/// Reads the scenario named by LOUPE_STRESS and prepares its settings domain. Exits 2 on an unreadable file or a
-/// domain that isn't a test copy's, as the Swift app did. Must run before anything reads settings.
+/// Reads the scenario named by LOUPE_STRESS and prepares its settings domain. Exits 2 on an unreadable file, as the
+/// Swift app did. Must run before anything reads settings.
 pub fn from_env() -> Option<Scenario> {
     let path = std::env::var("LOUPE_STRESS").ok().filter(|p| !p.is_empty())?;
     let s: Scenario = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|d| serde_json::from_slice(&d).map_err(|e| e.to_string())) {
         Ok(s) => s,
         Err(e) => { eprintln!("LOUPE_STRESS: can't read {path}: {e}"); std::process::exit(2) }
     };
-    let domain = std::env::var("LOUPE_STRESS_DOMAIN").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| DOMAIN.into());
-    if !domain.starts_with("dev.extypen.loupe.") {
-        eprintln!("LOUPE_STRESS refused: run with a test copy's settings domain (dev.extypen.loupe.<name>), got \"{domain}\"");
-        std::process::exit(2)
-    }
+    let domain = domain_for(&path);
     if !settings::use_fresh_domain(&domain) || settings::shared_domain() != domain {
         eprintln!("LOUPE_STRESS refused: settings were read before the scenario picked its domain");
         std::process::exit(2)
@@ -443,6 +448,13 @@ mod tests {
         let s: Scenario = serde_json::from_str(r#"{"repos":["/x"]}"#).unwrap();
         assert!(s.token.is_empty() && s.big.is_none() && s.steps.is_empty());
         assert_eq!((s.iterations, s.pause), (1, 0.5));
+    }
+
+    #[test]
+    fn each_fixture_folder_has_its_own_domain() {
+        assert_eq!(domain_for("/private/tmp/flows-i-cli/scenario.json"), "dev.extypen.loupe.flows-gpui.flows-i-cli");
+        assert_eq!(domain_for("/tmp/my flows_2/s.json"), "dev.extypen.loupe.flows-gpui.my-flows-2");
+        assert_eq!(domain_for("s.json"), DOMAIN);
     }
 
     #[test]

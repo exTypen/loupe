@@ -1,9 +1,17 @@
 #!/bin/sh
-# Extra conflict fixtures for MG-01..26, next to the flows fixture: one small repo per stopped state.
+# Extra conflict fixtures for MG-01..26: one small repo per stopped state, under <out>/repos/extra.
+#   scripts/flows/merge-fixture.sh <out>     (mkflows.py runs it; <out>/home must exist)
+# merge-plain: merge style, 3 conflicts with merged regions, a CRLF file, a no-final-newline file, merge.guitool set to
+#   a stub tool that sleeps 1 s before it copies theirs (so the "running" state shows); merge-diff3: diff3 style,
+#   merge.tool=vimdiff (a terminal tool: Merge Tool disabled); rebase, cherry, revert: those operations stopped;
+#   resolved: staged, waiting for Continue; outside: edited after the merge stopped; special: add/add, delete/modify both
+#   ways, rename/delete, binary, symlink and submodule conflicts.
 set -e
-OUT=/private/tmp/flows-merge/extra
+ROOT=$(cd "${1:?usage: merge-fixture.sh <out>}" && pwd -P)
+OUT=$ROOT/repos/extra
 G=/opt/homebrew/bin/git
-export HOME=/private/tmp/flows-merge/home GIT_CONFIG_NOSYSTEM=1
+export HOME=$ROOT/home GIT_CONFIG_NOSYSTEM=1
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 export GIT_AUTHOR_DATE=2026-11-20T10:00:00 GIT_COMMITTER_DATE=2026-11-20T10:00:00
 rm -rf "$OUT"; mkdir -p "$OUT"
 c() { $G -C "$R" "$@"; }
@@ -83,4 +91,4 @@ c mv renamed.txt renamed-ours.txt
 printf '\x89PNG\r\n\x1a\n\0ours' > "$R/logo.png"; rm "$R/link"; ln -s target-ours "$R/link"
 c add -A; c update-index --add --cacheinfo "160000,$S2,lib"; c commit -qm "main: specials"
 c merge topic >/dev/null 2>&1 || true
-c status --short
+c status --short >/dev/null
