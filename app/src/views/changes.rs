@@ -334,6 +334,8 @@ impl Render for ChangesView {
             .on_mouse_up(MouseButton::Left, cx.listener(|v, _, _, _| v.end_drag()))
             // The confirmation sheet answers Return and Esc wherever focus is in this view.
             .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| {
+                // SS-01: Esc closes the stash popover, as a popover does.
+                if v.stash_open && e.keystroke.key == "escape" { v.stash_open = false; cx.notify(); cx.stop_propagation(); return }
                 if v.confirm.is_none() { return }
                 match e.keystroke.key.as_str() {
                     "escape" => { v.confirm = None; cx.notify() }
