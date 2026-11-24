@@ -921,10 +921,11 @@ impl HistoryView {
         if let Some(i) = self.avatars.url(email).and_then(|u| self.avatars.images.get(u)) {
             return gpui_kit::img(i.clone()).size(px(size)).rounded_full().flex_none().into_any_element();
         }
-        let initials: String = login.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(2).filter_map(|w| w.chars().next()).collect::<String>().to_uppercase();
+        // Swift's Avatar: the login's first letter on HSB(hue, 0.45, 0.75), i.e. HSL(hue, 0.40, 0.58).
+        let initials: String = login.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
         let hue = loupe_forge::avatar::initials_hue(login);
         div().size(px(size)).flex_none().rounded_full().flex().items_center().justify_center()
-            .bg(gpui_kit::hsla(hue, 0.45, 0.42, 1.)).text_size(px(size * 0.4)).font_weight(FontWeight::SEMIBOLD).text_color(gpui_kit::white())
+            .bg(gpui_kit::hsla(hue, 0.40, 0.58, 1.)).text_size(px(size * 0.45)).font_weight(FontWeight::SEMIBOLD).text_color(gpui_kit::white())
             .child(if initials.is_empty() { "?".to_string() } else { initials })
             .into_any_element()
     }
