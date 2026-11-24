@@ -26,7 +26,7 @@ use loupe_core::model::{self as core_model, ConflictSide, GitOperation};
 use loupe_forge::{ai, settings};
 
 pub use session::{Loaded, Role, Session, Side, Take, Tint};
-use crate::shell::keys::{NextConflict, PreviousConflict, UseOurs, UseTheirs};
+use crate::shell::keys::{NextConflict, PreviousConflict, Redo, Undo, UseOurs, UseTheirs};
 use crate::state::{AppEvent, AppModel, WorktreeModel};
 use crate::{theme, ui};
 
@@ -509,6 +509,10 @@ impl MergeEditor {
         }
     }
 
+    fn result_focused(&self, window: &Window, cx: &App) -> bool {
+        self.panes.as_ref().is_some_and(|p| p.result.read(cx).focus_handle(cx).contains_focused(window, cx))
+    }
+
     fn labels(&self, cx: &App) -> MergeLabels {
         let s = &self.model.read(cx).state;
         MergeLabels::new(s.operation, s.branch.as_deref(), &s.operation_subject)
@@ -861,6 +865,11 @@ impl Render for MergeEditor {
         div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").absolute().top(px(42.)).left_0().right_0().bottom_0()
             .border_t_1().border_color(theme::border()).flex().flex_col().bg(theme::canvas())
             .font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
+            // ⌘Z/⇧⌘Z in the result undo its edits (typing and takes), as Swift's Edit › Undo sent undo: to a focused
+            // text view; elsewhere they stay the worktree's git undo. The shell binds them without a context, which
+            // outranks the editor's own binding, so they're routed here.
+            .capture_action(cx.listener(|v, _: &Undo, w, cx| if v.result_focused(w, cx) { cx.stop_propagation(); w.dispatch_action(Box::new(input::Undo), cx) }))
+            .capture_action(cx.listener(|v, _: &Redo, w, cx| if v.result_focused(w, cx) { cx.stop_propagation(); w.dispatch_action(Box::new(input::Redo), cx) }))
             // Return takes the suggestion (its prominent button), before the result editor would insert a newline.
             .capture_action(cx.listener(|v, _: &input::Enter, w, cx| {
                 if v.proposal.is_some() { cx.stop_propagation(); v.accept_proposal(w, cx) }
