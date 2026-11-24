@@ -80,6 +80,8 @@ pub struct DiffView {
     max_cols: usize,
     max_digits: usize,
     char_width: Pixels,
+    font: EditorFont,
+    font_version: u64,
     show_header: bool,
     first_paint: Option<Box<dyn FnOnce()>>,
     _escape: Subscription,
@@ -141,6 +143,8 @@ impl DiffView {
             max_cols: 0,
             max_digits: 3,
             char_width: px(0.),
+            font: EditorFont::current(cx),
+            font_version: FONT_VERSION.load(std::sync::atomic::Ordering::Relaxed),
             show_header: true,
             first_paint: None,
             _escape: escape,
@@ -282,7 +286,7 @@ impl DiffView {
         }
         self.max_cols = max_cols;
         self.max_digits = max_no.to_string().len().max(3);
-        let lh = f32::from(theme::CODE_LINE_HEIGHT);
+        let lh = f32::from(self.font.line_height);
         let mut tops = Vec::with_capacity(rows.len() + 1);
         let mut y = 0.;
         for r in &rows {
@@ -311,7 +315,7 @@ impl DiffView {
         }
         self.ruler = Rc::new(ruler);
         self.blame_rows = self.blame.as_ref().map(|b| blame_labels(f, &rows, b)).unwrap_or_default();
-        self.list.reset_with_uniform_height(rows.len(), theme::CODE_LINE_HEIGHT);
+        self.list.reset_with_uniform_height(rows.len(), self.font.line_height);
         self.rows = Rc::new(rows);
         let target = anchor.and_then(|(old, new, offset)| {
             let r = self.rows.iter().position(|&row| {
@@ -720,7 +724,7 @@ impl DiffView {
     // MARK: Row rendering
 
     fn render_row(&self, ix: usize, this: &Entity<Self>) -> AnyElement {
-        let lh = theme::CODE_LINE_HEIGHT;
+        let lh = self.font.line_height;
         match self.rows[ix] {
             Row::Hunk(li, hi) => self.render_hunk(ix, li, hi),
             Row::Comment(k) => self.render_comment(&self.comments[k], this),
@@ -731,7 +735,7 @@ impl DiffView {
                 let hovering = self.hover.as_ref().is_some_and(|h| h.0 == ix);
                 let el = div()
                     .id(("row", ix))
-                    .font_family(theme::CODE_FONT).text_size(theme::CODE_SIZE).line_height(lh)
+                    .font_family(self.font.family.clone()).text_size(self.font.size).line_height(lh)
                     .h(lh)
                     .w_full()
                     .flex()
@@ -856,7 +860,7 @@ impl DiffView {
 
     fn render_hunk(&self, ix: usize, li: usize, hi: usize) -> AnyElement {
         let header = self.file.line_text(li).to_string();
-        let mut row = div().h(theme::CODE_LINE_HEIGHT + px(8.)).w_full().font_family(theme::CODE_FONT).text_size(theme::CODE_SIZE).flex().items_center().gap(px(8.)).px(px(12.)).bg(theme::hunk_bg())
+        let mut row = div().h(self.font.line_height + px(8.)).w_full().font_family(self.font.family.clone()).text_size(self.font.size).flex().items_center().gap(px(8.)).px(px(12.)).bg(theme::hunk_bg())
             .child(div().text_color(theme::text_muted()).text_size(px(11.)).whitespace_nowrap().child(header));
         if let Some(cb) = &self.on_hunk_action {
             for &a in &self.hunk_actions {
@@ -928,9 +932,10 @@ impl DiffView {
             .child(div().flex().min_w_0().overflow_hidden().whitespace_nowrap()
                 .child(div().text_color(theme::text_muted()).child(dir))
                 .child(div().text_color(theme::text()).font_weight(FontWeight::MEDIUM).child(name)))
-            .child(div().font_family(theme::CODE_FONT).text_size(px(11.)).flex().gap(px(6.))
+            // CB-03: an unchanged file (the code browser's plain files) has no counts to show.
+            .when(f.additions + f.deletions > 0, |d| d.child(div().font_family(theme::CODE_FONT).text_size(px(11.)).flex().gap(px(6.))
                 .child(div().text_color(theme::green()).child(format!("+{}", f.additions)))
-                .child(div().text_color(theme::red()).child(format!("−{}", f.deletions))))
+                .child(div().text_color(theme::red()).child(format!("−{}", f.deletions)))))
             .child(div().flex_1())
             // Before / After only mean something when the file has both: a new or deleted file is one side.
             .when(both, |d| d.child(div().flex().gap(px(2.))
@@ -1021,7 +1026,8 @@ impl DiffView {
                     if new.is_some() { row = row.child(side("After", new, &self.images.1)) }
                 }
                 div().p(px(20.)).flex().flex_col().gap(px(14.))
-                    .child(div().text_color(theme::text()).font_weight(FontWeight::SEMIBOLD).child("LFS object"))
+                    .child(div().flex().items_center().gap(px(6.)).child(crate::ui::icon("hard-drive").text_color(theme::text_muted()))
+                        .child(div().text_color(theme::text()).font_weight(FontWeight::SEMIBOLD).child("LFS object")))
                     .child(row).into_any_element()
             }
         }
@@ -1030,10 +1036,18 @@ impl DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Settings › Editor changed the font: re-measure and re-lay the rows (their heights follow the line height).
+        let v = FONT_VERSION.load(std::sync::atomic::Ordering::Relaxed);
+        if v != self.font_version {
+            self.font_version = v;
+            self.font = EditorFont::current(cx);
+            self.char_width = px(0.);
+            self.rebuild(None, cx);
+        }
         if self.char_width == px(0.) {
             let ts = window.text_system();
-            let id = ts.resolve_font(&font(theme::CODE_FONT));
-            self.char_width = ts.advance(id, theme::CODE_SIZE, 'm').map(|s| s.width).unwrap_or(px(7.2));
+            let id = ts.resolve_font(&font(self.font.family.clone()));
+            self.char_width = ts.advance(id, self.font.size, 'm').map(|s| s.width).unwrap_or(px(7.2));
         }
         if let Some(f) = self.first_paint.take() { window.on_next_frame(move |_, _| f()) }
 
@@ -1102,6 +1116,36 @@ fn merge_layers(len: usize, layers: &[(Range<usize>, HighlightStyle)]) -> Vec<(R
         if any { out.push((a..b, s)) }
     }
     out
+}
+
+/// The code font every diff draws with: Settings › Editor's font, size and line height.
+#[derive(Clone)]
+struct EditorFont { family: gpui_kit::SharedString, size: Pixels, line_height: Pixels }
+
+static EDITOR_FONT: std::sync::Mutex<Option<(String, f32, f32)>> = std::sync::Mutex::new(None);
+static FONT_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Sets the code font of every DiffView (editorFont / editorFontSize, and the row height in points:
+/// `EditorSettings::line_height()`). An empty or uninstalled family draws with SF Mono where it's a family, else the
+/// app's code font, as the Swift app fell back to the system monospaced font. Call `cx.refresh_windows()` after.
+pub fn set_editor_font(family: &str, size: f32, line_height: f32) {
+    let new = Some((family.to_string(), size, line_height));
+    let mut f = EDITOR_FONT.lock().unwrap();
+    if *f != new { *f = new; FONT_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+}
+
+impl EditorFont {
+    fn current(cx: &App) -> Self {
+        let Some((family, size, lh)) = EDITOR_FONT.lock().unwrap().clone() else {
+            return Self { family: theme::CODE_FONT.into(), size: theme::CODE_SIZE, line_height: theme::CODE_LINE_HEIGHT };
+        };
+        // ponytail: the family list is read once; a font installed while Loupe runs shows after a restart.
+        static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let fams = FAMILIES.get_or_init(|| cx.text_system().all_font_names());
+        let has = |f: &str| fams.iter().any(|x| x == f);
+        let family = if !family.is_empty() && has(&family) { family } else if has("SF Mono") { "SF Mono".into() } else { theme::CODE_FONT.into() };
+        Self { family: family.into(), size: px(size), line_height: px(lh) }
+    }
 }
 
 /// The selected code theme's token colors (0xRRGGBB, TokenKind order), shared by every diff. Zero: not set yet.

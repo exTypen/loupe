@@ -66,8 +66,15 @@ fn highlight(f: &diff::FileDiff, lang: &Language) -> Syntax {
 
 /// The code theme the diffs draw their syntax in: "editorDarkTheme" (the app is dark-only).
 pub fn apply_code_theme() {
-    let id = loupe_forge::settings::shared().string(loupe_code::theme::EditorSettings::KEY_DARK_THEME).unwrap_or_default();
+    use loupe_code::theme::EditorSettings as E;
+    let p = loupe_forge::settings::shared();
+    let id = p.string(E::KEY_DARK_THEME).unwrap_or_default();
     diff::set_token_colors(loupe_code::theme::CodeTheme::named(&id, true).tokens);
+    // ST-08: the font, size and line height too (Settings › Editor calls this on every change).
+    let d = E::default();
+    let e = E { font_family: p.string(E::KEY_FONT).unwrap_or(d.font_family), font_size: p.f64(E::KEY_FONT_SIZE).unwrap_or(d.font_size),
+                line_height_factor: p.f64(E::KEY_LINE_HEIGHT).unwrap_or(d.line_height_factor), ..d };
+    diff::set_editor_font(&e.font_family, e.font_size as f32, e.line_height() as f32);
 }
 
 #[cfg(test)]
