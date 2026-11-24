@@ -215,6 +215,8 @@ impl PullDetail {
         self.ensure_full(cx);
     }
 
+    pub fn focus(&self, window: &mut Window, cx: &mut App) { self.focus.focus(window, cx) }
+
     /// Off screen (back to the list, another tab or worktree, a merge): no polling, and running work stops.
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         self.shown = false;
@@ -1157,6 +1159,8 @@ fn modal(title: String, message: Option<String>, buttons: AnyElement) -> AnyElem
 
 impl Render for PullDetail {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A closed popover or comment editor takes its focus with it; keys (⌘[, ⇧⌘V, ⌥↓) then reach nothing.
+        if self.shown && window.focused(cx).is_none() { self.focus.focus(window, cx) }
         if std::mem::take(&mut self.composer.clear) { self.composer.input.update(cx, |i, cx| i.set_value("", window, cx)) }
         let header = self.header(cx);
         let body = match self.tab {

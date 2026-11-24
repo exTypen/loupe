@@ -163,7 +163,7 @@ impl PullsView {
         list.restore_cache(&c.remote); // instant list from the last session; the fetch replaces it
         let load = list.should_load_on_show();
         if let Some(d) = self.selected_detail() {
-            d.update(cx, |d, cx| d.show(cx));
+            d.update(cx, |d, cx| { d.show(cx); d.focus(window, cx) });
             return;
         }
         // The list, not a PR: no PR controls in the toolbar.
@@ -322,7 +322,8 @@ impl PullsView {
         self.poll = None;
         self.list(&c.path).selected = Some(n);
         let d = self.detail(&c, pr, window, cx);
-        d.update(cx, |d, cx| d.show(cx));
+        // The list's filter field had the keys; the detail takes them (⌘[, ⇧⌘V, ⌥↓).
+        d.update(cx, |d, cx| { d.show(cx); d.focus(window, cx) });
         cx.notify();
     }
 
@@ -476,7 +477,8 @@ impl PullsView {
 }
 
 impl Render for PullsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.shown.is_some() && self.selected_detail().is_none() && window.focused(cx).is_none() { self.focus.focus(window, cx) }
         let root = div().id("pulls").track_focus(&self.focus).key_context("Pulls").size_full().bg(theme::canvas());
         let Some(m) = self.model.as_ref().map(|m| m.0.clone()) else { return root.into_any_element() };
         if let Some(c) = self.ctx(cx) {
