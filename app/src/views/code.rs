@@ -115,9 +115,14 @@ impl CodeBrowser {
             let (back, forward) = if close { (false, false) } else { (is(&NavigateBack), is(&NavigateForward)) };
             if !close && !back && !forward { return }
             let handled = weak.update(cx, |v, cx| {
-                if !v.showing_full(cx) { return false }
-                if close { if let Some(p) = v.nav.selected.clone() { v.handle(TabEvent::Close(p), cx) } }
-                else if back { v.go_back(cx) } else { v.go_forward(cx) }
+                // Back / Forward also work in Compact, where ⌘-click works too (Swift had them only in Full, §14 #7).
+                if close {
+                    if !v.showing_full(cx) { return false }
+                    if let Some(p) = v.nav.selected.clone() { v.handle(TabEvent::Close(p), cx) }
+                    return true
+                }
+                if !v.on_host(cx) || (back && v.nav.back.is_empty()) || (forward && v.nav.forward.is_empty()) { return false }
+                if back { v.go_back(cx) } else { v.go_forward(cx) }
                 true
             });
             if handled.unwrap_or(false) { cx.stop_propagation() }
@@ -158,6 +163,7 @@ impl CodeBrowser {
     fn host_tab(&self) -> Tab { if matches!(self.source, Source::Worktree) { Tab::Changes } else { Tab::Pulls } }
     fn full(&self, cx: &App) -> bool { self.app.read(cx).full_mode }
     fn shows_pane(&self, cx: &App) -> bool { self.full(cx) || self.peek }
+    fn on_host(&self, cx: &App) -> bool { self.app.read(cx).tab == self.host_tab() && self.model.read(cx).is_selected() }
     fn showing_full(&self, cx: &App) -> bool {
         let a = self.app.read(cx);
         a.tab == self.host_tab() && self.model.read(cx).is_selected() && (a.full_mode || self.peek)
@@ -421,7 +427,7 @@ impl CodeBrowser {
                     let defs = loupe_code::index::definitions(&w, rev.as_deref(), &dir, &from, &c);
                     if !defs.is_empty() { return Err(defs) }
                 }
-                Ok(loupe_code::index::references(&w, rev.as_deref(), &dir, loupe_code::index::REFERENCE_LIMIT))
+                Ok(references(&w, rev.as_deref(), &dir, loupe_code::index::REFERENCE_LIMIT))
             }).await;
             this.update(cx, |v, cx| {
                 v.busy = None;
@@ -583,6 +589,27 @@ fn kind_name(k: loupe_code::index::SymbolKind) -> &'static str {
     }
 }
 
+/// loupe_code's `references`, but NUL-separated (`git grep -z`), so a path containing ":" isn't split inside the path
+/// (Swift's `split(":")` misparsed it, §14 #10). ponytail: local copy until crates/code takes `-z` (requested).
+pub fn references(name: &str, rev: Option<&str>, dir: &str, limit: usize) -> Vec<loupe_code::index::CodeMatch> {
+    let mut args = vec!["grep", "-z", "-n", "-I", "-w", "--fixed-strings", "-e", name];
+    match rev { Some(r) => args.extend([r, "--"]), None => args.extend(["--untracked", "--"]) }
+    let Ok(out) = loupe_core::git::run(dir, &args) else { return vec![] };
+    let prefix = rev.map(|r| format!("{r}:"));
+    let mut found = vec![];
+    for line in out.split(|&b| b == b'\n') {
+        // "<rev>:<path>\0<line>\0<text>"
+        let mut f = line.splitn(3, |&b| b == 0);
+        let (Some(path), Some(n), Some(text)) = (f.next(), f.next(), f.next()) else { continue };
+        let path = String::from_utf8_lossy(path);
+        let path = prefix.as_deref().and_then(|p| path.strip_prefix(p)).unwrap_or(&path).to_string();
+        let Some(n) = std::str::from_utf8(n).ok().and_then(|n| n.parse().ok()) else { continue };
+        found.push(loupe_code::index::CodeMatch { path, line: n, text: String::from_utf8_lossy(text).trim_matches([' ', '\t']).to_string() });
+        if found.len() >= limit { break }
+    }
+    found
+}
+
 /// The text a whole-file diff ends with: its new side (the outline's input).
 fn new_side(f: &FileDiff) -> Arc<str> {
     use crate::diff::LineKind as L;
@@ -681,6 +708,17 @@ mod tests {
         assert_eq!((p.lines.len(), p.additions), (1, 0));
         let h = load_file(dir, "a.rs", None, &Source::Rev { base: "HEAD".into(), head: "HEAD".into(), changed: vec![] }).unwrap();
         assert_eq!(h.text(&h.lines[1]), "fn two() {}");
+    }
+
+    #[test]
+    fn references_keep_colons_in_paths() {
+        let d = repo("refs");
+        std::fs::write(d.0.join("a:b.rs"), "fn x() { one() }\n").unwrap();
+        let mut got: Vec<(String, usize)> = references("one", None, d.0.to_str().unwrap(), 10).into_iter().map(|m| (m.path, m.line)).collect();
+        got.sort();
+        assert_eq!(got, [("a.rs".to_string(), 1), ("a:b.rs".to_string(), 1)]);
+        let at_head: Vec<String> = references("two", Some("HEAD"), d.0.to_str().unwrap(), 10).into_iter().map(|m| m.path).collect();
+        assert_eq!(at_head, ["a.rs"]);
     }
 
     #[test]

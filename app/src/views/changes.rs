@@ -25,13 +25,6 @@ pub struct ChangesView {
     diff: Option<Entity<DiffView>>,
     message: Entity<TextareaState>,
     _subs: Vec<Subscription>,
-    // TEMP code-agent wiring (not committed)
-    browser: Option<(Entity<crate::views::code::CodeBrowser>, Subscription)>,
-    overview: Option<Entity<crate::views::code::ChangeOverview>>,
-    overview_on: bool,
-    pending_reveal: Option<(String, usize)>,
-    was_full: bool,
-    last_sel: Option<String>,
 }
 
 impl ChangesView {
@@ -48,7 +41,7 @@ impl ChangesView {
                 _ => {}
             }),
         ];
-        let mut v = Self { app, model: None, diff: None, message, _subs: subs, browser: None, overview: None, overview_on: false, pending_reveal: None, was_full: false, last_sel: None };
+        let mut v = Self { app, model: None, diff: None, message, _subs: subs };
         v.follow_selection(window, cx);
         v
     }
@@ -59,15 +52,6 @@ impl ChangesView {
         let m = self.app.read(cx).selected_model();
         if m.as_ref().map(|m| m.entity_id()) == self.model.as_ref().map(|x| x.0.entity_id()) { return }
         self.model = m.map(|m| (m.clone(), cx.observe_in(&m, window, |v, _, w, cx| v.sync(w, cx))));
-        self.overview = None; self.overview_on = false;
-        self.browser = self.model.as_ref().map(|(m, _)| {
-            let b = crate::views::code::browser_for(&self.app, m, window, cx);
-            let sub = cx.subscribe(&b, |v, _, e: &crate::views::code::CodeBrowserEvent, cx| {
-                let crate::views::code::CodeBrowserEvent::Reveal { path, line } = e;
-                v.pending_reveal = Some((path.clone(), *line)); v.apply_reveal(cx);
-            });
-            (b, sub)
-        });
         self.sync(window, cx);
     }
 
@@ -90,58 +74,12 @@ impl ChangesView {
             None => self.diff = None,
         }
         if self.message.read(cx).value().as_ref() != msg { self.message.update(cx, |i, cx| i.set_value(msg, window, cx)) }
-        self.apply_reveal(cx);
-        let full = self.app.read(cx).full_mode;
-        let sel = m.read(cx).state.selected_file().map(|f| f.path.clone());
-        if let Some(b) = self.browser.as_ref().map(|b| b.0.clone()) {
-            if sel != self.last_sel { if self.last_sel.is_some() || sel.is_some() { if !full && let Some(p) = &sel { b.update(cx, |b, cx| b.follow(p, cx)) } } }
-            if full != self.was_full {
-                if full { if let Some(p) = &sel { b.update(cx, |b, cx| b.show(p, cx)) } }
-                else if let Some(p) = b.read(cx).nav.selected.clone() && let Some(c) = b.read(cx).change(&p, cx) { m.update(cx, |m, cx| m.select_file(Some(c.id()), cx)) }
-            }
-        }
-        if sel != self.last_sel && self.last_sel.is_some() { self.overview_on = false; self.overview = None }
-        self.last_sel = sel; self.was_full = full;
-        let no_files = m.read(cx).state.files().is_empty();
-        if self.overview_on && !no_files {
-            let input = crate::views::code::overview::worktree_input(m.read(cx));
-            match &self.overview {
-                Some(o) => o.update(cx, |o, cx| o.set_input(input, cx)),
-                None => {
-                    let b = self.browser.as_ref().map(|b| b.0.clone());
-                    let me = cx.entity().downgrade();
-                    let on_open: crate::views::code::overview::OnOpen = std::rc::Rc::new(move |p, l, _, cx| {
-                        me.update(cx, |v, cx| v.set_overview(false, cx)).ok();
-                        if let Some(b) = &b { b.update(cx, |b, cx| b.open_from_overview(&p, l, cx)) }
-                    });
-                    self.overview = Some(cx.new(|cx| crate::views::code::ChangeOverview::new(input, on_open, cx)));
-                }
-            }
-        }
-        let me = cx.entity().downgrade();
-        let view = (!no_files).then(|| (vec![crate::state::ViewMode::Overview, crate::state::ViewMode::Files],
-            if self.overview_on { crate::state::ViewMode::Overview } else { crate::state::ViewMode::Files },
-            std::rc::Rc::new(move |mode, _: &mut Window, cx: &mut gpui_kit::App| { me.update(cx, |v, cx| v.set_overview(mode == crate::state::ViewMode::Overview, cx)).ok(); }) as std::rc::Rc<dyn Fn(crate::state::ViewMode, &mut Window, &mut gpui_kit::App)>));
-        self.app.update(cx, |a, cx| a.set_controls(Tab::Changes, DiffControls { full: !no_files && !self.overview_on && (full || has_file), view }, cx));
+        self.app.update(cx, |a, cx| a.set_controls(Tab::Changes, DiffControls { full: has_file, view: None }, cx));
         cx.notify();
-    }
-
-    fn apply_reveal(&mut self, cx: &mut Context<Self>) {
-        let Some((p, l)) = self.pending_reveal.clone() else { return };
-        if let Some(d) = &self.diff && d.read(cx).file().path() == p { d.update(cx, |d, cx| d.reveal(l as u32, cx)); self.pending_reveal = None }
-    }
-
-    fn set_overview(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.overview_on = on;
-        if !on { self.overview = None }
-        cx.notify();
-        let m = self.selected();
-        if let Some(m) = m { m.update(cx, |_, cx| cx.notify()) }
     }
 
     fn make_diff_view(&self, file: Arc<crate::diff::FileDiff>, actions: Vec<HunkAction>, cx: &mut Context<Self>) -> Entity<DiffView> {
         let me = cx.entity().downgrade();
-        let me2 = me.clone();
         let (side, layout) = { let a = self.app.read(cx); (a.diff_side, a.layout) };
         let app = self.app.clone();
         cx.new(|cx| {
@@ -155,12 +93,6 @@ impl ChangesView {
                 if let Some(v) = me.upgrade() && let Some(m) = v.read(cx).selected() { m.update(cx, |m, cx| m.apply_lines(action, lines, cx).detach()) }
             });
             d.on_side_change(move |side, layout, _, cx| app.update(cx, |a, cx| a.set_diff_side(side, layout, cx)));
-            d.on_navigate(move |w, a, _, cx| {
-                if let Some(v) = me2.upgrade() && let Some(b) = v.read(cx).browser.as_ref().map(|b| b.0.clone()) {
-                    let from = v.read(cx).diff.as_ref().map(|d| d.read(cx).file().path().to_string()).unwrap_or_default();
-                    b.update(cx, |b, cx| b.navigate(w, a, from, cx))
-                }
-            });
             d
         })
     }
@@ -229,20 +161,10 @@ impl Render for ChangesView {
                     .child(ui::pill_primary("commit", if amend { "Amend" } else { "Commit" }, theme::blue())
                         .when(!can_commit, |d| d.opacity(0.4))
                         .when(can_commit, |d| d.on_click(move |_, _, cx| m2.update(cx, |m, cx| m.commit(cx).detach()))))));
-        let full = self.app.read(cx).full_mode;
-        let browser = self.browser.as_ref().map(|b| b.0.clone());
-        let peek = browser.as_ref().is_some_and(|b| b.read(cx).peeking());
-        let right_code = if self.overview_on && let Some(o) = &self.overview { Some(div().flex_1().min_w_0().h_full().child(o.clone()).into_any_element()) }
-            else if (full || peek) && let Some(b) = &browser { Some(div().flex_1().min_w_0().h_full().child(b.clone()).into_any_element()) } else { None };
-        let left = if full && let Some(b) = &browser {
-            div().flex().flex_col().w(px(300.)).flex_none().h_full().border_r_1().border_color(theme::border())
-                .child(div().flex_1().min_h_0().child(crate::views::code::CodeBrowser::tree(b, cx))).into_any_element()
-        } else { left.into_any_element() };
-        let results = if !full && !peek && !self.overview_on { browser.as_ref().and_then(|b| crate::views::code::CodeBrowser::results_panel(b, cx)) } else { None };
-        let right = if let Some(r) = right_code { r } else { let r = match &self.diff {
+        let right = match &self.diff {
             Some(d) => div().flex_1().min_w_0().h_full().child(d.clone()).into_any_element(),
             None => div().flex_1().child(ui::empty_state("file", if total == 0 { "" } else { "No File Selected" }, "")).into_any_element(),
-        }; div().flex_1().min_w_0().h_full().flex().flex_col().child(div().flex_1().min_h_0().flex().child(r)).children(results).into_any_element() };
+        };
         div().flex().size_full().font_weight(FontWeight::NORMAL)
             .on_action(cx.listener(|v, _: &Commit, _, cx| v.commit(cx)))
             .child(left)

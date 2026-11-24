@@ -85,6 +85,55 @@ pub fn pull_input(dir: &str, merge_base: &str, head: &str, changes: Vec<ChangedP
     }
 }
 
+/// App.swift's dev aid `--lens <repo> <revA> <revB|worktree> [<upstream>]`: the report as text, or None when the
+/// arguments don't ask for it. main.rs is frozen, so it prints this and exits once wired (requested).
+pub fn lens_cli(args: &[String]) -> Option<String> {
+    use std::fmt::Write as _;
+    let i = args.iter().position(|a| a == "--lens")?;
+    let (dir, ra, rb) = (args.get(i + 1)?, args.get(i + 2)?, args.get(i + 3)?);
+    let up = args.get(i + 4).filter(|a| !a.starts_with('-'));
+    let worktree = rb == "worktree";
+    let mut git = vec!["diff", "--name-status", "-z", "-M", ra.as_str()];
+    if !worktree { git.push(rb) }
+    let raw = loupe_core::git::run(dir, &git).unwrap_or_default();
+    let f: Vec<String> = raw.split(|&b| b == 0).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    let (mut changes, mut k) = (vec![], 0);
+    while k + 1 < f.len() && !f[k].is_empty() {
+        let st = &f[k];
+        if (st.starts_with('R') || st.starts_with('C')) && k + 2 < f.len() { changes.push(ChangedPath { old: Some(f[k + 1].clone()), new: Some(f[k + 2].clone()) }); k += 3; continue }
+        changes.push(match st.as_str() {
+            "A" => ChangedPath { old: None, new: Some(f[k + 1].clone()) },
+            "D" => ChangedPath { old: Some(f[k + 1].clone()), new: None },
+            _ => ChangedPath { old: Some(f[k + 1].clone()), new: Some(f[k + 1].clone()) },
+        });
+        k += 2;
+    }
+    let start = std::time::Instant::now();
+    let mut out = String::new();
+    let paths: Vec<String> = changes.iter().map(|c| c.path().to_string()).collect();
+    if let Some(up) = up && let Some(s) = lens::branch_status(rb, up, up, &paths, dir) {
+        let c = s.conflicts.map_or("unknown".to_string(), |c| if c.is_empty() { "none".into() } else { c.join(", ") });
+        let _ = writeln!(out, "■ {} behind {}, {} touching, conflicts: {c}", s.behind, s.target, s.touching.len());
+    }
+    let b = if worktree { Snapshot::Worktree } else { Snapshot::Rev(rb.clone()) };
+    for r in lens::analyze(&changes, &Snapshot::Rev(ra.clone()), &b, up.map(String::as_str), dir) {
+        let _ = writeln!(out, "■ {}: {}", r.title, r.summary);
+        for s in &r.sections {
+            let _ = writeln!(out, "  {}", s.title);
+            for x in s.facts.iter().take(40) {
+                let g = match x.kind { FactKind::Added => "+", FactKind::Removed => "−", FactKind::Changed => "~", FactKind::Renamed => "→", FactKind::Info => "·", FactKind::Warning => "!" };
+                let detail = x.detail.as_ref().map(|d| format!("  — {d}")).unwrap_or_default();
+                let at = x.path.as_ref().map(|p| format!("  @{p}{}", x.line.map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_default();
+                let _ = writeln!(out, "    {g} {}{detail}{at}", x.title);
+                for n in &x.notes { let _ = writeln!(out, "        {n}"); }
+            }
+            if s.facts.len() > 40 { let _ = writeln!(out, "    … {} more", s.facts.len() - 40); }
+        }
+    }
+    let _ = writeln!(out, "({} ms)", start.elapsed().as_millis());
+    Some(out)
+}
+
 struct Computed { key: String, scope: (String, Snapshot, Snapshot), reports: Arc<Vec<LensReport>>, branch: Option<BranchStatus> }
 
 pub struct ChangeOverview {
@@ -876,6 +925,34 @@ mod tests {
                                   F::new("m.rs", Kind::Modified, true), F::new("m.rs", Kind::Modified, false)]);
         let cp = |o: Option<&str>, n: Option<&str>| ChangedPath { old: o.map(Into::into), new: n.map(Into::into) };
         assert_eq!(got, [cp(Some("a.rs"), Some("b.rs")), cp(Some("d.rs"), None), cp(Some("m.rs"), Some("m.rs")), cp(None, Some("n.rs"))]);
+    }
+
+    #[test]
+    fn lens_cli_prints_reports() {
+        assert!(lens_cli(&["loupe".into()]).is_none());
+        let d = std::env::temp_dir().join(format!("loupe-lenscli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("migrations")).unwrap();
+        let g = |a: &[&str]| assert!(std::process::Command::new("git").args(a).current_dir(&d).env("GIT_CONFIG_NOSYSTEM", "1").env("HOME", &d).status().unwrap().success());
+        g(&["init", "-q"]);
+        std::fs::write(d.join("README.md"), "x\n").unwrap();
+        g(&["add", "."]);
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i"]);
+        std::fs::write(d.join("migrations/0001_a.sql"), "CREATE TABLE t (id int primary key);\n").unwrap();
+        g(&["add", "."]);
+        let dir = d.to_str().unwrap().to_string();
+        let out = lens_cli(&["--lens".into(), dir, "HEAD".into(), "worktree".into()]).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(out.contains("■ Database: 1 new table"), "{out}");
+    }
+
+    /// `LENS_ARGS="<repo> <a> <b> [up]" cargo test -p loupe lens_cli_env -- --ignored --nocapture`: compare with Swift's `--lens`.
+    #[test]
+    #[ignore]
+    fn lens_cli_env() {
+        let mut a = vec!["--lens".to_string()];
+        a.extend(std::env::var("LENS_ARGS").unwrap().split(' ').map(String::from));
+        print!("{}", lens_cli(&a).unwrap());
     }
 
     #[test]
