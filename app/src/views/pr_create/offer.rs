@@ -112,9 +112,15 @@ fn dismissed(key: &str) -> bool {
 
 fn set_dismissed(key: &str, on: bool) {
     let mut p = settings::shared();
-    let mut lines: Vec<String> = p.string(DISMISSED).unwrap_or_default().split('\n').filter(|l| !l.is_empty() && *l != key).map(str::to_string).collect();
-    if on { lines.push(key.to_string()) }
-    p.set_string(DISMISSED, &lines.join("\n"));
+    let list = with_line(&p.string(DISMISSED).unwrap_or_default(), key, on);
+    p.set_string(DISMISSED, &list);
+}
+
+/// The newline-separated list with `key` added (once, at the end) or removed.
+fn with_line(list: &str, key: &str, on: bool) -> String {
+    let mut lines: Vec<&str> = list.split('\n').filter(|l| !l.is_empty() && *l != key).collect();
+    if on { lines.push(key) }
+    lines.join("\n")
 }
 
 /// Opening the sheet for a dismissed branch brings its banner back: the Swift dismissal was permanent with no way
@@ -156,4 +162,16 @@ pub fn banner(model: &Entity<WorktreeModel>, cx: &mut App) -> Option<AnyElement>
                 })))
         .child(ui::divider())
         .into_any_element())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dismissed_lines() {
+        let k = "/r/app\tfeat/a";
+        assert_eq!(super::with_line("", k, true), k);
+        assert_eq!(super::with_line("/r/b\tx", k, true), format!("/r/b\tx\n{k}"));
+        assert_eq!(super::with_line(&format!("{k}\n/r/b\tx"), k, true), format!("/r/b\tx\n{k}"));
+        assert_eq!(super::with_line(&format!("/r/b\tx\n{k}"), k, false), "/r/b\tx");
+    }
 }
