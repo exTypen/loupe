@@ -400,7 +400,6 @@ impl ChangeOverview {
                     .when_some(ov::files_to_read(r), |d, n| d.child(caption(format!("{n} to read")))));
             let id2 = id.clone();
             div().id(ElementId::Name(id.clone().into())).flex().flex_col().gap(px(8.)).p(px(12.)).flex_1().min_w_0()
-                .when(files, |d| d.flex_grow(2.))
                 .rounded(px(8.)).border_1().border_color(theme::border())
                 .bg(if hover && !files { theme::raised() } else { theme::card() })
                 .on_hover(cx.listener(move |v, h: &bool, _, cx| {
@@ -575,7 +574,7 @@ impl ChangeOverview {
             let c = ((places[i].0 / (w + 12.)).round() as usize).min(n - 1);
             cols[c].push(self.table_box(format!("t-{}-{i}", g.root), t, cx));
         }
-        div().flex().gap(px(12.)).items_start().children(cols.into_iter().map(|c| div().flex().flex_col().gap(px(12.)).w(px(w)).flex_none().children(c)))
+        div().flex().gap(px(12.)).items_start().children(cols.into_iter().map(|c| div().flex().flex_col().gap(px(12.)).flex_1().min_w(px(300.)).max_w(px(640.)).children(c)))
             .into_any_element()
     }
 
