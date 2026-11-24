@@ -171,7 +171,11 @@ impl HistoryView {
     /// Markdown.
     pub(super) fn header_buttons(this: &WeakEntity<Self>, cx: &App) -> AnyElement {
         let Some(v) = this.upgrade() else { return div().into_any_element() };
-        let view = v.read(cx);
+        v.read(cx).buttons_for(v.clone(), cx)
+    }
+
+    fn buttons_for(&self, v: gpui_kit::Entity<Self>, cx: &App) -> AnyElement {
+        let view = self;
         let Some((c, f)) = view.log(cx).and_then(|l| Some((l.selected_commit()?.clone(), l.selected_file()?.clone()))) else { return div().into_any_element() };
         let panels = c.selector.is_none() && f.core.new_path.is_some();
         let md = is_markdown(f.path());
@@ -196,7 +200,7 @@ impl HistoryView {
     }
 
     /// The Markdown preview replaces the diff for a .md file that exists after the commit.
-    pub(super) fn render_markdown(&self, c: &Commit, f: &Shown) -> Option<AnyElement> {
+    pub(super) fn render_markdown(&self, c: &Commit, f: &Shown, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = &self.file_panel;
         if !p.preview || !is_markdown(f.path()) || f.core.new_path.is_none() || self.panel_picked_diff().is_some() { return None }
         let key = format!("{} {}", c.sha, f.path());
@@ -204,7 +208,17 @@ impl HistoryView {
             Some((_, t)) => div().max_w(px(860.)).w_full().child(TextView::markdown(SharedString::from(format!("md-{key}")), t.clone())).into_any_element(),
             None => gpui_kit::component::spinner::Spinner::new().into_any_element(),
         };
-        Some(div().id("md-preview-body").size_full().overflow_y_scroll().px(px(28.)).py(px(22.)).flex().justify_center().child(body).into_any_element())
+        // The diff's header stays above the preview, so Preview can be turned off again.
+        let (dir, name) = match f.path().rsplit_once('/') { Some((d, n)) => (format!("{d}/"), n.to_string()), None => (String::new(), f.path().to_string()) };
+        let header = div().h(px(38.)).flex_none().flex().items_center().gap(px(8.)).px(px(12.)).bg(theme::card_header()).border_b_1().border_color(theme::border())
+            .child(div().flex().min_w_0().overflow_hidden().whitespace_nowrap()
+                .child(div().text_color(theme::text_muted()).child(dir))
+                .child(div().font_weight(FontWeight::MEDIUM).child(name)))
+            .child(div().flex_1())
+            .child(self.buttons_for(cx.entity(), cx));
+        Some(ui::card().size_full().child(header)
+            .child(div().id("md-preview-body").flex_1().min_h_0().overflow_y_scroll().px(px(28.)).py(px(22.)).flex().justify_center().child(body))
+            .into_any_element())
     }
 
     /// File History's list on the left of the diff, and the bar over a picked commit's change.

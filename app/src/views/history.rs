@@ -979,7 +979,7 @@ impl HistoryView {
         let l = self.log(cx).unwrap();
         let right = match (l.selected_file(), &self.diff) {
             (Some(f), Some(d)) => {
-                let body = self.render_markdown(&c, f).unwrap_or_else(|| d.clone().into_any_element());
+                let body = self.render_markdown(&c, f, cx).unwrap_or_else(|| d.clone().into_any_element());
                 div().size_full().p_2().child(self.render_file_panel(body, cx)).into_any_element()
             }
             _ if l.detail_loading => div().size_full().flex().items_center().justify_center().child(gpui_kit::component::spinner::Spinner::new()).into_any_element(),
