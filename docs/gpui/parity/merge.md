@@ -1,8 +1,8 @@
 # Merge editor and conflicts: Swift vs GPUI parity (MG-01..26)
 
 Both apps ran on the flows mock (port 8805, `/tmp/flows-merge`). The flows fixture has only one stopped merge
-(`app-sessions`) and one cherry-pick, so `merge-fixture.sh` (next to this file) adds one small repo per stopped state
-under `/tmp/flows-merge/extra`: `merge-plain` (merge style, 3 conflicts in `notes.txt` with merged regions, a CRLF
+(`app-sessions`) and one cherry-pick, so `scripts/flows/merge-fixture.sh` (mkflows.py runs it) adds one small repo per stopped
+state under `<out>/repos/extra`: `merge-plain` (merge style, 3 conflicts in `notes.txt` with merged regions, a CRLF
 file, a no-final-newline file, `merge.guitool` set to a stub tool), `merge-diff3` (diff3 style, `merge.tool=vimdiff`),
 `rebase`, `cherry`, `revert`, `resolved`, `outside` (edited after the merge stopped) and `special` (add/add,
 delete/modify both ways, added by us/them after a rename, both deleted, binary, symlink, submodule).
@@ -19,7 +19,8 @@ How it was checked:
   opens a conflicted file in the merge editor; screenshots of each. The screen was locked for the whole run
   (`loginwindow` frontmost), so no real mouse or keyboard input could reach either app: Swift's reactions below are
   read from MergeEditor.swift / Conflicts.swift / Model.swift (FLOWS.md §7) and its renders from the screenshots.
-- `LOUPE_FLOWS_AI=<path>` points GPUI at the stub Claude in `home/.local/bin`, because `/opt/homebrew/bin/claude`
+- `LOUPE_FLOWS_AI=<path>` points GPUI at the stub Claude mkflows.py plants in `<out>/home/.local/bin/claude`
+  (scenario.json `fixture.ai`; up.sh prints the export; an `<out>/ai-empty` file makes it answer nothing), because `/opt/homebrew/bin/claude`
   is found first in both apps (and isn't logged in under the fixture's HOME).
 
 Screenshots are in `/tmp/flows-merge/shots/` (`s-*` Swift, `g-*` GPUI).

@@ -148,10 +148,9 @@ impl Run {
         self.pause(cx, 3.).await;
         // As big as the screen (Swift: setFrame(visibleFrame)): a narrow toolbar clips its controls.
         // ponytail: gpui can't move a window, so only the size follows the visible frame; the origin stays.
-        let size = self.with_window(cx, |w, cx| {
-            if let Some(d) = w.display(cx) { w.resize(d.visible_bounds().size) }
-            w.bounds().size
-        });
+        self.with_window(cx, |w, cx| if let Some(d) = w.display(cx) { w.resize(d.visible_bounds().size) });
+        cx.background_executor().timer(Duration::from_millis(200)).await; // the new frame arrives asynchronously
+        let size = self.with_window(cx, |w, _| w.bounds().size);
         if let Some(sz) = size { self.mark(&format!("window {:.0}x{:.0}", f32::from(sz.width), f32::from(sz.height))) }
         // `background` (behind the owner's windows, never key): main.rs doesn't activate the app.
         self.mark("ready");

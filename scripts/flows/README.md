@@ -31,7 +31,18 @@ change the served repos, and only `--reset` undoes those.
 export LOUPE_STRESS=<out>/scenario.json   # the scenario below
 export HOME=<out>/home                    # .gitconfig with user Alice Mock and the LFS filters
 export GIT_CONFIG_NOSYSTEM=1
+export LOUPE_FLOWS_AI=<out>/home/.local/bin/claude   # GPUI only: the stub AI CLI (see below)
 ```
+
+Settings never mix between fixtures or with the real app: the GPUI app's scenario domain is
+`dev.extypen.loupe.flows-gpui.<out folder name>` and run-swift.sh gives each `<out>/LoupeFlows.app` the bundle id
+`dev.extypen.loupe.flows.<out folder name>` (a prebuilt copy dropped in `<out>` is only re-signed). Both are wiped at
+launch, so two agents on two fixtures no longer flip each other's tab or Full mode.
+
+Both apps run the same StressDriver steps from the scenario's `"steps"` (worktrees, tabs, tabsonly, idle, history,
+bigfile, prs, hugepr, mergepr, checks, merge, create, rebase, stashes, submodule) and print the same
+`LOUPE_STRESS <event> t=` lines; copy scenario.json, set `"steps"`, and point LOUPE_STRESS at the copy (keep it in
+`<out>`, so it gets the same settings domain).
 
 `scenario.json` is a `StressDriver.Scenario` (Sources/Loupe/StressDriver.swift). With `"steps": []` the Swift driver
 does three things. It wipes the copy's defaults and writes one space, "Default", holding `repos`. It holds the account
@@ -128,6 +139,21 @@ closed.
 A third repo whose remote (`git.example.invalid`) has **no account**: no PRs and no CI ("No Remote"/no-account
 flows). It has k8s multi-document YAML, RBAC, a Helm template with `{{ }}` and `|`/`>` scalars, and two CRDs, with
 a commit adding the same field to both CRDs plus a type change. It also has an unstaged edit.
+
+### Extra conflict repos: `repos/extra/*` (merge-fixture.sh)
+
+One small repo per stopped state, for the merge editor (MG-01..26); not in `repos` (add them to scenario.json's
+`repos`, or open them): `merge-plain` (3 conflicts with merged regions, CRLF, no final newline, `merge.guitool` a stub
+that sleeps 1 s and copies theirs), `merge-diff3` (diff3 style, `merge.tool=vimdiff`), `rebase`, `cherry`, `revert`,
+`resolved` (staged, waiting for Continue), `outside` (edited after the stop) and `special` (add/add, delete/modify both
+ways, rename/delete, binary, symlink, submodule). Paths are in scenario.json `fixture.extra`.
+
+### Stub AI CLI: `home/.local/bin/claude`
+
+A fake Claude Code: a fenced "merged by AI: both changes" for a conflict prompt, a fixed commit message otherwise,
+nothing when `<out>/ai-empty` exists; calls are logged to `<out>/ai-calls.log`. The apps find /opt/homebrew/bin/claude
+first, so the GPUI app takes the stub only through `LOUPE_FLOWS_AI` (a scenario-run override in loupe_forge::ai); the
+Swift app can't be pointed at it.
 
 ### Pull requests on acme/app (17 open, 21 closed or merged)
 

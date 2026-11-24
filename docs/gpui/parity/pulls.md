@@ -108,7 +108,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | FG-08 | GitHub state mapping, `merged_at`, PUT merge, APPROVE | Forge crate mapping (its tests) | same |
 | FG-09 | `GIT_CONFIG_COUNT=2` credential helper for fetches | `AppModel::git_auth` passed to every PR fetch | same |
 | FG-10 | One load per state with one rerun; stale results dropped | Same for the list (`Load` + `again`) and the detail (`reload_queued`) | same |
-| FG-11 | `Loupe --api <path>` prints a raw response | Not handled: the flag would live in `main.rs`, which is frozen | missing (needs `main.rs`; requested) |
+| FG-11 | `Loupe --api <path>` prints a raw response | `main.rs` `--api`: the current space's account through `Client::raw` (GitHub's own API root); PR #1's JSON from the flows mock (see shell.md MS-01) | fixed-swift-bug (§14 `--api` always /api/v1) |
 
 ## Performance
 
