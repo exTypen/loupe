@@ -166,6 +166,10 @@ impl ChangesView {
                     .child(gpui_kit::component::text::TextView::markdown("md-text", t))).into_any_element(),
                 None => spinner(),
             }
+        } else if !d.is_binary && d.lines.is_empty() {
+            // §14 "Blank Changes pane": say what changed instead of an empty table, as History, PRs and Full did.
+            if matches!(f.kind, Kind::Added | Kind::Untracked) { ui::empty_state("file", "Empty File", "") }
+            else { ui::empty_state("file", "No Content Changes", "Mode change or rename only.") }.into_any_element()
         } else { self.diff.clone().map(|d| d.into_any_element()).unwrap_or_else(spinner) };
         let target = has_target(&f);
         ui::card().size_full().child(header).child(self.with_panel(target, body, window, cx)).into_any_element()
