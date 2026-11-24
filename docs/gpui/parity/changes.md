@@ -19,11 +19,11 @@ dropped when its key moves or another worktree is selected.
 | CH-02 | Pull ff-only, undo "Pull" | `pull --ff-only` via `remote_op`, undo recorded by core | same (shell) |
 | CH-03 | Push `--set-upstream <remote> HEAD` | same args, remote from `detect_remote` | same (shell) |
 | CH-04 | Branch title + popover, Local/Remote, filter | shell/branches.rs popover, same sections | same (shell) |
-| CH-05 | Switch, other-worktree jump, inline error | shell/branches.rs → `switch_branch`; Return with an empty filter still switches to the newest other branch, as Swift | same (shell; §14 item left to the integrator) |
+| CH-05 | Switch, other-worktree jump, inline error | shell/branches.rs → `switch_branch`; Return with an empty filter does nothing (the picker stays open, the branch stays): `g-branch.png`, `spike/sqlite-fts` before and after | fixed-swift-bug (§14: Return with nothing typed switched to the newest other branch) |
 | CH-06 | Changes / History / Pull Requests picker, global `tab` | same picker, `tab` key; shots `swift-main.png`, `gpui-start.png` | same (shell) |
 | CH-07 | "Git" alert, OK clears; ⌘R refreshes | `state.error` in the shell's alert; ⌘R → `refresh()` | same (shell) |
-| CH-08 | Banners (operation / LFS missing / submodule) over a 220–380 split, list + stashes link + commit box | same order and split (`changesListWidth`), shots `swift-sessions.png` / `gpui-sessions.png` (merge + submodule banners). The PR-create banner slot is left to pr_create (its data) | same |
-| CH-09 | Overview/Files toggle; Overview of HEAD→worktree, rich cards; a click selects the file, the line is dropped | same toggle and key; facts drawn as plain cards (rich CO cards are the code owner's); a click selects the file and reveals the line; the last report stays on screen while the next is read. Shots `swift-overview.png`, `gpui-overview.png`, `gpui-overview-click.png` | fixed-swift-bug (§14 Lenses 4 and 5: line dropped, spinner flash) |
+| CH-08 | Banners (operation / LFS missing / submodule) over a 220–380 split, list + stashes link + commit box | same order and split (`changesListWidth`). The operation banner is `merge::banner`; with no operation or conflict, `pr_create::banner` takes its slot (`g-sessions.png`: merge banner on sessions; `g-spike.png`: PR offer on spike) | same |
+| CH-09 | Overview/Files toggle; Overview of HEAD→worktree, rich cards; a click selects the file, the line is dropped | same toggle and key; the code view's `ChangeOverview` (rich cards, `g-ov.png`); a click opens the file through the code browser at its line (`g-ovclick.png`); the last report stays on screen while the next is read | fixed-swift-bug (§14 Lenses 4 and 5: line dropped, spinner flash) |
 | CH-10 | Compact/Full toggle, ⌥⌘F, Full opens the list's file, back selects the tab's file | same; shots `swift-discard-confirm.png` (Swift in Full), `gpui-full.png` | same |
 | CH-11 | Conflicts / Staged ("Unstage All") / Changes ("Stage All") with counts; Changes always shown | same sections and buttons; shots `swift-billing.png`, `gpui-billing.png` | same |
 | CH-12 | Folder rows, chain compaction, per-section fold "<section>/<dir>", not persisted | same (`tree::rows`), chain shown whole when it fits; Swift head-truncates | same |
@@ -45,7 +45,7 @@ dropped when its key moves or another worktree is selected.
 | CH-28 | Header Stage File / Discard… / Unstage File | same pills; shots `gpui-billing.png`, `gpui-sessions.png` | same |
 | CH-29 | Stage/Unstage Hunk buttons; none for untracked | same (`hunk_actions`); none in Before/After | fixed-swift-bug (§14 Diff: Stage/Discard in Before/After acted on the whole file) |
 | CH-30 | Stage/Unstage/Discard lines from the diff menu | renderer menu → `apply_lines` (stale-diff guard in the model) | same (renderer) |
-| CH-31 | ⌘Z "Undo Stage", toast "Undone: …" | shell ⌘Z → `undo`; toast "Undone: Commit" seen (`gpui-undo-commit.png`). ⌘Z in a text field is a git undo too | intentional (KB-14 dispatch is the shell's; noted for the integrator) |
+| CH-31 | ⌘Z "Undo Stage", toast "Undone: …" | shell ⌘Z → `undo`; toast "Undone: Apply Stash" (`g-undo.png`). In a text field ⌘Z undoes the typing and leaves git alone (`g-textundo.png`: typed in History's search, ⌘Z cleared it, router.rs still applied): Loupe's ⌘Z/⇧⌘Z are bound `!Input`, and Edit › Undo clicked with a field focused goes to the field | same |
 | CH-32 | "Discard changes?" dialog, "Discard N file(s)", toast with Undo | same sheet text and button; shots `gpui-discard-confirm.png` | same |
 | CH-33 | ⌫ discards the unstaged selection; conflicted included | same, conflicted and submodules left out | fixed-swift-bug (§14 Changes: discard offered for conflicted files) |
 | CH-34 | Discard… in header / Full pane | same | same |
@@ -55,8 +55,8 @@ dropped when its key moves or another worktree is selected.
 | CH-38 | Toast 6 s, Undo button, refusals | shell toast via `show_undo_toast` | same (shell) |
 | CH-39 | Pane states: submodule, diff, spinner, No Changes, No File Selected, binary, LFS, Markdown, conflict | same states; a rename/chmod-only change shows "No Content Changes", an empty new file "Empty File". A conflicted file shows a "Conflicted" pane with "Open Merge Editor" (and double-click opens it): the merge editor is an overlay here | fixed-swift-bug (§14 Diff: blank Changes pane); conflict entry intentional (merge editor is an overlay, MG owner) |
 | CH-40 | Header: icon, old→new, path, +N −N, Diff/Before/After, Blame/History, Preview, actions | same order and conditions | same |
-| CH-41 | Full tree: ls-files, unchanged dimmed, marks, lock badges, reload on status/count | same; unchanged folders fold once and then stay as the user left them; empty worktree says "No Files" | fixed-swift-bug (§14 Lenses 2 and 3) |
-| CH-42 | Tabs, header, "No File Open", Empty/Binary, ⌘W, reload per status | same; the open file stays on screen while it reloads. Back/forward nav controls and ⌘-click navigation are the code browser's | fixed-swift-bug (§14 Lenses 5: spinner flash) |
+| CH-41 | Full tree: ls-files, unchanged dimmed, marks, lock badges, reload on status/count | the code browser's tree (`CodeBrowser::tree`): ls-files, unchanged dimmed, marks, lock badges; folds once to what changed, then stays as the user left it; an empty worktree says "No Files" (`g-ovclick.png`) | fixed-swift-bug (§14 Lenses 2 and 3) |
+| CH-42 | Tabs, header, "No File Open", Empty/Binary, ⌘W, reload per status | the code browser in the Blame / File History panel: tabs, header with back/forward, outline, Blame and File History toggles, Discard / Stage File, ⌘W closes the tab; the open file stays on screen while it reloads (`g-ovclick.png`, `g-fullblame.png`). LFS image thumbnails show in Compact only | fixed-swift-bug (§14 Lenses 5: spinner flash) |
 | CM-01 | Summary, ✨, Description 56 pt, Amend, Stash…, Commit | same layout; shots `swift-main.png`, `gpui-start.png` | same |
 | CM-02 | One message; summary newlines → spaces; Return at start of Description eaten | same join/split (unit test); the Return is kept | fixed-swift-bug (§14 Changes: Return at the start of the Description) |
 | CM-03 | Commit / Commit N / Amend, ⌘↩, Return in Summary; undo "Commit" | same; committed "Parity commit" with ⌘↩ and undid it, message back (`gpui-commit-done.png`, `gpui-undo-commit.png`) | same |
@@ -73,11 +73,11 @@ dropped when its key moves or another worktree is selected.
 | SS-01 | Stash… popover: message, "Include untracked" (kept), Stash | same; Esc closes it; shot `gpui-stash-popover.png` | same |
 | SS-02 | `stash push [-u] [-m]`, no undo | same command (core `stash`), no undo | same |
 | SS-03 | Context Stash N Files, `-u` only with an untracked file | same | same |
-| SS-04 | "N stashes" link → History, Stashes scope | link switches to History; the scope is History's to pick | intentional (needs `AppEvent::ShowStashes`, requested) |
+| SS-04 | "N stashes" link → History, Stashes scope | link emits `AppEvent::ShowStashes`: History on the Stashes scope, newest stash selected (`g-ss04.png`, Swift `s-ss04.png`) | same |
 | SS-05 | Stash list in History | History owner's list (`loupe_core::history::stashes`, `stash_diff`) | intentional (History view owns it, as in Swift) |
-| SS-06 | Apply with undo; conflicts → Changes | `WorktreeModel::stash_op(Apply, …)` records `Recipe::Stash`, returns `Some(true)` on conflicts | same (API for History; its buttons are History's) |
-| SS-07 | Pop with undo + toast | `stash_op(Pop, …)` | same (API for History) |
-| SS-08 | Drop… confirm, undo + toast | `stash_op(Drop, …)`, `stash::drop_question` | same (API for History) |
+| SS-06 | Apply with undo; conflicts → Changes | History's Apply calls `WorktreeModel::stash_op(Apply, …)`: recorded, ⌘Z gives "Undone: Apply Stash" (`g-apply.png`, `g-undo.png`); `Some(true)` on conflicts switches to Changes | same |
+| SS-07 | Pop with undo + toast | History's Pop calls `stash_op(Pop, …)` | same |
+| SS-08 | Drop… confirm, undo + toast | History's Drop… asks `stash::drop_question`, then `stash_op(Drop, …)` | same |
 | SS-09 | Copy stash message | History's row menu | intentional (History view) |
 | SS-10 | Conflicted apply/pop: "Conflicts" banner, no Abort/Continue, merge editor | `stash_op` treats it as a stop, not an error; banner shows "Conflicts" without buttons when no operation | same |
 | FI-01 | Blame toggle, `blame --porcelain`, reload on diff uid; deleted file: silent nothing | same gutter ("854a291 Alice Mock · 10 mo", "Not committed"), keyed by uid; no Blame/History for an unstaged deleted file. Shot `gpui-blame.png` | fixed-swift-bug (§14 Changes: blame silently does nothing for deleted files) |
@@ -114,7 +114,7 @@ dropped when its key moves or another worktree is selected.
 | DV-26 | ⌘A in the diff | renderer | same (renderer) |
 | DV-27 | Copy | renderer | same (renderer) |
 | DV-28 | Focus redraw | renderer | same (renderer) |
-| DV-29 | ⌘-click go to definition | `on_navigate` belongs to the code browser (stub on this branch) | missing (CodeBrowser is a stub here; code owner wires `on_navigate`) |
+| DV-29 | ⌘-click go to definition | the Compact diff's `on_navigate` goes to the worktree's `CodeBrowser::navigate`; ⌘-click on `fetch_user` in router.rs opened db.rs at line 24 in place (`g-cmdclick.png`); a click on the list row, even the selected one, ends the peek (`g-endpeek.png`) | same |
 | DV-30 | Diff context menu | renderer + Changes' hunk actions | same (renderer) |
 | DV-31 | Reveal a line | Overview fact → `reveal` once the file's diff is in | same |
 | DV-32 | ⌘F anywhere in the window | ⌘F opens find on the shown diff even with the list focused; shot `gpui-find.png` ("1 of 7") | same |
@@ -163,6 +163,6 @@ dropped when its key moves or another worktree is selected.
 
 - `WorktreeModel::load_lfs_locks` should hand its answer to the repository's other worktrees (they got the
   placeholder while it ran). Worked around in `ChangesView::share_lfs_locks`.
-- `AppEvent::ShowStashes { worktree }` so the "N stashes" link opens History on the Stashes scope (SS-04).
-- History owner: call `views::changes::stash::WorktreeModel::stash_op` for Apply / Pop / Drop.
-- Integrator: ⌘Z with focus in a text field should be the field's undo (CH-31 edge).
+- Done by the views integrator: `AppEvent::ShowStashes` (SS-04), History's stash buttons through `stash_op`, ⌘Z in a
+  text field (CH-31), the code browser and ChangeOverview (CH-09, CH-41/42, DV-29), the merge and PR banners (CH-08).
+  GPUI shots of that run: `/tmp/flows-i-views/shots/`.

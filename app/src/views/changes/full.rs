@@ -34,7 +34,12 @@ fn panel_buttons(me: WeakEntity<ChangesView>, path: &str, cx: &App) -> AnyElemen
         let me = me.clone();
         ui::icon_button(id, icon).size(px(24.)).when(on == p, |d| d.bg(theme::blue().opacity(0.15)).text_color(theme::blue()))
             .tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
-            .on_click(move |_, _, cx| { me.update(cx, |v, cx| { v.panel.toggle(p); v.update(cx) }).ok(); })
+            .on_click(move |_, _, cx| { me.update(cx, |v, cx| {
+                v.panel.toggle(p);
+                v.update(cx);
+                // The header is the browser's diff view's: draw it again for the button's state.
+                if let Some(d) = v.full_view(cx) { d.update(cx, |_, cx| cx.notify()) }
+            }).ok(); })
     };
     div().flex().items_center().gap_1()
         .child(button("full-blame", "square-user", "Blame: who last changed each line", FilePanel::Blame))
