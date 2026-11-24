@@ -1,9 +1,8 @@
 # CI parity: Swift LoupeFlows vs GPUI (`app/src/views/ci.rs`)
 
 Both apps ran on the flows mock (port 8804, `/tmp/flows-ci`, Forgejo `17.2.0+gitea-1.22.0`). Swift: Pull Requests →
-PR → checks badge. GPUI: the Pulls tab is not ported on this branch, so the overlay is opened through the scenario-mode
-hook `LOUPE_FLOWS_CHECKS=<pr>` (it emits `AppEvent::ShowChecks` with the PR's head sha, the same event the Pulls view
-emits). Screenshots are in `/tmp/flows-ci/shots/` (`s-*` Swift, `g-*` GPUI, `t-*` thumbnails).
+PR → checks badge. GPUI: at the time the overlay was opened through a scenario-mode hook emitting `AppEvent::ShowChecks`; the hook is
+gone now that the PR header shows `ci::badge` (CI-01, verified on #38 in `/tmp/flows-i-views/shots/g-pr.png`). Screenshots are in `/tmp/flows-ci/shots/` (`s-*` Swift, `g-*` GPUI, `t-*` thumbnails).
 
 Fixture PRs used: #26 (failing + external), #28 (mixed: every status kind), #23 (running, growing log), #25 (queued),
 #29 (success, 16.36 MB e2e log), #30 (no CI), #31 (404 log), #35 (60 matrix statuses, paged), #37 (all skipped).
@@ -16,9 +15,9 @@ by their views and their forge `Cancel` is fired on drop, so leaving cancels req
 | ID | Swift: render / reaction | GPUI: render / reaction | status |
 |---|---|---|---|
 | SH-07 | `ChecksOverlay` ZStack over the split view, 0.15 s fade | `ci::install` presents `ChecksOverlay` through `AppModel::present` over the whole window (sidebar included); no fade | intentional (no animations rule: a 0.15 s fade is the only difference) |
-| CI-01 | PR header badge: failing/running/queued/passed counts + "checks", static running dot, tooltip | `ci::badge(&ChecksModel)` renders the same counts, icons, static dot and tooltip; not visible on this branch because the PR header belongs to the Pulls view | missing (needs the Pulls owner to place `ci::badge` in the PR header; see requests) |
+| CI-01 | PR header badge: failing/running/queued/passed counts + "checks", static running dot, tooltip | `ci::badge` in the PR header's second row ("4 checks" on #38, `g-pr.png`); a click opens the overlay | same |
 | CI-02 | Badge click → centred card min(w−64,1500)×(h−64), radius 14, 35 % black backdrop (s2-28-list.png) | Same geometry, radius 14, `theme::backdrop()`; opened via `ShowChecks` (g2-28-list.png). Stays over tab/worktree switches because it is an app overlay | same |
-| CI-03 | Every PR reload sets `checks.sha` and fires `refresh()` | `ChecksModel::shared(app, worktree, sha, pull)` is one model per worktree; it switches sha and refresh joins the one in flight. The Pulls view must call it on reload | missing (API provided; caller is the Pulls view) |
+| CI-03 | Every PR reload sets `checks.sha` and fires `refresh()` | the PR detail holds `ChecksModel::shared(app, worktree, head sha, Some(n))` while it shows and calls `refresh()` when it shows and after every load; hiding drops it (cancels its request) | same |
 | CI-04 | GET /version once per server, Forgejo ≥2 / "+gitea-" / "forgejo" → Forgejo; failure → Forgejo, no writes, not cached | `loupe_forge::ci::CiFeatures::detect` + per-base-URL cache, same table and fallback (unit test `detects_ci_features_from_version`); on the mock both show Re-run Job / Re-run All / Cancel and no Re-run Failed | same |
 | CI-05 | Paged `/commits/{sha}/status`, 50 per page until total_count | Same paging; #35 shows all 60 matrix rows in both (g-35-list.png) | same |
 | CI-06 | GitHub status + check-runs mapped to rows | Ported in `loupe_forge` (`github_check_runs_jobs_and_log` test); the mock has no GitHub mode | same (unit-tested only; mock can't serve GitHub) |

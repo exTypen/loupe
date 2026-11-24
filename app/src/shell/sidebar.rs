@@ -180,10 +180,6 @@ impl Shell {
         let prunable = wt.is_prunable;
         let tip: SharedString = if prunable { format!("{}\nThe folder is gone. Prune Stale Worktrees removes this row.", wt.path) }
             else { match &wt.branch { Some(b) => format!("{}\n{b}", wt.path), None => wt.path.clone() } }.into();
-        let can_pr = wt.branch.is_some() && {
-            let a = self.workspace.read(cx);
-            a.model(&path).and_then(|m| m.read(cx).remote.clone()).is_some_and(|r| a.client_for(&r, &path).is_some())
-        };
         let me = cx.entity();
         let app = self.workspace.clone();
         let (r1, r2, p1) = (repo.to_string(), repo.to_string(), path.clone());
@@ -196,7 +192,9 @@ impl Shell {
                 // Deleted with rm -rf since the last listing: list again (it comes back prunable) instead of selecting.
                 if prunable || !Path::new(&p1).exists() { w.refresh_worktrees(r1.clone(), cx).detach() } else { w.select(Some(p1.clone()), cx) }
             }))
-            .context_menu(move |mut menu, _, _| {
+            .context_menu(move |mut menu, _, cx| {
+                // Asked when the menu opens, not per row render: the check may ask the forge (PC-06).
+                let can_pr = app.read(cx).model(&path).is_some_and(|m| crate::views::pr_create::show_menu_item(&m, cx));
                 let (a, b, c, d, e) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
                 menu = menu.item(PopupMenuItem::new("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(Path::new(&a))))
                     .item(PopupMenuItem::new("Open in Terminal").on_click(move |_, _, _| open_in("com.apple.Terminal", &b)))

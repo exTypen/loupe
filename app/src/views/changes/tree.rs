@@ -1,5 +1,5 @@
 //! The file tree component (FileTree.swift): folders first, natural name order, single-child folder chains in one
-//! row, a fold set per host. Changes uses it for its sections and the Full-mode worktree tree; History and Pull
+//! row, a fold set per host. Changes uses it for its sections (Full mode's tree is the code browser's); History and Pull
 //! Requests can use `rows` + `dir_row` + `file_row_frame` for theirs.
 use std::collections::HashSet;
 
@@ -17,9 +17,6 @@ pub fn rows(paths: &[String], collapsed: &HashSet<String>, filter: &str) -> Vec<
     let none = HashSet::new();
     file_tree::rows(&p, if q.is_empty() { collapsed } else { &none })
 }
-
-/// Collapse All: every folder above any path.
-pub fn all_dirs(paths: &[String]) -> HashSet<String> { file_tree::all_dirs(paths).into_iter().collect() }
 
 /// A row's indent: 10 pt per level with a 1 px guide for each.
 fn indented(depth: usize) -> Div {
@@ -59,20 +56,6 @@ pub fn status_icon(kind: Kind) -> (&'static str, Hsla, &'static str) {
 /// The name, cut in the middle when it doesn't fit.
 pub fn name(path: &str) -> String { path.rsplit('/').next().unwrap_or(path).to_string() }
 
-pub fn icon_el(kind: Kind) -> gpui_kit::Svg {
-    let (i, c, _) = status_icon(kind);
-    ui::icon(i).size(px(13.)).text_color(c)
-}
-
-/// Grows a tree's fold set into "every folder without a change": the Full-mode tree opens on what changed.
-pub fn fold_unchanged(paths: &[String], changed: &HashSet<String>) -> HashSet<String> {
-    let keep: HashSet<String> = changed.iter().flat_map(|p| {
-        let c: Vec<&str> = p.split('/').collect();
-        (1..c.len()).map(move |i| c[..i].join("/")).collect::<Vec<_>>()
-    }).collect();
-    all_dirs(paths).into_iter().filter(|d| !keep.contains(d)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,8 +67,6 @@ mod tests {
         assert_eq!(r.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src", "a/b", "c.swift", "x.ts", "f2", "f10", "README.md"]);
         let f = rows(&paths, &HashSet::from(["src".to_string()]), "X.T");
         assert_eq!(f.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src", "x.ts"]); // filtering shows folders open
-        let folded = fold_unchanged(&paths, &HashSet::from(["src/x.ts".to_string()]));
-        assert!(folded.contains("src/a") && folded.contains("src/a/b") && !folded.contains("src"));
         assert_eq!(status_icon(Kind::Untracked).2, "Untracked");
     }
 }

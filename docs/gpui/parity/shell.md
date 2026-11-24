@@ -31,7 +31,7 @@ settles, and its old page is dropped by one 450 ms timer. Nothing polls.
 | SH-17 | Row menu: Reveal in Finder, Open in Terminal / Zed / VS Code, Copy Path | Same (`gpui-wt-menu.png`, real input) | same |
 | SH-18 | "Remove Worktree…" (not on the main worktree) opens RW-06 | Same, hidden on main (`gpui-wt-menu.png`, real input) | same |
 | SH-19 | Tooltips: row, header "+", dot (space name), "Open Repository…", "New Space" | Same tooltips (`gpui-new-space.png` shows "New Space") | same |
-| SH-20 | Row menu "Create Pull Request…" when the branch exists and a client is available | Same condition (`client_for` on the model's remote); emits `AppEvent::CreatePull` (`gpui-wt-menu.png`) | same |
+| SH-20 | Row menu "Create Pull Request…" when the branch exists and a client is available | Shown when `pr_create::show_menu_item` (asked when the menu opens); emits `AppEvent::CreatePull` | fixed-swift-bug (see prcreate PC-06) |
 | SH-21 | Rows highlight; headers can't be selected | Same | same |
 | SH-22 | Dots switch space (each keeps its selection); pages slide 0.28 s; current dot filled | Same; the pages spring (k=500, critically damped) from the old space | same |
 | SH-23 | Two-finger swipe: pages follow, 0.35× rubber band, spring to nearest or flick > 0.6 pages/s; first 4 pt decide the axis; wheels go to the list | Same rules (`on_swipe`, `swipe_step` unit test); the list uses `restrict_scroll_to_axis` so a horizontal swipe never scrolls it. Not driven with a real trackpad here (cliclick has no gestures). The switch commits on release and the pages spring from where they were, instead of committing at rest | intentional (commit on release: same visible result, no display link) |
@@ -50,7 +50,7 @@ settles, and its old page is dropped by one 450 ms timer. Nothing polls.
 | SH-36 | Bottom toast for 6 s, Undo link | Same (`gpui-undo-toast.png`) | same |
 | SH-37 | File events refresh about 0.4 s later, filtered | Core Watcher filter + 250 ms debounce (WorktreeModel) | same |
 | SH-38 | ⌘R refreshes status and posts refresh; no re-list | Same | same |
-| SH-39 | Merge shows the merge in History | Owned by history / pulls | same (not shell) |
+| SH-39 | Merge shows the merge in History | History on `<remote>/<base>`, merge selected (`g-merged.png`) | same |
 | KB-01 | "Check for Updates…" hidden when Sparkle isn't configured | Not in the menu: this build has no updater | same (as an unconfigured Swift build) |
 | KB-02 | Loupe › Settings… ⌘, | Same item and key | same |
 | KB-03 | File › Open Repository… ⌘O, no ⌘N | Same | same |
@@ -61,8 +61,8 @@ settles, and its old page is dropped by one 450 ms timer. Nothing polls.
 | KB-11 | Mark Viewed & Next ⇧⌘V | Same | same |
 | KB-12 | Compact / Full Mode ⌥⌘F, flips even with no diff | Same | same |
 | KB-13 | Refresh ⌘R | Same | same |
-| KB-14 | Edit › Undo titled by the stack ("Undo Pull"), text fields keep theirs, beep with nothing to undo | Same: the menu title follows the selected worktree (read via System Events: "Undo Pull", then "Undo"); inputs bind ⌘Z themselves; NSBeep when empty | same |
-| KB-15 | Redo ⇧⌘Z: text fields only | Same; inputs bind ⇧⌘Z, elsewhere a beep | same |
+| KB-14 | Edit › Undo titled by the stack ("Undo Pull"), text fields keep theirs, beep with nothing to undo | The menu title follows the selected worktree; ⌘Z is bound with context `!Input`, so a focused text field keeps its own undo (`g-textundo.png`) and Edit › Undo clicked with a field focused goes to the field; elsewhere git undo (`g-undo.png`), NSBeep when empty | same |
+| KB-15 | Redo ⇧⌘Z: text fields only | ⇧⌘Z bound `!Input`: text fields redo, elsewhere a beep | same |
 | KB-16..20 | Commit ⌘↩, Back ⌘[, ⌃- ⌃⇧-, ⌥⌘↓↑, ⌥⌘←→ (customizable) | Same defaults and Swift "shortcuts" JSON (keys tests) | same |
 | KB-21 | Sheet keys: Esc cancels, ↩ confirms | New Worktree, rename, dialogs: Esc closes, ↩ confirms | same |
 | KB-22 | System items: About, Services, Hide, Hide Others, Quit; Cut/Copy/Paste/Select All; Enter Full Screen ⌃⌘F; Minimize ⌘M, Zoom; Help | Hide, Hide Others, Show All, Quit; the edit items; Enter Full Screen ⌃⌘F (it was bound to Zoom); Minimize, Zoom. No About, Services or Help menu | intentional (gpui has no About panel, Services or help book; Loupe has no help either) |

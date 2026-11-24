@@ -56,6 +56,8 @@ touches the real domain or the Keychain. It opens the scenario's repos with an i
     - `OpenMergeEditor { worktree, path }`: merge.
     - `ShowChecks { worktree, sha, pull }`: ci.
     - `CreatePull { worktree }`: pr_create.
+    - `ShowStashes { worktree }`: History on the Stashes scope.
+    - `NewWorktree { repo, base }`: the shell's New Worktree sheet, based on `base` ("" for HEAD).
     - `Toast { text, undoable }`: the shell shows it for 6 s. `undoable` adds "Undo", which runs ⌘Z.
     - `Refresh`: ⌘R. History, the PR list and an open PR reload.
 
@@ -136,8 +138,6 @@ Shared hooks a view must not re-implement: the toast (`AppEvent::Toast`), the er
 
 ## Not wired yet (open for an owner, or a request to the integrator)
 
-- The New Worktree sheet: `NewWorktree` has no handler. `AppModel::add_worktree` exists. Requested from the
-  integrator or the changes owner.
 - The worktree context menu's "Remove Worktree…" and "Prune": `remove_worktree` exists, but nothing calls it yet.
 - The "Undo <label>" Edit menu title (`WorktreeModel::undo_title`) and Redo.
 - Space swipe, and drag and drop of repo headers.

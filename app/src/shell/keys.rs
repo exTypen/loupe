@@ -205,19 +205,27 @@ pub fn install(cx: &mut App) {
     let mut ours: Vec<(String, Box<dyn Action>)> = ShortcutAction::ALL.iter()
         .filter_map(|&a| cx.global::<Shortcuts>().shortcut(a).map(|s| (s.keystroke(), a.action())))
         .collect();
-    let fixed: [(&str, Box<dyn Action>); 9] = [
-        ("cmd-z", Box::new(Undo)), ("cmd-shift-z", Box::new(Redo)), ("cmd-,", Box::new(OpenSettings)),
+    let fixed: [(&str, Box<dyn Action>); 7] = [
+        ("cmd-,", Box::new(OpenSettings)),
         ("cmd-q", Box::new(Quit)), ("cmd-h", Box::new(Hide)), ("alt-cmd-h", Box::new(HideOthers)),
         ("cmd-w", Box::new(CloseWindow)), ("cmd-m", Box::new(Minimize)), ("ctrl-cmd-f", Box::new(ToggleFullScreen)),
     ];
     ours.extend(fixed.into_iter().map(|(k, a)| (k.to_string(), a)));
     // The sidebar's ⌥⌘1…9 hints: the n-th worktree shown.
     ours.extend((0..9).filter_map(|i| select_worktree_action(i).map(|a| (format!("alt-cmd-{}", i + 1), a))));
-    let bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, false, None, cx).ok()).collect();
+    let mut bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, false, None, cx).ok()).collect();
+    // CH-31 / KB-14: a context-free binding ties the text input's own ⌘Z at the deepest depth and, bound later,
+    // wins it. "!Input" leaves a focused field (and the merge result editor) its own Undo/Redo; anywhere else ⌘Z
+    // is the worktree's git undo.
+    bindings.push(KeyBinding::new("cmd-z", Undo, Some(NOT_IN_TEXT)));
+    bindings.push(KeyBinding::new("cmd-shift-z", Redo, Some(NOT_IN_TEXT)));
     cx.bind_keys(bindings);
     let title = cx.try_global::<UndoTitle>().map_or_else(|| "Undo".to_string(), |t| t.0.clone());
     cx.set_menus(menus(&title));
 }
+
+/// Where ⌘Z / ⇧⌘Z are Loupe's: outside gpui-component's text inputs (their key context is "Input").
+pub const NOT_IN_TEXT: &str = "!Input";
 
 /// Edit › Undo reads "Undo <label>" for the selected worktree's newest action (UndoCommands in Undo.swift).
 struct UndoTitle(String);
@@ -309,6 +317,15 @@ mod tests {
             let parsed = Keystroke::parse(Box::leak(k.clone().into_boxed_str())).unwrap_or_else(|e| panic!("{k}: {e:?}"));
             assert_eq!(Shortcut::from_keystroke(&parsed), a.standard(), "{k}");
         }
+    }
+
+    #[test]
+    fn undo_yields_to_text_inputs() {
+        use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+        let p = KeyBindingContextPredicate::parse(NOT_IN_TEXT).unwrap();
+        let ctx = |names: &[&str]| names.iter().map(|n| KeyContext::parse(n).unwrap()).collect::<Vec<_>>();
+        assert!(p.depth_of(&ctx(&["Loupe", "ChangesList"])).is_some());
+        assert!(p.depth_of(&ctx(&["Loupe", "MergeEditor", "Input"])).is_none());
     }
 
     #[test]

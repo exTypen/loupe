@@ -29,7 +29,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PR-16 | "Updated 2 min. ago" redrawn every 5 s | "Updated N minutes ago", redrawn once a minute (the label only changes per minute) | intentional (idle CPU rule: no 5 s timer) |
 | PR-17 | "No Pull Requests" / "No Pull Requests by You" | The same | same |
 | PR-18 | "Couldn't Load" + message when empty; the error is invisible once PRs show | Same empty state (g-pr18.png: "Forgejo 401: token is required"); with PRs showing, a "Couldn't refresh" mark with the message as tooltip (g-pr18b.png after the fault is cleared, g-fg03.png) | fixed-swift-bug (§14 PR: "any list error is invisible once PRs are on screen") |
-| PR-19 | "Create Pull Request…" when ahead of the target and no open PR, cached per head+refsVersion | Same check, same key; emits `CreatePull` (g-pd28.png on pr/27) | same |
+| PR-19 | "Create Pull Request…" when ahead of the target and no open PR, cached per head+refsVersion | The toolbar '+' uses `pr_create::can_create` (the forge's open PR for the branch, merged excluded), once per HEAD/refs (`g-pulls.png`) | fixed-swift-bug (see PC-05) |
 | PR-20 | Click a row opens the detail; 2 recent + selected kept | `DetailCache` keeps the same set (g-pd01.png) | same |
 | PR-21 | "‹ Pull Requests" / ⌘[ goes back and reloads at once | Same (g-pr21.png). The detail now takes the keyboard focus when it opens, so ⌘[ reaches it | same |
 | PR-22 | Switching worktree drops opened PR models; viewed and drafts come back from defaults | Same: details dropped on a worktree switch, rebuilt from settings | same |
@@ -45,8 +45,8 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-05 | PR, reviews, comments, commits, then the diff; an unchanged diff isn't parsed again; first unviewed selected | `pull::load_detail` + `DiffSource::fetch` (hash skip), parsed off the main thread, the first unviewed file selected | same |
 | PD-06 | Polls every 60 s while mounted; waits 60 s if loaded <30 s ago; offline raises the alert on every poll | Same cadence; a poll that fails with the same message doesn't raise the alert again, the header keeps a warning mark | fixed-swift-bug (§14 PR: "every 60 s poll raises the modal alert again") |
 | PD-07 | Badges "N approved / requested changes / pending" with a popover | Same counts from `pull::reviewer_states`; the popover lists the users (g-pd07.png: PR #36 pending alice, erin) | same |
-| PD-08 | ChecksBadge opens the checks overlay | Checks chip emits `AppEvent::ShowChecks { worktree, sha, pull }` | same |
-| PD-09 | Overview: "Fetching the pull request…", then ChangeOverview | Same fetch and merge-base; the lens reports drawn as plain cards (g-pd09.png after OK) | intentional (ChangeOverview belongs to the code agent; this shows the same `lens::analyze` reports until it lands) |
+| PD-08 | ChecksBadge opens the checks overlay | `ci::badge` from the shared `ChecksModel` (see CI-01) | same |
+| PD-09 | Overview: "Fetching the pull request…", then ChangeOverview | Same fetch and merge-base, then the code view's `ChangeOverview` (`pull_input` against the fetched base): branch row "6 commits behind main · Merges cleanly" (`g-prov.png`); branch-row commits open in History | same |
 | PD-10 | Resizable split, tree 250–460 pt | `h_resizable`, 250–460 px, file pane min 360 | same |
 | PD-11 | "Filter files": substring, folders forced open, folder clicks dead | Same | same |
 | PD-12 | Progress bar + "X of Y files viewed" | Same (g-pd16.png, g-pd17b.png) | same |
@@ -67,7 +67,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-27 | Before/After in Compact shows whole files with no tab bar | Same (`whole()` without tabs unless Full) | same |
 | PD-28 | Check Out: select an existing `pr/N`, else fetch + `worktree add -B pr/N <repo>-pr-N` (any repo) | Same commands; only this repository's worktrees count (g-pd28.png: app-pr-27 created and selected) | fixed-swift-bug (§14 PR: Model.swift:559 searched every repo) |
 | PD-29 | Merge menu Merge/Rebase/Squash, disabled when not mergeable, "<Style> #N into base?" | Same menu, tooltip and confirmation (g-pd29a.png, g-pd29.png); body `{"Do":"merge"}` in forge.log | same |
-| PD-30 | After a merge: back, fetch base, History on `<remote>/<base>` with the merge selected | Leaves the PR, fetches `main`, emits `ShowBranch` (g-pd30.png: History tab shown; History itself is still the history agent's stub here) | same |
+| PD-30 | After a merge: back, fetch base, History on `<remote>/<base>` with the merge selected | Leaves the PR, fetches `main`, emits `ShowBranch`; History shows origin/main with the merge selected (`g-merged.png`) | same |
 | PD-31 | Merge rejected: "Forgejo 405: …" alert, stays on the PR | Same (g-pd31.png) | same |
 | PD-32 | `cat-file -e`, then fetch `refs/pull/N/head` and the base | `pull::fetch_head`, one at a time per repository (git common dir), retried once; the view's mutex + retry wrapper is now redundant | same |
 | PD-33 | Alert titled "Forgejo" (also on GitHub), OK clears | Titled by the server (`client.server_name()`), OK clears (g-pd31.png) | fixed-swift-bug (§14 PR: "the detail alert is titled Forgejo for GitHub accounts too") |

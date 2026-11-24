@@ -1,5 +1,5 @@
-//! The bars above the split (CH-08): an operation in progress (Conflicts.swift's OperationBanner, which Changes
-//! owns), git-lfs missing (LF-02), uninitialized submodules (SM-06).
+//! The bars above the split (CH-08): an operation in progress (`merge::banner`) or else the pull request offer
+//! (`pr_create::banner`), git-lfs missing (LF-02), uninitialized submodules (SM-06).
 use gpui_kit::{
     AnyElement, ClipboardItem, Context, Entity, FontWeight, Hsla, IntoElement, StatefulInteractiveElement as _, ParentElement as _, Styled as _, div,
     prelude::FluentBuilder as _, px,
@@ -23,26 +23,13 @@ fn small(p: gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::Stateful<gpui_kit::D
 
 impl ChangesView {
     pub(crate) fn render_banners(&mut self, m: &Entity<WorktreeModel>, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let s = &m.read(cx).state;
         let mut out = vec![];
-        let n = s.conflicted().len();
-        if s.operation.is_some() || n > 0 {
-            let (icon, color) = if n > 0 { ("triangle-alert", theme::accent()) } else if s.stopped_to_edit { ("pencil", theme::blue()) } else { ("circle-check", theme::green()) };
-            let title = match s.operation { Some(op) => format!("{} {}", op.verb(), s.operation_subject), None => "Conflicts".into() };
-            let caption = if n > 0 { format!("{n} file{} with conflicts. Resolve each one, then continue.", if n == 1 { "" } else { "s" }) }
-                else if s.stopped_to_edit { "Stopped to edit this commit. Change it (commit with Amend), then continue.".into() }
-                else if s.operation.is_none() { String::new() } else { "All conflicts are resolved.".into() };
-            let mut b = bar(icon, if n == 0 { theme::green() } else { theme::accent() }, title, caption);
-            let _ = color;
-            if let Some(op) = s.operation {
-                let cmd = op.command();
-                let label = format!("Abort {}", cmd.split('-').map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default() }).collect::<Vec<_>>().join("-"));
-                b = b.child(small(ui::pill("op-abort", label)).on_click(cx.listener(|v, _, _, cx| if let Some(m) = v.selected() { m.update(cx, |m, cx| m.finish_operation(true, cx).detach()) })))
-                    .child(small(ui::pill_primary("op-continue", "Continue", theme::blue())).when(n > 0, |d| d.opacity(0.4))
-                        .when(n == 0, |d| d.on_click(cx.listener(|v, _, _, cx| if let Some(m) = v.selected() { m.update(cx, |m, cx| m.finish_operation(false, cx).detach()) }))));
-            }
-            out.push(b.into_any_element());
+        // CH-08: the operation banner (merge's, MG-01..03) wins; otherwise the pull request offer (PC-01..04).
+        match crate::views::merge::banner(m, cx) {
+            Some(b) => out.push(b),
+            None => out.extend(crate::views::pr_create::banner(m, cx)),
         }
+        let s = &m.read(cx).state;
         if s.lfs.used && !lfs::installed() && !settings::shared().bool("lfsMissingBannerDismissed") {
             out.push(bar("hard-drive", theme::accent(), "This repository uses Git LFS, but git-lfs isn't installed".into(),
                     format!("Large files stay as pointers until it is. In Terminal: {}", lfs::INSTALL_HINT))

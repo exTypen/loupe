@@ -82,7 +82,7 @@ impl ChangesView {
         let target = f.filter(has_target).filter(|_| !self.app.read(cx).full_mode).map(|f| f.path);
         // Full mode blames the open tab's file instead (full.rs).
         let files = m.read(cx).state.files().to_vec();
-        let full_target = self.app.read(cx).full_mode.then(|| self.full.blame_target()).flatten()
+        let full_target = self.app.read(cx).full_mode.then(|| self.full_target(cx)).flatten()
             .filter(|(p, _)| super::full::change(&files, p).is_none_or(has_target));
         let target = target.or(full_target.as_ref().map(|t| t.0.clone()));
         let uid = full_target.map_or(uid, |t| t.1);
@@ -124,7 +124,7 @@ impl ChangesView {
     }
 
     fn set_blame(&mut self, b: Option<Arc<diff::Blame>>, cx: &mut Context<Self>) {
-        for d in [self.diff.clone(), self.full.view()].into_iter().flatten() { d.update(cx, |d, cx| d.set_blame(b.clone(), cx)) }
+        for d in [self.diff.clone(), self.full_view(cx)].into_iter().flatten() { d.update(cx, |d, cx| d.set_blame(b.clone(), cx)) }
     }
 
     /// FI-04: the picked commit's change to the file; whole in Full mode or Before / After. A stale answer is

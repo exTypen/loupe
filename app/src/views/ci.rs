@@ -33,36 +33,12 @@ use crate::state::{AppEvent, AppModel};
 use crate::{theme, ui};
 
 pub fn install(app: &Entity<AppModel>, window: &mut Window, cx: &mut App) -> Subscription {
-    flows_hook(app, cx);
     window.subscribe(app, cx, |app, e: &AppEvent, window, cx| {
         let AppEvent::ShowChecks { worktree, sha, pull } = e else { return };
         let model = ChecksModel::shared(&app, worktree, sha, *pull, cx);
         let v = cx.new(|cx| ChecksOverlay::new(model, window, cx));
         app.update(cx, |a, cx| a.present(v.into(), cx));
     })
-}
-
-/// Test hook for the flows fixture (the Pulls tab isn't ported on this branch, so nothing else emits ShowChecks):
-/// in scenario mode, `LOUPE_FLOWS_CHECKS=<pr number>` opens that PR's checks on the selected worktree at launch.
-fn flows_hook(app: &Entity<AppModel>, cx: &mut App) {
-    let Some(n) = std::env::var("LOUPE_FLOWS_CHECKS").ok().and_then(|v| v.parse::<i64>().ok()) else { return };
-    if app.read(cx).scenario.is_none() { return }
-    let app = app.clone();
-    cx.spawn(async move |cx| {
-        for _ in 0..120 {
-            cx.background_executor().timer(Duration::from_millis(500)).await;
-            let Some((wt, client, repo)) = cx.update(|cx| {
-                let a = app.read(cx);
-                let wt = a.selection()?.to_string();
-                let repo = a.model(&wt)?.read(cx).remote.clone()?;
-                let client = a.client_for(&repo, &wt)?;
-                Some((wt, client, repo))
-            }) else { continue };
-            let Ok(pr) = cx.background_executor().spawn(async move { client.pull(&repo, n) }).await else { return };
-            let _ = app.update(cx, |a, cx| a.emit(AppEvent::ShowChecks { worktree: wt, sha: pr.head.sha, pull: Some(n as u64) }, cx));
-            return;
-        }
-    }).detach();
 }
 
 // MARK: - Model

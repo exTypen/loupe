@@ -40,9 +40,12 @@ use loupe_core::rebase::Zone;
 
 use crate::diff::{self, DiffView};
 use crate::shell::keys::{NextFile, PreviousFile, Undo};
-use crate::state::{AppEvent, AppModel, DiffControls, Tab, WorktreeModel, adapt};
+use crate::state::{AppEvent, AppModel, DiffControls, Tab, ViewMode, WorktreeModel, adapt};
+use crate::views::code::{ChangeOverview, overview as code_overview};
+use loupe_code::lens::ChangedPath;
+use crate::views::changes::stash::{self, StashOp};
 use crate::{theme, ui};
-use sheets::{Dialog, NewWorktree, Role};
+use sheets::{Dialog, Role};
 
 type Act = Rc<dyn Fn(&mut HistoryView, &mut Window, &mut Context<HistoryView>)>;
 
@@ -153,6 +156,9 @@ pub struct HistoryView {
     /// ShowCommit for a commit not loaded yet: selected when a load brings it.
     pending_select: Option<String>,
     file_panel: panel::FilePanel,
+    /// HI-14: the commit's Overview instead of its files ("commitOverview", as Swift). Stashes have none.
+    overview: bool,
+    ov: Option<Entity<ChangeOverview>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -172,7 +178,8 @@ impl HistoryView {
         ];
         let mut v = HistoryView {
             app, model: None, logs: HashMap::new(), search, diff: None, whole: HashMap::new(), whole_load: None, whole_key: None, shown: false,
-            last_busy: None, drop_target: None, avatars: Avatars::load(), pending_select: None, file_panel: panel::FilePanel::new(), focus: cx.focus_handle(), _subs: subs,
+            last_busy: None, drop_target: None, avatars: Avatars::load(), pending_select: None, file_panel: panel::FilePanel::new(),
+            overview: loupe_forge::settings::shared().bool("commitOverview"), ov: None, focus: cx.focus_handle(), _subs: subs,
         };
         v.sync(window, cx);
         v
@@ -267,33 +274,26 @@ impl HistoryView {
                 }
             }
             AppEvent::ShowBranch { worktree, branch } if mine(worktree, self, cx) => self.show_merged(branch.clone(), window, cx),
+            AppEvent::ShowStashes { worktree } if mine(worktree, self, cx) => self.set_scope(Scope::Stashes, window, cx),
             _ => {}
         }
     }
 
-    /// SH-39 / HI-21: after a PR merge, fetch the base it went into, then show that branch with its newest commit (the
-    /// merge) selected. A failed fetch still shows the branch; a branch that doesn't exist falls back to Current.
+    /// SH-39 / HI-21 / PD-30: `branch`'s log with its newest commit selected. After a PR merge the Pulls view has
+    /// already fetched the base it went into (AppModel::show_merged), so this only shows it. A branch that doesn't
+    /// exist falls back to Current (apply_page).
     fn show_merged(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(m) = self.selected_model() else { return };
-        let remote = m.read(cx).state.remote_name.clone();
-        let fetch = branch.strip_prefix(&format!("{remote}/")).map(|b| b.to_string());
-        let t = match fetch {
-            Some(base) => m.update(cx, |m, cx| m.remote_op(&format!("Fetching {base}"), vec!["fetch".into(), remote.clone(), base.clone()], cx)),
-            None => Task::ready(Some(())),
-        };
-        cx.spawn_in(window, async move |this, cx| {
-            t.await;
-            this.update_in(cx, |v, w, cx| {
-                let Some(p) = v.path(cx) else { return };
-                let l = v.logs.entry(p).or_insert_with(Log::new);
-                l.selected = None;
-                l.scope = Scope::Branch(branch);
-                l.commits.clear();
-                l.list.reset(0);
-                l.graph.clear();
-                v.reload(w, cx);
-            }).ok();
-        }).detach();
+        let Some(p) = self.path(cx) else { return };
+        let l = self.logs.entry(p).or_insert_with(Log::new);
+        l.selected = None;
+        l.files.clear();
+        l.message.clear();
+        l.scope = Scope::Branch(branch);
+        l.commits.clear();
+        l.list.reset(0);
+        l.graph.clear();
+        self.pending_select = None;
+        self.reload(window, cx);
     }
 
     // MARK: Loading
@@ -499,7 +499,8 @@ impl HistoryView {
     fn sync_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (whole_mode, full, side, layout) = { let a = self.app.read(cx); (a.whole_files(), a.full_mode, a.diff_side, a.layout) };
         let sel = self.log(cx).and_then(|l| Some((l.selected_commit()?.clone(), l.selected_file()?.clone())));
-        self.app.update(cx, |a, cx| a.set_controls(Tab::History, DiffControls { full: sel.is_some(), view: None }, cx));
+        let overview = self.update_overview(cx);
+        self.set_controls(sel.is_some() && !overview, cx);
         let Some((c, f)) = sel else { self.cancel_whole(); return };
         let key = format!("{} {}", c.sha, f.path());
         // Only the commit showing keeps whole files.
@@ -543,6 +544,49 @@ impl HistoryView {
                 }));
             }
         }
+    }
+
+    /// The toolbar: Compact / Full while a file shows, Overview / Files for a commit (not a stash).
+    fn set_controls(&self, file: bool, cx: &mut Context<Self>) {
+        let commit = self.log(cx).and_then(|l| l.selected_commit()).is_some_and(|c| c.selector.is_none());
+        let me = cx.entity().downgrade();
+        let set: Rc<dyn Fn(ViewMode, &mut Window, &mut App)> = Rc::new(move |m, w, cx| { me.update(cx, |v, cx| v.set_overview(m == ViewMode::Overview, w, cx)).ok(); });
+        let view = commit.then(|| (vec![ViewMode::Overview, ViewMode::Files], if self.overview { ViewMode::Overview } else { ViewMode::Files }, set));
+        self.app.update(cx, |a, cx| a.set_controls(Tab::History, DiffControls { full: file, view }, cx));
+    }
+
+    fn set_overview(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overview == on { return }
+        self.overview = on;
+        loupe_forge::settings::shared().set_bool("commitOverview", on);
+        self.sync_diff(window, cx);
+        cx.notify();
+    }
+
+    /// HI-14: the commit's ChangeOverview (first parent → commit), kept while it shows. Returns whether it shows.
+    fn update_overview(&mut self, cx: &mut Context<Self>) -> bool {
+        let input = self.selected_model().zip(self.log(cx)).and_then(|(m, l)| {
+            let c = l.selected_commit().filter(|c| c.selector.is_none() && self.overview)?;
+            let changes = l.files.iter().map(|f| ChangedPath { old: f.core.old_path.clone(), new: f.core.new_path.clone() }).collect();
+            Some(code_overview::commit_input(&m.read(cx).path_str(), &c.sha, c.parents.first().map(String::as_str), changes))
+        });
+        let Some(input) = input else { self.ov = None; return false };
+        match &self.ov {
+            Some(o) => o.update(cx, |o, cx| o.set_input(input, cx)),
+            None => {
+                let me = cx.entity().downgrade();
+                let on_open: code_overview::OnOpen = Rc::new(move |p, line, w, cx| {
+                    me.update(cx, |v, cx| {
+                        v.overview = false;
+                        loupe_forge::settings::shared().set_bool("commitOverview", false);
+                        v.select_file(p, w, cx);
+                        if let (Some(l), Some(d)) = (line, &v.diff) { d.update(cx, |d, cx| d.reveal(l as u32, cx)) }
+                    }).ok();
+                });
+                self.ov = Some(cx.new(|cx| ChangeOverview::new(input, on_open, cx)));
+            }
+        }
+        true
     }
 
     fn load_whole(&mut self, c: Commit, f: Shown, key: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -595,20 +639,33 @@ impl HistoryView {
     fn cherry_pick(&mut self, c: Commit, w: &mut Window, cx: &mut Context<Self>) { self.act("Cherry-picking", false, move |p| core_history::cherry_pick(p, &c), w, cx) }
     fn revert(&mut self, c: Commit, w: &mut Window, cx: &mut Context<Self>) { self.act("Reverting", false, move |p| core_history::revert(p, &c), w, cx) }
     fn apply_stash(&mut self, c: Commit, pop: bool, w: &mut Window, cx: &mut Context<Self>) {
-        self.act(if pop { "Popping Stash" } else { "Applying Stash" }, true, move |p| core_history::apply_stash(p, &c, pop), w, cx)
-    }
-    fn confirm_drop_stash(&mut self, c: Commit, window: &mut Window, cx: &mut Context<Self>) {
-        let me = cx.entity().downgrade();
-        let sel = c.selector.clone().unwrap_or_else(|| "stash".into());
-        Dialog::confirm(&self.app, format!("Drop {sel}?"), "The stash is removed from the list. Edit › Undo brings it back.", "Drop Stash",
-            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.act("Dropping Stash", true, move |p| core_history::drop_stash(p, &c), w, cx)).ok(); }, window, cx);
+        self.stash_op(c, if pop { StashOp::Pop } else { StashOp::Apply }, w, cx)
     }
 
-    fn new_worktree(&mut self, c: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+    /// SS-06..10 through Changes' `stash_op`, which records the undo. A stop on conflicts sends you to Changes.
+    fn stash_op(&mut self, c: Commit, op: StashOp, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.selected_model() else { return };
-        let repo = m.read(cx).repo.clone();
-        let branches = self.log(cx).map(|l| l.branches.0.iter().chain(&l.branches.1).cloned().collect()).unwrap_or_default();
-        NewWorktree::present(&self.app, repo, c.sha.clone(), branches, window, cx);
+        let sel = c.selector.clone().unwrap_or_else(|| "stash@{0}".into());
+        let t = m.update(cx, |m, cx| m.stash_op(op, sel, c.sha.clone(), c.subject.clone(), cx));
+        let app = self.app.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            if t.await == Some(true) { app.update(cx, |a, cx| a.set_tab(Tab::Changes, cx)); }
+            // The stash list changed without HEAD moving.
+            this.update_in(cx, |v, w, cx| v.reload(w, cx)).ok();
+        }).detach();
+    }
+
+    fn confirm_drop_stash(&mut self, c: Commit, window: &mut Window, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let (q, detail) = stash::drop_question(c.selector.as_deref().unwrap_or("stash"));
+        Dialog::confirm(&self.app, q, detail, "Drop Stash",
+            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.stash_op(c, StashOp::Drop, w, cx)).ok(); }, window, cx);
+    }
+
+    fn new_worktree(&mut self, c: &Commit, cx: &mut Context<Self>) {
+        let Some(m) = self.selected_model() else { return };
+        let (repo, base) = (m.read(cx).repo.clone(), c.sha.clone());
+        self.app.update(cx, |a, cx| a.emit(AppEvent::NewWorktree { repo, base }, cx));
     }
 
     fn open_in_browser(&self, c: &Commit, cx: &mut App) {
@@ -958,7 +1015,7 @@ impl HistoryView {
         let c2 = c.clone();
         menu = menu.item(copy("Copy SHA", c.sha.clone()))
             .item(copy("Copy Subject", c.subject.clone()))
-            .item(item("New Worktree from Here…", Rc::new(move |v, w, cx| v.new_worktree(&c2, w, cx))));
+            .item(item("New Worktree from Here…", Rc::new(move |v, _, cx| v.new_worktree(&c2, cx))));
         let has_account = self.selected_model().is_some_and(|m| {
             let m = m.read(cx);
             m.remote.as_ref().is_some_and(|r| self.app.read(cx).account_for(r, &m.path_str()).is_some())
@@ -976,6 +1033,9 @@ impl HistoryView {
             return div().size_full().child(ui::empty_state("rotate-ccw-clock", "Select a Commit", "")).into_any_element();
         };
         let header = self.render_header(&c, cx);
+        if let Some(o) = self.ov.clone().filter(|_| self.overview && c.selector.is_none()) {
+            return div().flex().flex_col().size_full().child(header).child(div().flex_1().min_h_0().child(o)).into_any_element();
+        }
         let tree = self.render_tree(cx);
         let l = self.log(cx).unwrap();
         let right = match (l.selected_file(), &self.diff) {

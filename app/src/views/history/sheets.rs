@@ -1,17 +1,11 @@
 //! History's modal pieces, presented over the window with `AppModel::present`: a confirmation / alert dialog
-//! (SwiftUI's confirmationDialog and NSAlert), the New Worktree sheet (App.swift's AddWorktreeSheet, opened from a
-//! commit with that commit as the base) and small date helpers the rows and the header share.
+//! (SwiftUI's confirmationDialog and NSAlert) and small date helpers the rows and the header share. "New Worktree
+//! from Here…" opens the shell's sheet (`AppEvent::NewWorktree`).
 use std::rc::Rc;
 
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    component::{
-        Selectable as _, Sizable as _,
-        button::Button,
-        input::{Input, InputEvent, InputState},
-        menu::{DropdownMenu as _, PopupMenuItem},
-    },
 };
 
 use crate::state::AppModel;
@@ -90,132 +84,6 @@ impl Render for Dialog {
                 .when(!self.message.is_empty(), |d| d.child(div().id("dialog-text").max_h(px(320.)).overflow_y_scroll()
                     .text_size(px(12.)).text_color(theme::text_muted()).whitespace_normal().child(self.message.clone())))
                 .child(div().flex().justify_end().gap_2().children(buttons)))
-    }
-}
-
-// MARK: - New Worktree
-
-/// "New Worktree" from a History commit (HI-20): New branch / Existing branch, Name, Based on (HEAD, the commit,
-/// every branch), Location. The path follows the name until it's edited.
-pub struct NewWorktree {
-    app: Entity<AppModel>,
-    repo: String,
-    new_branch: bool,
-    name: Entity<InputState>,
-    location: Entity<InputState>,
-    path_edited: bool,
-    base: String,
-    commit: String,
-    branches: Vec<String>,
-    error: Option<String>,
-    working: bool,
-    focus: FocusHandle,
-    _subs: Vec<gpui_kit::Subscription>,
-}
-
-impl NewWorktree {
-    pub fn present(app: &Entity<AppModel>, repo: String, commit: String, branches: Vec<String>, window: &mut Window, cx: &mut App) {
-        let a = app.clone();
-        let v = cx.new(|cx| {
-            let name = cx.new(|cx| InputState::new(window, cx).placeholder("feature/my-change"));
-            let location = cx.new(|cx| InputState::new(window, cx).placeholder("Path"));
-            let suggested = crate::state::suggest_worktree_path(&repo, "");
-            location.update(cx, |i, cx| i.set_value(suggested, window, cx));
-            let subs = vec![
-                cx.subscribe_in(&name, window, |v: &mut Self, s, e: &InputEvent, w, cx| match e {
-                    InputEvent::Change => {
-                        if !v.path_edited {
-                            let p = crate::state::suggest_worktree_path(&v.repo, &s.read(cx).value());
-                            v.location.update(cx, |i, cx| i.set_value(p, w, cx));
-                        }
-                        cx.notify()
-                    }
-                    InputEvent::PressEnter { .. } => v.create(cx),
-                    _ => {}
-                }),
-                cx.subscribe(&location, |v: &mut Self, s, e: &InputEvent, cx| if matches!(e, InputEvent::Change) {
-                    let want = crate::state::suggest_worktree_path(&v.repo, &v.name.read(cx).value());
-                    if s.read(cx).value().as_ref() != want { v.path_edited = true }
-                    cx.notify()
-                }),
-            ];
-            NewWorktree { app: a, repo, new_branch: true, name, location, path_edited: false, base: commit.clone(), commit, branches,
-                          error: None, working: false, focus: cx.focus_handle(), _subs: subs }
-        });
-        v.update(cx, |v, cx| v.name.update(cx, |t, cx| t.focus(window, cx)));
-        app.update(cx, |a, cx| a.present(v.into(), cx));
-    }
-
-    fn create(&mut self, cx: &mut Context<Self>) {
-        let (name, path) = (self.name.read(cx).value().trim().to_string(), self.location.read(cx).value().trim().to_string());
-        if name.is_empty() || path.is_empty() || self.working { return }
-        self.working = true;
-        self.error = None;
-        cx.notify();
-        let base = if self.new_branch { self.base.clone() } else { String::new() };
-        let t = self.app.update(cx, |a, cx| a.add_worktree(self.repo.clone(), path, name, base, self.new_branch, cx));
-        cx.spawn(async move |this, cx| {
-            let r = t.await;
-            this.update(cx, |v, cx| {
-                v.working = false;
-                match r { Ok(()) => v.app.update(cx, |a, cx| a.dismiss(cx)), Err(e) => { v.error = Some(e); cx.notify() } }
-            }).ok();
-        }).detach();
-    }
-
-    fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = std::path::Path::new(&self.repo).parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let name = std::path::Path::new(&self.location.read(cx).value().to_string()).file_name().map(|n| n.to_string_lossy().into_owned());
-        let rx = cx.prompt_for_new_path(&dir, name.as_deref());
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(p))) = rx.await {
-                this.update_in(cx, |v, w, cx| {
-                    v.path_edited = true;
-                    v.location.update(cx, |i, cx| i.set_value(p.to_string_lossy().into_owned(), w, cx));
-                }).ok();
-            }
-        }).detach();
-    }
-}
-
-impl Render for NewWorktree {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let me = cx.entity();
-        let ready = !self.name.read(cx).value().trim().is_empty() && !self.location.read(cx).value().trim().is_empty() && !self.working;
-        let base_label = if self.base == self.commit { self.commit[..self.commit.len().min(10)].to_string() } else { self.base.clone() };
-        let (commit, branches, m2) = (self.commit.clone(), self.branches.clone(), me.clone());
-        let label = |t: &str| div().w(px(90.)).flex_none().text_color(theme::text_muted()).child(t.to_string());
-        let field = |e: &Entity<InputState>| div().flex_1().h(px(28.)).px_2().flex().items_center().rounded(px(6.)).bg(theme::canvas())
-            .border_1().border_color(theme::border_strong()).child(Input::new(e).appearance(false).small());
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| if e.keystroke.key == "escape" { v.app.update(cx, |a, cx| a.dismiss(cx)) }))
-            .child(ui::card().w(px(480.)).bg(theme::raised())
-                .child(ui::card_header("New Worktree", ""))
-                .child(div().flex().flex_col().gap_3().p_4().text_size(px(12.5))
-                    .child(div().flex().child(ui::segmented("nw-kind", &["New branch", "Existing branch"], usize::from(!self.new_branch), {
-                        let me = me.clone();
-                        move |i, _, cx| me.update(cx, |v, cx| { v.new_branch = i == 0; cx.notify() })
-                    })))
-                    .child(div().flex().items_center().gap_2().child(label("Name")).child(field(&self.name)))
-                    .when(self.new_branch, |d| d.child(div().flex().items_center().gap_2().child(label("Based on"))
-                        .child(Button::new("nw-base").label(base_label).small().outline().dropdown_caret(true).selected(false)
-                            .dropdown_menu(move |mut menu, _, _| {
-                                let pick = |b: String| { let m = m2.clone(); move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| m.update(cx, |v, cx| { v.base = b.clone(); cx.notify() }) };
-                                menu = menu.item(PopupMenuItem::new("HEAD").on_click(pick("HEAD".into())))
-                                    .item(PopupMenuItem::new(commit[..commit.len().min(10)].to_string()).on_click(pick(commit.clone())))
-                                    .separator();
-                                for b in &branches { menu = menu.item(PopupMenuItem::new(b.clone()).on_click(pick(b.clone()))) }
-                                menu.scrollable(true)
-                            }))))
-                    .child(div().flex().items_center().gap_2().child(label("Location")).child(field(&self.location))
-                        .child(ui::pill("nw-choose", "Choose…").on_click(cx.listener(|v, _, w, cx| v.choose(w, cx)))))
-                    .when_some(self.error.clone(), |d, e| d.child(div().text_color(theme::red()).child(e))))
-                .child(div().flex().justify_end().gap_2().p_3().border_t_1().border_color(theme::border())
-                    .child(ui::pill("nw-cancel", "Cancel").on_click(cx.listener(|v, _, _, cx| v.app.update(cx, |a, cx| a.dismiss(cx)))))
-                    .child(ui::pill_primary("nw-create", if self.working { "Creating…" } else { "Create" }, theme::blue())
-                        .when(!ready, |d| d.opacity(0.4))
-                        .when(ready, |d| d.on_click(cx.listener(|v, _, _, cx| v.create(cx)))))))
     }
 }
 

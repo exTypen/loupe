@@ -59,6 +59,7 @@ impl ChangesView {
             Some(d) => d.update(cx, |d, cx| { d.set_file(file.clone(), cx); d.set_hunk_actions(actions, cx); d.set_side(side, cx) }),
             None => {
                 let me = cx.entity().downgrade();
+                let me2 = me.clone();
                 let app = self.app.clone();
                 self.diff = Some(cx.new(|cx| {
                     let mut d = DiffView::new(file, cx);
@@ -70,6 +71,7 @@ impl ChangesView {
                     d.set_side(side, cx);
                     d.on_hunk_action(move |a, lines, _, cx| { me.update(cx, |v, cx| v.hunk_action(a, lines, cx)).ok(); });
                     d.on_side_change(move |s, _, _, cx| app.update(cx, |a, cx| a.set_diff_side(s, Layout::Unified, cx)));
+                    super::full::wire_navigation(me2, &mut d);
                     d
                 }));
             }
@@ -138,13 +140,10 @@ impl ChangesView {
         }
     }
 
-    /// LF-04: the thumbnails go to the Compact diff and to the Full-mode tab when it shows the same file.
+    /// LF-04: the thumbnails go to the Compact diff.
     pub(crate) fn push_images(&self, cx: &mut Context<Self>) {
-        let (key, a, b) = self.pane.images.clone();
-        if let Some(d) = &self.diff { let (a, b) = (a.clone(), b.clone()); d.update(cx, |d, cx| d.set_images(a, b, cx)) }
-        if let (Some(v), Some((p, _))) = (self.full.view(), self.full.blame_target()) && !key.is_empty() && key.starts_with(&format!("{p} ")) {
-            v.update(cx, |d, cx| d.set_images(a, b, cx))
-        }
+        let (_, a, b) = self.pane.images.clone();
+        if let Some(d) = &self.diff { d.update(cx, |d, cx| d.set_images(a, b, cx)) }
     }
 
     /// CH-39 / DV-02: what the right column shows in Compact mode.

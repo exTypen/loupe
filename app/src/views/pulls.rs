@@ -56,9 +56,6 @@ pub struct PullsView {
     more: Option<(Cancel, Task<()>)>,
     poll: Option<Task<()>>,
     clock: Option<Task<()>>,
-    /// Per worktree: "head refsVersion" → whether the branch has commits its target doesn't (PR-19).
-    can_create: HashMap<String, (String, bool)>,
-    create_check: Option<Task<()>>,
     shown: Option<String>,
     _subs: Vec<Subscription>,
 }
@@ -105,8 +102,7 @@ impl PullsView {
         let mine = loupe_forge::settings::shared().bool("pullsMine");
         let mut v = Self {
             app, focus: cx.focus_handle(), model: None, lists: HashMap::new(), details: DetailCache::default(), details_of: None,
-            mine, filter, load: None, again: false, more: None, poll: None, clock: None, can_create: HashMap::new(),
-            create_check: None, shown: None, _subs: subs,
+            mine, filter, load: None, again: false, more: None, poll: None, clock: None, shown: None, _subs: subs,
         };
         v.sync(window, cx);
         v
@@ -153,7 +149,6 @@ impl PullsView {
             self.shown = now;
             if let Some(c) = &ctx { self.show(c, window, cx) }
         }
-        if let Some(c) = &ctx { self.check_can_create(c, cx) }
         cx.notify();
     }
 
@@ -279,21 +274,6 @@ impl PullsView {
         cx.notify();
     }
 
-    /// PR-19: "Create Pull Request…" when the branch has commits its target doesn't, checked once per
-    /// "head refsVersion".
-    fn check_can_create(&mut self, c: &Ctx, cx: &mut Context<Self>) {
-        let Some(m) = self.model.as_ref().map(|m| m.0.clone()) else { return };
-        let (key, branch, remote) = { let s = &m.read(cx).state; (format!("{} {}", s.head_oid, s.refs_version), s.branch.clone(), s.remote_name.clone()) };
-        if self.can_create.get(&c.path).is_some_and(|(k, _)| *k == key) || self.create_check.is_some() { return }
-        let Some(branch) = branch else { self.can_create.insert(c.path.clone(), (key, false)); return };
-        let path = c.path.clone();
-        self.create_check = Some(cx.spawn(async move |this, cx| {
-            let p = path.clone();
-            let ok = cx.background_executor().spawn(async move { loupe_forge::pull_create::ahead_of_default(&p, &remote, &branch).is_some() }).await;
-            this.update(cx, |v, cx| { v.create_check = None; v.can_create.insert(path, (key, ok)); cx.notify() }).ok();
-        }));
-    }
-
     // MARK: Opening a PR
 
     fn detail(&mut self, c: &Ctx, pr: PullRequest, window: &mut Window, cx: &mut Context<Self>) -> Entity<PullDetail> {
@@ -414,8 +394,8 @@ impl PullsView {
         if self.more.is_some() { rows.push(Row::More) }
         let loading = self.load.as_ref().is_some_and(|l| l.path == c.path);
         let wants_more = list.state != "open" && list.more().is_some() && !loading;
-        let can_create = self.can_create.get(&c.path).is_some_and(|x| x.1)
-            && c.branch.as_ref().is_some_and(|b| !list.pulls.iter().any(|p| &p.head.ref_ == b && p.state == "open"));
+        // PC-05 / PR-19: pr_create's rule (the forge's open PR for the branch, merged excluded), once per HEAD.
+        let can_create = self.model.as_ref().map(|m| m.0.clone()).is_some_and(|m| crate::views::pr_create::can_create(&m, cx));
         let state_ix = match list.state.as_str() { "closed" => 1, "all" => 2, _ => 0 };
         let this = cx.entity();
         let me_tip: SharedString = c.me.as_ref().map_or("Add a Forgejo account to filter by author".into(), |m| format!("Only pull requests opened by {m}")).into();
@@ -437,7 +417,7 @@ impl PullsView {
                 .border_1().border_color(theme::border()).child(Input::new(&self.filter).appearance(false)))
             .when(can_create, |d| d.child({
                 let tip: SharedString = format!("Create a pull request for {branch}").into();
-                ui::pill("pr-create", "+ Create Pull Request…").tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                ui::icon_button("pr-create", "plus").tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
                     .on_click(move |_, _, cx| app.update(cx, |a, cx| a.emit(AppEvent::CreatePull { worktree: wt.clone() }, cx)))
             }))
             .child(div().flex_1())
