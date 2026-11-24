@@ -121,6 +121,9 @@ impl PullsView {
 
     fn list(&mut self, path: &str) -> &mut PullList { self.lists.entry(path.to_string()).or_default() }
 
+    /// The shown worktree's list length (the stress driver waits for the whole open list).
+    pub fn list_count(&self) -> usize { self.shown.as_ref().and_then(|p| self.lists.get(p)).map_or(0, |l| l.pulls.len()) }
+
     fn selected_detail(&self) -> Option<Entity<PullDetail>> {
         let n = self.lists.get(self.shown.as_ref()?)?.selected?;
         self.details.details.get(&n).map(|(d, _)| d.clone())

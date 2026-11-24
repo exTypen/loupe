@@ -15,8 +15,11 @@ use loupe_core::model::{DEFAULT_SPACE, Space};
 use loupe_forge::{MergeStyle, settings};
 use serde::Deserialize;
 
+use loupe_core::history::Scope;
+
 use super::{AppEvent, AppModel, Tab};
 use crate::diff::DiffSide;
+use crate::views::{ci::ChecksOverlay, history::HistoryView, pulls::PullsView};
 
 pub const DOMAIN: &str = "dev.extypen.loupe.flows-gpui";
 
@@ -142,6 +145,24 @@ impl Run {
         w.update(cx, |_, window, cx| f(window, cx)).ok()
     }
 
+    /// The shell's History (1) or Pull Requests (2) view.
+    fn view<V: 'static>(&self, cx: &mut AsyncApp, i: usize) -> Option<Entity<V>> {
+        let w = cx.update(|cx| cx.windows().first().copied())?.downcast::<crate::shell::Shell>()?;
+        w.read_with(cx, |s, _| s.views[i].clone().downcast::<V>().ok()).ok().flatten()
+    }
+
+    fn history_view(&self, cx: &mut AsyncApp) -> Option<Entity<HistoryView>> { self.view(cx, 1) }
+
+    /// Waits until `f` holds for History.
+    async fn wait_history(&self, cx: &mut AsyncApp, what: &str, timeout: f64, f: impl Fn(&HistoryView, &App) -> bool) -> bool {
+        let Some(h) = self.history_view(cx) else { return false };
+        self.wait(cx, what, timeout, move |_, cx| f(h.read(cx), cx)).await
+    }
+
+    fn set_scope(&self, cx: &mut AsyncApp, scope: Scope) {
+        if let Some(h) = self.history_view(cx) { self.with_window(cx, |w, cx| h.update(cx, |h, cx| h.set_scope(scope, w, cx))); }
+    }
+
     async fn run(self, cx: &mut AsyncApp) {
         let repos = self.s.repos.clone();
         self.wait(cx, "worktrees", 60., move |a, _| repos.iter().all(|r| a.worktrees.contains_key(r))).await;
@@ -235,15 +256,27 @@ impl Run {
     async fn history(&self, cx: &mut AsyncApp) {
         self.select(cx, &self.big, Tab::History).await;
         let (worktree, sha) = (self.big.clone(), self.s.huge_commit.clone());
+        self.wait_history(cx, "history", 30., |h, cx| !h.commit_shas(cx).is_empty()).await;
         self.app.update(cx, |a, cx| a.emit(AppEvent::ShowCommit { worktree, sha }, cx));
-        // ponytail: the commit's files are History's own state, so a pause stands in for Swift's "≥ 5000 files" wait.
-        self.pause(cx, 6.).await;
-        if self.press_view_switch(cx, 0) { self.pause(cx, 5.).await; self.press_view_switch(cx, 1); self.pause(cx, 1.).await }
+        self.wait_history(cx, "huge commit", 30., |h, cx| h.file_paths(cx).len() >= 5000).await;
+        self.pause(cx, 2.).await;
+        if let Some(h) = self.history_view(cx) {
+            let paths = h.read_with(cx, |h, cx| h.file_paths(cx));
+            for p in paths.into_iter().take(400).step_by(40) {
+                self.with_window(cx, |w, cx| h.update(cx, |h, cx| h.select_file(p, w, cx)));
+                self.pause(cx, 0.3).await;
+            }
+        }
+        // Swift sets "commitOverview" itself: the switch without its "view-switch" line.
+        if self.view_switch(cx, 0) { self.pause(cx, 5.).await; self.view_switch(cx, 1); self.pause(cx, 1.).await }
         self.full(cx, true, 2.).await;
         self.full(cx, false, 1.).await;
         self.sides(cx, 1.5).await;
-        // Swift then switches the scope to All Branches and back; the scope is History's own state.
-        self.mark("unsupported history-scope");
+        self.set_scope(cx, Scope::All);
+        self.wait_history(cx, "all branches", 30., |h, cx| !h.commit_shas(cx).is_empty()).await;
+        self.pause(cx, 2.).await;
+        self.set_scope(cx, Scope::Current);
+        self.wait_history(cx, "current", 30., |h, cx| !h.commit_shas(cx).is_empty()).await;
     }
 
     /// The big file and the minified one in Changes, in every mode; then the Overview of the worktree.
@@ -268,11 +301,11 @@ impl Run {
         if self.press_view_switch(cx, 0) { self.pause(cx, 6.).await; self.press_view_switch(cx, 1); self.pause(cx, 1.).await } else { self.mark("no-view-switch changes") }
     }
 
-    /// Big's Pull Requests tab. ponytail: the list is the Pulls view's own state, so a pause stands in for Swift's
-    /// "≥ 100 PRs" wait; have the view expose a count if a run needs the exact wait.
+    /// Big's Pull Requests tab, once its list has at least 100 PRs.
     async fn open_pulls(&self, cx: &mut AsyncApp) {
         self.select(cx, &self.big, Tab::Pulls).await;
-        self.pause(cx, 4.).await;
+        let Some(p) = self.view::<PullsView>(cx, 2) else { return };
+        self.wait(cx, "pull list", 90., move |_, cx| p.read(cx).list_count() >= 100).await;
     }
 
     async fn open_pull(&self, cx: &mut AsyncApp, number: u64, settle: f64) {
@@ -363,11 +396,16 @@ impl Run {
         let Ok(pr) = cx.background_executor().spawn(async move { client.pull(&remote, n as i64) }).await else { return self.mark("no-check-row") };
         let worktree = self.big.clone();
         self.app.update(cx, |a, cx| a.emit(AppEvent::ShowChecks { worktree, sha: pr.head.sha, pull: Some(n) }, cx));
-        self.wait(cx, "checks", 30., |a, _| a.overlay.is_some()).await;
+        let overlay = |a: &AppModel| a.overlay.clone().and_then(|o| o.downcast::<ChecksOverlay>().ok());
+        self.wait(cx, "checks", 30., move |a, cx| overlay(a).is_some_and(|o| o.read(cx).check_count(cx) > 0)).await;
         self.pause(cx, 2.).await;
-        // Swift then clicks the "job-01" row; which job the overlay shows is its own state, so the list stays.
-        self.mark("no-check-row");
-        self.pause(cx, self.s.log_seconds / self.s.pause.max(0.01)).await;
+        match self.app.read_with(cx, |a, _| overlay(a)) {
+            Some(o) if o.update(cx, |o, cx| o.open_check_containing("job-01", cx)) => {
+                self.wait(cx, "job log", 20., move |_, cx| !o.read(cx).showing_list()).await;
+                self.pause(cx, self.s.log_seconds / self.s.pause.max(0.01)).await;
+            }
+            _ => self.mark("no-check-row"),
+        }
         self.app.update(cx, |a, cx| a.dismiss(cx));
         self.pause(cx, 1.).await;
         self.back(cx, 1.).await;
@@ -399,17 +437,30 @@ impl Run {
         self.pause(cx, 1.).await;
     }
 
-    /// Swift opens the rebase planner from commit #25; the planner is History's own state.
+    /// The rebase planner from commit #25, then closed.
     async fn rebase(&self, cx: &mut AsyncApp) {
         self.select(cx, &self.big, Tab::History).await;
-        self.mark("unsupported rebase-planner");
+        if !self.wait_history(cx, "history", 30., |h, cx| h.commit_shas(cx).len() > 30).await { return }
+        let Some(h) = self.history_view(cx) else { return };
+        self.with_window(cx, |w, cx| h.update(cx, |h, cx| h.open_planner_at(25, w, cx)));
         self.pause(cx, 2.5).await;
+        self.app.update(cx, |a, cx| a.dismiss(cx));
+        self.pause(cx, 1.).await;
     }
 
-    /// Swift steps through the Stashes scope; the scope is History's own state.
+    /// The Stashes scope: every 20th stash, then Current again.
     async fn stashes(&self, cx: &mut AsyncApp) {
-        self.select(cx, &self.s.stashes, Tab::History).await;
-        self.mark("unsupported stashes-scope");
+        let wt = self.s.stashes.clone();
+        self.select(cx, &wt, Tab::History).await;
+        self.set_scope(cx, Scope::Stashes);
+        self.wait_history(cx, "stashes", 30., |h, cx| h.commit_shas(cx).len() >= 200).await;
+        let shas = self.history_view(cx).map(|h| h.read_with(cx, |h, cx| h.commit_shas(cx))).unwrap_or_default();
+        for sha in shas.into_iter().step_by(20) {
+            let worktree = wt.clone();
+            self.app.update(cx, |a, cx| a.emit(AppEvent::ShowCommit { worktree, sha }, cx));
+            self.pause(cx, 0.5).await;
+        }
+        self.set_scope(cx, Scope::Current);
         self.pause(cx, 1.).await;
     }
 
@@ -426,9 +477,15 @@ impl Run {
     /// MS-12: the toolbar's Overview / Files (/ Conversation) switch of the shown tab, as a click would (its
     /// DiffControls callback). Prints "view-switch segment= of=".
     fn press_view_switch(&self, cx: &mut AsyncApp, segment: usize) -> bool {
+        let Some(of) = self.app.read_with(cx, |a, _| a.controls().view.as_ref().map(|v| v.0.len())) else { return false };
+        if segment >= of { return false }
+        self.mark(&format!("view-switch segment={segment} of={of}"));
+        self.view_switch(cx, segment)
+    }
+
+    fn view_switch(&self, cx: &mut AsyncApp, segment: usize) -> bool {
         let Some((modes, _, set)) = self.app.read_with(cx, |a, _| a.controls().view.clone()) else { return false };
         let Some(&mode) = modes.get(segment) else { return false };
-        self.mark(&format!("view-switch segment={segment} of={}", modes.len()));
         self.with_window(cx, |w, cx| set(mode, w, cx)).is_some()
     }
 }

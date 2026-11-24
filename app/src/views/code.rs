@@ -74,6 +74,8 @@ pub struct CodeBrowser {
     outline_task: Option<(Arc<AtomicBool>, Task<()>)>,
     peek: bool,
     header_actions: Option<Rc<dyn Fn(&str, &mut Window, &mut App) -> AnyElement>>,
+    /// LF-04: (path, old, new) thumbnails of an LFS image the host resolved, shown while that file is open.
+    images: (String, Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     _subs: Vec<Subscription>,
 }
 
@@ -132,7 +134,7 @@ impl CodeBrowser {
             app, model, source, nav: CodeNav::default(), results: None, busy: None, lookup: None, tree: None,
             tree_key: String::new(), tree_task: None, collapsed: HashSet::new(), collapse_applied: false,
             files: HashMap::new(), files_version: 0, loading: None, diff: None, reveal: None,
-            outline: (String::new(), Outline::None), outline_task: None, peek: false, header_actions: None, _subs: subs,
+            outline: (String::new(), Outline::None), outline_task: None, peek: false, header_actions: None, images: Default::default(), _subs: subs,
         };
         v.sync(cx);
         v
@@ -298,8 +300,21 @@ impl CodeBrowser {
             None => self.diff = Some(self.make_diff(f.clone(), cx)),
         }
         if let (Some(line), Some(d)) = (self.reveal.take(), &self.diff) { d.update(cx, |d, cx| d.reveal(line as u32, cx)) }
+        self.apply_images(cx);
         self.ask_outline(&p, &f, cx);
         cx.notify();
+    }
+
+    /// LF-04: Changes resolves an LFS pointer image's objects (as for its Compact diff) and hands them here.
+    pub fn set_images(&mut self, path: String, old: Option<std::path::PathBuf>, new: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.images = (path, old, new);
+        self.apply_images(cx);
+    }
+
+    fn apply_images(&self, cx: &mut Context<Self>) {
+        let Some(d) = &self.diff else { return };
+        let (a, b) = if self.nav.selected.as_deref() == Some(self.images.0.as_str()) { (self.images.1.clone(), self.images.2.clone()) } else { (None, None) };
+        d.update(cx, |d, cx| d.set_images(a, b, cx));
     }
 
     fn make_diff(&self, f: Arc<FileDiff>, cx: &mut Context<Self>) -> Entity<DiffView> {
