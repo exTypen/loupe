@@ -17,7 +17,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px, size,
-    component::input::{Editor, EditorState, InputEditsEvent},
+    component::input::{self, Editor, EditorState, InputEditsEvent},
 };
 use loupe_core::conflicts::{self, MergeLabels};
 use loupe_core::git::Kind;
@@ -35,6 +35,7 @@ use crate::{theme, ui};
 /// separated, then drives it once it's loaded (see `step`), for screenshots of each flow without a mouse.
 const TEST_HOOK: &str = "LOUPE_FLOWS_MERGE";
 const TEST_STEPS: &str = "LOUPE_FLOWS_MERGE_DO";
+const TEST_AI: &str = "LOUPE_FLOWS_AI";
 
 pub fn install(app: &Entity<AppModel>, window: &mut Window, cx: &mut App) -> Subscription {
     let opener = cx.new(|cx| Opener::new(app.clone(), cx));
@@ -214,7 +215,11 @@ impl MergeEditor {
         };
         v.load(window, cx);
         cx.spawn(async move |this, cx| {
-            let paths = cx.background_executor().spawn(async { ai::installed().unwrap_or_else(ai::scan) }).await;
+            // LOUPE_FLOWS_AI=<path>: a stub Claude for the flows fixture, since /opt/homebrew/bin wins over $HOME.
+            let stub = std::env::var(TEST_AI).ok().filter(|p| !p.is_empty());
+            let paths = cx.background_executor().spawn(async move {
+                match stub { Some(p) => HashMap::from([("claude".to_string(), p)]), None => ai::installed().unwrap_or_else(ai::scan) }
+            }).await;
             this.update(cx, |v, cx| { v.ai = ai::selected(&settings::shared(), &paths); cx.notify() }).ok();
         }).detach();
         v
@@ -695,7 +700,8 @@ impl MergeEditor {
 
     fn proposal_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (text, _) = self.proposal.as_ref()?;
-        Some(div().absolute().top(px(34.)).left(px(120.)).w(px(548.)).p_3p5().flex().flex_col().gap_2()
+        // Opens upwards from the chunk bar's Suggest, over the panes, which have the room the result may not.
+        Some(div().absolute().bottom(px(4.)).left(px(120.)).w(px(548.)).p_3p5().flex().flex_col().gap_2()
             .bg(theme::raised()).border_1().border_color(theme::border_strong()).rounded(theme::RADIUS_CARD).shadow_lg()
             .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).text_color(theme::text()).child("Suggested merge"))
             .child(div().id("proposal-text").w(px(520.)).h(px(260.)).overflow_scroll().p_1p5().rounded(px(6.)).bg(theme::card())
@@ -718,17 +724,17 @@ impl MergeEditor {
             (rows, tint_color(t), r.is_empty())
         }).collect();
         div().flex().flex_col().flex_1().min_h_0()
-            .child(div().flex().flex_1().min_h_0()
+            .child(div().relative().flex().flex_1().min_h_0()
                 .child(self.pane(Role::Ours, labels.ours.clone(), labels.ours_detail.clone(), theme::blue(), cx))
                 .when(self.show_base, |d| d.child(div().w(px(1.)).h_full().bg(theme::border()))
                     .child(self.pane(Role::Base, "Base".into(), "the common ancestor".into(), theme::text_muted(), cx)))
                 .child(div().w(px(1.)).h_full().bg(theme::border()))
-                .child(self.pane(Role::Theirs, labels.theirs.clone(), labels.theirs_detail.clone(), theme::purple(), cx)))
+                .child(self.pane(Role::Theirs, labels.theirs.clone(), labels.theirs_detail.clone(), theme::purple(), cx))
+                .children(self.proposal_card(cx)))
             .child(self.chunk_bar(labels, cx))
             .child(div().relative().flex_1().min_h_0().overflow_hidden().bg(theme::card())
                 .child(tint_layer(p.result.clone(), starts, tints))
-                .child(Editor::new(&p.result).appearance(false).h_full())
-                .children(self.proposal_card(cx)))
+                .child(Editor::new(&p.result).appearance(false).h_full()))
             .when(s.edited_outside, |d| d.child(div().px_3().py_1().flex_none().bg(theme::sidebar()).border_t_1().border_color(theme::border())
                 .text_size(px(11.5)).text_color(theme::text_muted())
                 .child("This file was changed outside Loupe, so only its remaining conflict markers are tracked.")))
@@ -816,8 +822,15 @@ impl Render for MergeEditor {
             if let Some(steps) = std::env::var(TEST_STEPS).ok().filter(|_| !self.stepped) {
                 self.stepped = true;
                 cx.spawn_in(window, async move |this, cx| {
-                    for st in steps.split(',') {
+                    // Leaked: Keystroke::parse wants 'static, and this runs once per launch of a test hook.
+                    for st in Box::leak(steps.into_boxed_str()).split(',') {
                         cx.background_executor().timer(Duration::from_millis(700)).await;
+                        // key:<keystroke> goes through the window as a real key would (the screen may be locked, so
+                        // there's no real input), e.g. key:enter, key:alt-cmd-down.
+                        if let Some(k) = st.strip_prefix("key:").and_then(|k| gpui_kit::Keystroke::parse(k).ok()) {
+                            if cx.update(|w, cx| { w.dispatch_keystroke(k, cx); }).is_err() { break }
+                            continue;
+                        }
                         if this.update_in(cx, |v, w, cx| v.step(st, w, cx)).is_err() { break }
                     }
                 }).detach();
@@ -834,6 +847,10 @@ impl Render for MergeEditor {
         div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").absolute().top(px(42.)).left_0().right_0().bottom_0()
             .border_t_1().border_color(theme::border()).flex().flex_col().bg(theme::canvas())
             .font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
+            // Return takes the suggestion (its prominent button), before the result editor would insert a newline.
+            .capture_action(cx.listener(|v, _: &input::Enter, w, cx| {
+                if v.proposal.is_some() { cx.stop_propagation(); v.accept_proposal(w, cx) }
+            }))
             .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| {
                 if e.keystroke.key == "escape" {
                     if v.proposal.take().is_some() || std::mem::take(&mut v.confirm_reset) { cx.notify() } else { v.close(cx) }
