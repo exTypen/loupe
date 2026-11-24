@@ -163,6 +163,7 @@ impl ChangesView {
         }
         if empty { self.overview = false }
         let full_mode = self.app.read(cx).full_mode;
+        self.share_lfs_locks(&m, cx);
         self.update_diff(&m, cx);
         self.update_pane(&m, cx);
         self.update_panel(&m, cx);
@@ -170,6 +171,21 @@ impl ChangesView {
         if full_mode { self.update_full(&m, cx) } else { self.leave_full(cx) }
         self.set_controls(empty, sel.is_some() || full_mode, cx);
         cx.notify();
+    }
+
+    /// LF-05/06: locks are asked once a minute per repository, and a worktree that refreshed while a sibling's request
+    /// ran only got the placeholder (empty) answer. Take the repository's answer from a sibling that has it, so the
+    /// badges show without another request. ponytail: belongs in WorktreeModel::load_lfs_locks (requested).
+    fn share_lfs_locks(&mut self, m: &Entity<WorktreeModel>, cx: &mut Context<Self>) {
+        let (repo, mine) = { let w = m.read(cx); (w.repo.clone(), w.state.lfs.clone()) };
+        if !mine.used || mine.common_dir.is_none() { return }
+        let app = self.app.read(cx);
+        let best = app.worktrees_of(&repo).iter().filter_map(|w| app.model(&w.path)).filter(|o| o != m)
+            .map(|o| o.read(cx).state.lfs.clone())
+            .find(|l| l.common_dir == mine.common_dir && l.locking_supported);
+        if let Some(l) = best && (l.locks != mine.locks || !mine.locking_supported) {
+            m.update(cx, |w, _| { w.state.lfs.locks = l.locks; w.state.lfs.locking_supported = true });
+        }
     }
 
     fn set_controls(&mut self, empty: bool, has_file: bool, cx: &mut Context<Self>) {
