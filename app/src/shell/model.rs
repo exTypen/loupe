@@ -51,9 +51,12 @@ pub fn switcher_matches(all: &[SwitcherItem], query: &str, recent: &[String]) ->
     hits.into_iter().map(|(_, i)| i.clone()).collect()
 }
 
-/// The current space's worktrees in sidebar order, for the quick switcher.
+/// Every space's worktrees, the current space's first, each in sidebar order: the Swift switcher listed only the
+/// current space, so ⌘K couldn't reach another space's worktrees (FLOWS.md §14 quick switcher #1).
 pub fn switcher_items(app: &crate::state::AppModel) -> Vec<SwitcherItem> {
-    app.repo_paths().iter()
+    let cur = app.repo_paths().to_vec();
+    let others = app.spaces.iter().flat_map(|s| s.repos.iter()).filter(|r| !cur.contains(r)).cloned().collect::<Vec<_>>();
+    cur.iter().chain(others.iter())
         .flat_map(|r| app.worktrees_of(r).iter().map(|w| SwitcherItem { repo: r.clone(), wt: w.clone() }))
         .collect()
 }

@@ -1,4 +1,4 @@
-//! ⌘K: go to any worktree in the current space by typing parts of its repo, branch or folder (QuickSwitcher.swift).
+//! ⌘K: go to any worktree (in any space) by typing parts of its repo, branch or folder (QuickSwitcher.swift).
 use gpui_kit::{
     AnyElement, AppContext as _, Context, DismissEvent, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
