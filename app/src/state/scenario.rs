@@ -147,8 +147,9 @@ impl Run {
 
     /// The shell's History (1) or Pull Requests (2) view.
     fn view<V: 'static>(&self, cx: &mut AsyncApp, i: usize) -> Option<Entity<V>> {
-        let w = cx.update(|cx| cx.windows().first().copied())?.downcast::<crate::shell::Shell>()?;
-        w.read_with(cx, |s, _| s.views[i].clone().downcast::<V>().ok()).ok().flatten()
+        let w = cx.update(|cx| cx.windows().first().copied())?.downcast::<gpui_kit::base::Root>()?;
+        let shell = w.read_with(cx, |r, _| r.view().clone().downcast::<crate::shell::Shell>().ok()).ok().flatten()?;
+        shell.read_with(cx, |s, _| s.views[i].clone().downcast::<V>().ok())
     }
 
     fn history_view(&self, cx: &mut AsyncApp) -> Option<Entity<HistoryView>> { self.view(cx, 1) }
