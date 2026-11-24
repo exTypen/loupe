@@ -403,17 +403,18 @@ pub fn definitions(name: &str, rev: Option<&str>, dir: &str, from: &str, cancel:
 }
 
 /// Every whole-word occurrence of `name` at `rev` (None: the worktree, untracked files included).
+/// `-z`: NUL after the path and the line number, so a path with ':' parses (Swift split on ':', FLOWS.md §14 #10).
 pub fn references(name: &str, rev: Option<&str>, dir: &str, limit: usize) -> Vec<CodeMatch> {
-    let mut args = vec!["grep", "-n", "-I", "-w", "--fixed-strings", "-e", name];
+    let mut args = vec!["grep", "-z", "-n", "-I", "-w", "--fixed-strings", "-e", name];
     args.extend(scope(rev));
     let Ok(out) = crate::git::string(&args, dir) else { return Vec::new() };
     let prefix = rev.map(|r| format!("{r}:"));
     let mut matches = Vec::new();
     for line in out.lines() {
-        // "<rev>:<path>:<line>:<text>"
-        let rest = prefix.as_deref().and_then(|p| line.strip_prefix(p)).unwrap_or(line);
-        let mut f = rest.splitn(3, ':');
+        // "<rev>:<path>\0<line>\0<text>"
+        let mut f = line.splitn(3, '\0');
         let (Some(path), Some(n), Some(text)) = (f.next(), f.next(), f.next()) else { continue };
+        let path = prefix.as_deref().and_then(|p| path.strip_prefix(p)).unwrap_or(path);
         let Ok(n) = n.parse() else { continue };
         matches.push(CodeMatch { path: path.to_string(), line: n, text: text.trim_matches([' ', '\t']).to_string() });
         if matches.len() >= limit {
@@ -423,7 +424,7 @@ pub fn references(name: &str, rev: Option<&str>, dir: &str, limit: usize) -> Vec
     matches
 }
 
-/// `references`' limit in the Swift app.
+/// `references`' limit in the Swift app. Ask for one more to tell "2000+" from exactly 2000 (FLOWS.md §14 #9).
 pub const REFERENCE_LIMIT: usize = 2000;
 
 #[cfg(test)]
@@ -549,6 +550,12 @@ mod tests {
         let refs = references("fit", Some(&head), d, REFERENCE_LIMIT);
         assert_eq!(refs.len(), 4);
         assert!(refs.iter().any(|r| r.path == "src/main.rs" && r.line == 3));
+        // A path with ':' (Swift split it at the colon), in the worktree and at a commit.
+        std::fs::write(dir.join("a:b.rs"), "fn x() { fit() }\n").unwrap();
+        assert!(references("fit", None, d, REFERENCE_LIMIT).iter().any(|r| r.path == "a:b.rs" && r.line == 1 && r.text == "fn x() { fit() }"));
+        crate::git::run(&["add", "."], d, None, false).unwrap();
+        crate::git::run(&["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "y"], d, None, false).unwrap();
+        assert!(references("fit", Some("HEAD"), d, REFERENCE_LIMIT).iter().any(|r| r.path == "a:b.rs" && r.line == 1));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

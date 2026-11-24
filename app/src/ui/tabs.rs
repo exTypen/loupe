@@ -187,7 +187,9 @@ impl NavResults {
         match self {
             NavResults::Definitions(w, d) => (format!("{} definitions of ", d.len()), w),
             NavResults::References(w, r, no_def) => {
-                let n = match r.len() { n if n >= 2000 => "2000+ references".into(), 1 => "1 reference".into(), n => format!("{n} references") };
+                // The lookup asks for REFERENCE_LIMIT + 1, so exactly 2000 reads "2000" (Swift said "2000+", §14 #9).
+                let lim = loupe_code::index::REFERENCE_LIMIT;
+                let n = match r.len() { n if n > lim => format!("{lim}+ references"), 1 => "1 reference".into(), n => format!("{n} references") };
                 (format!("{}{n} to ", if *no_def { "No definition found in this repository · " } else { "" }), w)
             }
         }
@@ -267,8 +269,9 @@ mod tests {
     fn results_titles() {
         let hit = NavHit { path: "a".into(), line: 1, text: "x".into() };
         assert_eq!(NavResults::References("f".into(), vec![hit.clone()], false).title().0, "1 reference to ");
-        assert_eq!(NavResults::References("f".into(), vec![hit.clone(); 2000], true).title().0,
+        assert_eq!(NavResults::References("f".into(), vec![hit.clone(); 2001], true).title().0,
                    "No definition found in this repository · 2000+ references to ");
+        assert_eq!(NavResults::References("f".into(), vec![hit.clone(); 2000], false).title().0, "2000 references to ");
         assert_eq!(NavResults::Definitions("f".into(), vec![hit; 2]).title().0, "2 definitions of ");
     }
 }
