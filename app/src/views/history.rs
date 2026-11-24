@@ -41,8 +41,9 @@ use loupe_core::rebase::Zone;
 use crate::diff::{self, DiffView};
 use crate::shell::keys::{NextFile, PreviousFile, Undo};
 use crate::state::{AppEvent, AppModel, DiffControls, Tab, WorktreeModel, adapt};
+use crate::views::changes::stash::{self, StashOp};
 use crate::{theme, ui};
-use sheets::{Dialog, NewWorktree, Role};
+use sheets::{Dialog, Role};
 
 type Act = Rc<dyn Fn(&mut HistoryView, &mut Window, &mut Context<HistoryView>)>;
 
@@ -267,33 +268,26 @@ impl HistoryView {
                 }
             }
             AppEvent::ShowBranch { worktree, branch } if mine(worktree, self, cx) => self.show_merged(branch.clone(), window, cx),
+            AppEvent::ShowStashes { worktree } if mine(worktree, self, cx) => self.set_scope(Scope::Stashes, window, cx),
             _ => {}
         }
     }
 
-    /// SH-39 / HI-21: after a PR merge, fetch the base it went into, then show that branch with its newest commit (the
-    /// merge) selected. A failed fetch still shows the branch; a branch that doesn't exist falls back to Current.
+    /// SH-39 / HI-21 / PD-30: `branch`'s log with its newest commit selected. After a PR merge the Pulls view has
+    /// already fetched the base it went into (AppModel::show_merged), so this only shows it. A branch that doesn't
+    /// exist falls back to Current (apply_page).
     fn show_merged(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(m) = self.selected_model() else { return };
-        let remote = m.read(cx).state.remote_name.clone();
-        let fetch = branch.strip_prefix(&format!("{remote}/")).map(|b| b.to_string());
-        let t = match fetch {
-            Some(base) => m.update(cx, |m, cx| m.remote_op(&format!("Fetching {base}"), vec!["fetch".into(), remote.clone(), base.clone()], cx)),
-            None => Task::ready(Some(())),
-        };
-        cx.spawn_in(window, async move |this, cx| {
-            t.await;
-            this.update_in(cx, |v, w, cx| {
-                let Some(p) = v.path(cx) else { return };
-                let l = v.logs.entry(p).or_insert_with(Log::new);
-                l.selected = None;
-                l.scope = Scope::Branch(branch);
-                l.commits.clear();
-                l.list.reset(0);
-                l.graph.clear();
-                v.reload(w, cx);
-            }).ok();
-        }).detach();
+        let Some(p) = self.path(cx) else { return };
+        let l = self.logs.entry(p).or_insert_with(Log::new);
+        l.selected = None;
+        l.files.clear();
+        l.message.clear();
+        l.scope = Scope::Branch(branch);
+        l.commits.clear();
+        l.list.reset(0);
+        l.graph.clear();
+        self.pending_select = None;
+        self.reload(window, cx);
     }
 
     // MARK: Loading
@@ -595,20 +589,33 @@ impl HistoryView {
     fn cherry_pick(&mut self, c: Commit, w: &mut Window, cx: &mut Context<Self>) { self.act("Cherry-picking", false, move |p| core_history::cherry_pick(p, &c), w, cx) }
     fn revert(&mut self, c: Commit, w: &mut Window, cx: &mut Context<Self>) { self.act("Reverting", false, move |p| core_history::revert(p, &c), w, cx) }
     fn apply_stash(&mut self, c: Commit, pop: bool, w: &mut Window, cx: &mut Context<Self>) {
-        self.act(if pop { "Popping Stash" } else { "Applying Stash" }, true, move |p| core_history::apply_stash(p, &c, pop), w, cx)
-    }
-    fn confirm_drop_stash(&mut self, c: Commit, window: &mut Window, cx: &mut Context<Self>) {
-        let me = cx.entity().downgrade();
-        let sel = c.selector.clone().unwrap_or_else(|| "stash".into());
-        Dialog::confirm(&self.app, format!("Drop {sel}?"), "The stash is removed from the list. Edit › Undo brings it back.", "Drop Stash",
-            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.act("Dropping Stash", true, move |p| core_history::drop_stash(p, &c), w, cx)).ok(); }, window, cx);
+        self.stash_op(c, if pop { StashOp::Pop } else { StashOp::Apply }, w, cx)
     }
 
-    fn new_worktree(&mut self, c: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+    /// SS-06..10 through Changes' `stash_op`, which records the undo. A stop on conflicts sends you to Changes.
+    fn stash_op(&mut self, c: Commit, op: StashOp, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.selected_model() else { return };
-        let repo = m.read(cx).repo.clone();
-        let branches = self.log(cx).map(|l| l.branches.0.iter().chain(&l.branches.1).cloned().collect()).unwrap_or_default();
-        NewWorktree::present(&self.app, repo, c.sha.clone(), branches, window, cx);
+        let sel = c.selector.clone().unwrap_or_else(|| "stash@{0}".into());
+        let t = m.update(cx, |m, cx| m.stash_op(op, sel, c.sha.clone(), c.subject.clone(), cx));
+        let app = self.app.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            if t.await == Some(true) { app.update(cx, |a, cx| a.set_tab(Tab::Changes, cx)); }
+            // The stash list changed without HEAD moving.
+            this.update_in(cx, |v, w, cx| v.reload(w, cx)).ok();
+        }).detach();
+    }
+
+    fn confirm_drop_stash(&mut self, c: Commit, window: &mut Window, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let (q, detail) = stash::drop_question(c.selector.as_deref().unwrap_or("stash"));
+        Dialog::confirm(&self.app, q, detail, "Drop Stash",
+            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.stash_op(c, StashOp::Drop, w, cx)).ok(); }, window, cx);
+    }
+
+    fn new_worktree(&mut self, c: &Commit, cx: &mut Context<Self>) {
+        let Some(m) = self.selected_model() else { return };
+        let (repo, base) = (m.read(cx).repo.clone(), c.sha.clone());
+        self.app.update(cx, |a, cx| a.emit(AppEvent::NewWorktree { repo, base }, cx));
     }
 
     fn open_in_browser(&self, c: &Commit, cx: &mut App) {
@@ -958,7 +965,7 @@ impl HistoryView {
         let c2 = c.clone();
         menu = menu.item(copy("Copy SHA", c.sha.clone()))
             .item(copy("Copy Subject", c.subject.clone()))
-            .item(item("New Worktree from Here…", Rc::new(move |v, w, cx| v.new_worktree(&c2, w, cx))));
+            .item(item("New Worktree from Here…", Rc::new(move |v, _, cx| v.new_worktree(&c2, cx))));
         let has_account = self.selected_model().is_some_and(|m| {
             let m = m.read(cx);
             m.remote.as_ref().is_some_and(|r| self.app.read(cx).account_for(r, &m.path_str()).is_some())

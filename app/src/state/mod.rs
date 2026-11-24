@@ -85,6 +85,11 @@ pub enum AppEvent {
     ShowChecks { worktree: String, sha: String, pull: Option<u64> },
     /// PR create: the New Pull Request sheet for `worktree`.
     CreatePull { worktree: String },
+    /// History: `worktree`'s log on the Stashes scope (SS-04, the Changes "N stashes" link).
+    ShowStashes { worktree: String },
+    /// The shell's New Worktree sheet for `repo`, based on `base` (a commit; "" for HEAD): History's
+    /// "New Worktree from Here…" (HI-20).
+    NewWorktree { repo: String, base: String },
     /// A bottom toast; `undoable` adds an "Undo" link that runs ⌘Z on the selected worktree.
     Toast { text: String, undoable: bool },
     /// ⌘R: reload what's shown (status is already refreshing; History, PR list, an open PR reload).
@@ -295,7 +300,7 @@ impl AppModel {
     /// Emits `e`, first switching to the tab that serves it.
     pub fn emit(&mut self, e: AppEvent, cx: &mut Context<Self>) {
         match &e {
-            AppEvent::ShowCommit { worktree, .. } | AppEvent::ShowBranch { worktree, .. } => { self.go_to(worktree, cx); self.set_tab(Tab::History, cx) }
+            AppEvent::ShowCommit { worktree, .. } | AppEvent::ShowBranch { worktree, .. } | AppEvent::ShowStashes { worktree } => { self.go_to(worktree, cx); self.set_tab(Tab::History, cx) }
             AppEvent::OpenPull { worktree, .. } => { self.go_to(worktree, cx); self.set_tab(Tab::Pulls, cx) }
             _ => {}
         }

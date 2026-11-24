@@ -14,7 +14,7 @@ use loupe_core::git::{FileChange, Kind};
 use loupe_core::{lfs, submodules};
 
 use super::{ChangesView, Confirm, counted, tree};
-use crate::state::{AppEvent, Tab, WorktreeModel};
+use crate::state::{AppEvent, WorktreeModel};
 use crate::{theme, ui};
 
 const ROW: f32 = 26.;
@@ -279,15 +279,17 @@ fn build_menu(view: &Entity<ChangesView>, mut menu: PopupMenu, clicked: &str, wi
 
 impl ChangesView {
 
-    /// SS-04: set-aside changes live in History. The Stashes scope is History's to pick (requested:
-    /// `AppEvent::ShowStashes`); this switches the tab.
+    /// SS-04: set-aside changes live in History, on its Stashes scope.
     pub(crate) fn stashes_link(&self, n: usize, cx: &mut Context<Self>) -> AnyElement {
         div().id("stashes-link").flex().items_center().gap_2().px_3().h(px(32.)).flex_none().cursor_pointer().hover(|s| s.bg(theme::hover()))
             .tooltip(|w, cx| Tooltip::new("Show stashes in History").build(w, cx))
             .child(ui::icon("inbox"))
             .child(div().flex_1().child(if n == 1 { "1 stash".to_string() } else { format!("{n} stashes") }))
             .child(ui::icon("chevron-right").size(px(12.)).text_color(theme::text_faint()))
-            .on_click(cx.listener(|v, _, _, cx| v.app.update(cx, |a, cx| a.set_tab(Tab::History, cx))))
+            .on_click(cx.listener(|v, _, _, cx| {
+                let Some(worktree) = v.selected().map(|m| m.read(cx).path_str()) else { return };
+                v.app.update(cx, |a, cx| a.emit(AppEvent::ShowStashes { worktree }, cx))
+            }))
             .into_any_element()
     }
 

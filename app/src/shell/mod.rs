@@ -59,7 +59,11 @@ impl Shell {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter worktrees"));
         let subs = vec![
             cx.observe(&app, |s, _, cx| { s.watch_selected(cx); s.follow_space(cx); s.update_undo_title(cx); cx.notify() }),
-            cx.subscribe(&app, |s, _, e: &AppEvent, cx| if let AppEvent::Toast { text, undoable } = e { s.show_toast(text.clone(), *undoable, cx) }),
+            cx.subscribe_in(&app, window, |s, _, e: &AppEvent, w, cx| match e {
+                AppEvent::Toast { text, undoable } => s.show_toast(text.clone(), *undoable, cx),
+                AppEvent::NewWorktree { repo, base } => worktrees::open_add_worktree(&s.workspace, repo.clone(), base.clone(), w, cx),
+                _ => {}
+            }),
             cx.subscribe(&filter, |_, _, e: &InputEvent, cx| if matches!(e, InputEvent::Change) { cx.notify() }),
         ];
         let views = [
