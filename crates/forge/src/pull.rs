@@ -264,13 +264,35 @@ impl DiffSource {
 
 /// Brings the PR's head and base commits into the local repository (`refs/pull/N/head` works for forks too).
 /// Fetching the base branch brings in pr.base.sha. A no-op when both are already here.
+///
+/// One at a time per repository (its worktrees share the refs): Full mode's tree and file, the Overview and
+/// navigation ask at once, and two `git fetch`es into the same remote ref fail with "cannot lock ref". A caller that
+/// waited finds the commits already here. A failed fetch is tried once more, for a fetch another app ran meanwhile.
 pub fn fetch_head(pr: &PullRequest, local: &LocalCheckout, cancel: Option<&crate::Cancel>) -> Result<()> {
+    let lock = repo_lock(&local.dir);
+    let _g = lock.lock().unwrap_or_else(|e| e.into_inner());
     let has = |sha: &str| git::run(&["cat-file", "-e", &format!("{sha}^{{commit}}")], &local.dir, &[], cancel).is_ok();
     if has(&pr.head.sha) && has(&pr.base.sha) { return Ok(()); }
     if let Some(c) = cancel { c.check()?; }
     let head = format!("+refs/pull/{}/head:refs/remotes/{}/pr/{}", pr.number, local.remote, pr.number);
     let base = format!("+refs/heads/{0}:refs/remotes/{1}/{0}", pr.base.ref_, local.remote);
-    git::run(&["fetch", "--no-tags", &local.remote, &head, &base], &local.dir, &local.git_auth, None).map(|_| ())
+    let fetch = || git::run(&["fetch", "--no-tags", &local.remote, &head, &base], &local.dir, &local.git_auth, None).map(|_| ());
+    fetch().or_else(|_| fetch())
+}
+
+/// The fetch lock of the repository `dir` is in, keyed by its git common dir (looked up once per folder).
+fn repo_lock(dir: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    use std::sync::{Arc, LazyLock, Mutex};
+    static COMMON: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+    static LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
+    let known = COMMON.lock().unwrap().get(dir).cloned();
+    let common = known.unwrap_or_else(|| {
+        let c = git::run(&["rev-parse", "--path-format=absolute", "--git-common-dir"], dir, &[], None).ok()
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| dir.to_string());
+        COMMON.lock().unwrap().insert(dir.to_string(), c.clone());
+        c
+    });
+    LOCKS.lock().unwrap().entry(common).or_default().clone()
 }
 
 // MARK: - Viewed
@@ -513,6 +535,35 @@ mod tests {
             base: BranchRef { ref_: "main".into(), sha: "0".into(), label: None },
             ..Default::default()
         }
+    }
+
+    /// Eight fetches of one PR from two worktrees of a repository at once all succeed, under one lock.
+    #[test]
+    fn concurrent_fetch_heads_succeed() {
+        let root = std::env::temp_dir().join(format!("loupe-fetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |args: &str| assert!(std::process::Command::new("sh").arg("-c").arg(args).current_dir(&root).env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+            .status().unwrap().success(), "{args}");
+        sh("git init -q -b main up && cd up && git commit -q --allow-empty -m a && git commit -q --allow-empty -m b && git update-ref refs/pull/1/head HEAD && git reset -q --hard HEAD~1");
+        sh("git clone -q up a && cd a && git worktree add -q ../b");
+        let rev = |r: &str| String::from_utf8(std::process::Command::new("git").args(["-C", root.join("up").to_str().unwrap(), "rev-parse", r]).output().unwrap().stdout).unwrap().trim().to_string();
+        let mut p = pr(1);
+        p.head.sha = rev("refs/pull/1/head");
+        p.base.sha = rev("main");
+        let ok: Vec<bool> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|i| {
+                let (p, dir) = (p.clone(), root.join(if i % 2 == 0 { "a" } else { "b" }).to_string_lossy().into_owned());
+                s.spawn(move || fetch_head(&p, &LocalCheckout { dir, remote: "origin".into(), git_auth: vec![] }, None).is_ok())
+            }).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        // The worktrees share one lock; another repository has its own.
+        let l = |d: &str| repo_lock(root.join(d).to_str().unwrap());
+        assert!(std::sync::Arc::ptr_eq(&l("a"), &l("b")) && !std::sync::Arc::ptr_eq(&l("a"), &l("up")));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(ok.iter().all(|&b| b), "{ok:?}");
     }
 
     #[test]

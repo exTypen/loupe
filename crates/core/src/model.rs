@@ -99,8 +99,9 @@ impl AppState {
         self.worktrees.iter().find(|(_, w)| w.iter().any(|w| w.path == worktree)).map(|(r, _)| r.as_str())
     }
 
-    pub fn worktree_with_branch(&self, branch: &str) -> Option<&Worktree> {
-        self.worktrees.values().flatten().find(|w| w.branch.as_deref() == Some(branch))
+    /// `repo`'s worktree on `branch`. Only that repository's: PR #5's pr/5 means nothing in another one.
+    pub fn worktree_with_branch(&self, repo: &str, branch: &str) -> Option<&Worktree> {
+        self.worktrees.get(repo)?.iter().find(|w| w.branch.as_deref() == Some(branch))
     }
 
     /// Selects a worktree; returns the one selected before. Only the shown worktree keeps its big, quick-to-rebuild
@@ -137,9 +138,15 @@ impl AppState {
     }
 
     pub fn add_space(&mut self) -> String {
+        let id = self.add_space_without_switch();
+        self.switch_space(&id);
+        id
+    }
+
+    /// Settings' "+": a new empty space, while the main window stays on the current one.
+    pub fn add_space_without_switch(&mut self) -> String {
         let id = new_id();
         self.spaces.push(Space { id: id.clone(), name: format!("Space {}", self.spaces.len() + 1), repos: vec![], selection: None });
-        self.switch_space(&id);
         id
     }
 
@@ -232,26 +239,40 @@ pub fn add_worktree(repo: &Path, path: &str, branch: &str, base: &str, new_branc
     git::run(repo, a).map(drop)
 }
 
-/// New Worktree with an existing branch: "origin/x" with no local x makes a local x tracking it.
-pub fn add_worktree_for_branch(repo: &Path, path: &str, branch: &str, base: &str, new_branch: bool, branches: &[String]) -> Result<()> {
-    if !new_branch && branch.contains('/') && branches.iter().any(|b| b == branch) && !git::is_local_branch(repo, branch) {
-        let local = branch.split_once('/').unwrap().1;
-        return add_worktree(repo, path, local, branch, true);
+/// New Worktree with an existing branch: a remote "origin/x" makes a local x tracking it, or checks out x when it
+/// already exists (Swift ran `-b x` there too and failed with "a branch named 'x' already exists").
+pub fn add_worktree_for_branch(repo: &Path, path: &str, branch: &str, base: &str, new_branch: bool) -> Result<()> {
+    if !new_branch && !git::is_local_branch(repo, branch) {
+        let remotes: Vec<String> = git::remotes(repo).into_iter().map(|r| r.0).collect();
+        if let Some(local) = remote_branch_local_name(&remotes, branch) {
+            return if git::is_local_branch(repo, &local) { add_worktree(repo, path, &local, "", false) }
+                else { add_worktree(repo, path, &local, branch, true) };
+        }
     }
     add_worktree(repo, path, branch, base, new_branch)
 }
 
-/// Where a new worktree for `branch` goes: beside the repository, "<repo>-<branch>".
+/// "origin/feature/x" → "feature/x": the branch after the longest remote name that prefixes it (a remote's name may
+/// itself contain "/"). None when no remote does.
+pub fn remote_branch_local_name(remotes: &[String], branch: &str) -> Option<String> {
+    remotes.iter().filter(|r| branch.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).map(|r| branch[r.len() + 1..].to_string())
+}
+
+/// Where a new worktree for `branch` goes: beside the repository, "<repo>-<branch, / → ->"; a leading "origin/" is
+/// dropped. Swift cut "origin-" anywhere, so "fix-origin-check" became "fix-check". ponytail: only "origin" is known
+/// here (a pure function); callers that list remotes pass `remote_branch_local_name` instead.
 pub fn suggest_worktree_path(repo: &str, branch: &str) -> String {
     let p = Path::new(repo);
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let slug = if branch.is_empty() { "worktree".to_string() } else { branch.replace('/', "-").replace("origin-", "") };
+    let slug = if branch.is_empty() { "worktree".to_string() } else { branch.strip_prefix("origin/").unwrap_or(branch).replace('/', "-") };
     p.parent().unwrap_or(Path::new("/")).join(format!("{name}-{slug}")).to_string_lossy().into_owned()
 }
 
+/// `git worktree remove [-f -f]`: a locked worktree needs the flag twice (Swift passed one, so Force Remove of a
+/// locked worktree always failed).
 pub fn remove_worktree(repo: &Path, path: &str, force: bool) -> Result<()> {
     let mut a = vec!["worktree", "remove"];
-    if force { a.push("--force") }
+    if force { a.extend(["-f", "-f"]) }
     a.push(path);
     git::run(repo, a)?;
     forget(Path::new(path));
@@ -864,5 +885,38 @@ mod tests {
     fn suggests_a_sibling_worktree_path() {
         assert_eq!(suggest_worktree_path("/src/loupe", "origin/feat/x"), "/src/loupe-feat-x");
         assert_eq!(suggest_worktree_path("/src/loupe", ""), "/src/loupe-worktree");
+        assert_eq!(suggest_worktree_path("/src/loupe", "fix-origin-check"), "/src/loupe-fix-origin-check");
+    }
+
+    #[test]
+    fn worktrees_for_remote_branches_and_locked_removal() {
+        let d = repo();
+        let dir = d.path();
+        std::fs::write(dir.join("a"), "a").unwrap();
+        commit_all(dir, "a");
+        // A fake remote-tracking branch "origin/x" next to a local "x", and "origin/y" with no local y.
+        git::run(dir, ["remote", "add", "origin", "https://example.invalid/r.git"]).unwrap();
+        for r in ["refs/remotes/origin/x", "refs/remotes/origin/y", "refs/heads/x"] { git::run(dir, ["update-ref", r, "HEAD"]).unwrap(); }
+        let base = d.path().parent().unwrap().join(format!("{}-wt", d.path().file_name().unwrap().to_string_lossy()));
+        let (px, py) = (format!("{}-x", base.display()), format!("{}-y", base.display()));
+        add_worktree_for_branch(dir, &px, "origin/x", "", false).unwrap();
+        add_worktree_for_branch(dir, &py, "origin/y", "", false).unwrap();
+        let wts = git::worktrees(dir).unwrap();
+        let branch = |p: &str| wts.iter().find(|w| Path::new(&w.path).canonicalize().ok() == Path::new(p).canonicalize().ok()).and_then(|w| w.branch.clone());
+        assert_eq!(branch(&px).as_deref(), Some("x"));
+        assert_eq!(branch(&py).as_deref(), Some("y"));
+        git::run(dir, ["worktree", "lock", &px]).unwrap();
+        assert!(remove_worktree(dir, &px, false).is_err());
+        remove_worktree(dir, &px, true).unwrap();
+        remove_worktree(dir, &py, false).unwrap();
+        assert!(!Path::new(&px).exists() && !Path::new(&py).exists());
+    }
+
+    #[test]
+    fn remote_branches_know_their_local_name() {
+        let r = vec!["origin".to_string(), "up/stream".to_string()];
+        assert_eq!(remote_branch_local_name(&r, "origin/feature/x").as_deref(), Some("feature/x"));
+        assert_eq!(remote_branch_local_name(&r, "up/stream/x").as_deref(), Some("x"));
+        assert_eq!(remote_branch_local_name(&r, "feature/x"), None);
     }
 }

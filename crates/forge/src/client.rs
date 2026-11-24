@@ -53,6 +53,12 @@ fn etags() -> &'static EtagCache {
     C.get_or_init(Default::default)
 }
 
+/// Base URL → is a Gitea server (not Forgejo), from GET /version.
+fn gitea_servers() -> &'static Mutex<HashMap<String, bool>> {
+    static S: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
 fn encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -83,8 +89,21 @@ impl Client {
         if base == "https://github.com" { "https://api.github.com".into() } else { format!("{base}/api/v3") } // Enterprise Server
     }
 
+    /// "GitHub", "Gitea" or "Forgejo": what errors call the server.
     pub fn server_name(&self) -> &'static str {
-        if self.github { "GitHub" } else { "Forgejo" }
+        if self.github { "GitHub" } else if self.is_gitea() { "Gitea" } else { "Forgejo" }
+    }
+
+    /// Gitea and Forgejo share API v1; only GET /version tells them apart, so it's asked once per server (on its
+    /// first error, unless CI already read it). Swift called a Gitea server "Forgejo" (FLOWS.md §14 Forgejo.swift:208).
+    pub fn is_gitea(&self) -> bool {
+        if self.github { return false }
+        let key = self.base_url.trim_matches('/').to_string();
+        if let Some(&g) = gitea_servers().lock().unwrap().get(&key) { return g }
+        // Until it answers, Forgejo: the request below may fail and name the server itself.
+        gitea_servers().lock().unwrap().insert(key, false);
+        Self { cancel: None, ..self.clone() }.server_version();
+        gitea_servers().lock().unwrap().get(self.base_url.trim_matches('/')).copied().unwrap_or(false)
     }
 
     /// Page-size parameter: Forgejo `limit`, GitHub `per_page`.
@@ -495,7 +514,12 @@ impl Client {
         struct V {
             version: String,
         }
-        self.get::<V>("/version", &[]).ok().map(|v| v.version)
+        let v = self.get::<V>("/version", &[]).ok().map(|v| v.version);
+        if !self.github && let Some(v) = &v {
+            let gitea = crate::ci::CiFeatures::detect(false, Some(v)).forge == crate::ci::Forge::Gitea;
+            gitea_servers().lock().unwrap().insert(self.base_url.trim_matches('/').to_string(), gitea);
+        }
+        v
     }
 
     fn page_size(&self) -> Query<'static> {
@@ -705,6 +729,28 @@ mod tests {
         assert_eq!(fj["comments"][0]["new_position"], 3);
         assert!(fj["comments"][0]["old_position"].is_null());
         assert_eq!(fj["comments"][1]["old_position"], 7);
+    }
+
+    /// A one-request-per-connection HTTP server answering every GET with `body`.
+    fn serve(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || for mut c in l.incoming().flatten() {
+            let mut b = [0u8; 4096];
+            let _ = c.read(&mut b);
+            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        url
+    }
+
+    #[test]
+    fn gitea_servers_are_named_gitea() {
+        assert_eq!(Client::new(&serve(r#"{"version":"1.26.0"}"#), "t", false).server_name(), "Gitea");
+        assert_eq!(Client::new(&serve(r#"{"version":"11.0.1+gitea-1.22.0"}"#), "t", false).server_name(), "Forgejo");
+        // Unreachable: Forgejo, as before.
+        assert_eq!(Client::new("http://127.0.0.1:1", "t", false).server_name(), "Forgejo");
+        assert_eq!(Client::new("https://github.com", "t", true).server_name(), "GitHub");
     }
 
     #[test]

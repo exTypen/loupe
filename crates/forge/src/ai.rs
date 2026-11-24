@@ -227,12 +227,21 @@ fn paths_cell() -> &'static Mutex<Option<HashMap<String, String>>> {
 
 /// Looks the CLIs up (again: Settings' "Look Again"). Blocking. harness id → executable.
 pub fn scan() -> HashMap<String, String> {
-    let names: Vec<&str> = HARNESSES.iter().flat_map(|h| h.binaries.iter().copied()).collect();
-    let found = locate(&names);
-    let p: HashMap<String, String> =
-        HARNESSES.iter().filter_map(|h| h.binaries.iter().find_map(|b| found.get(*b)).map(|path| (h.id.to_string(), path.clone()))).collect();
+    let p = flows_override().unwrap_or_else(|| {
+        let names: Vec<&str> = HARNESSES.iter().flat_map(|h| h.binaries.iter().copied()).collect();
+        let found = locate(&names);
+        HARNESSES.iter().filter_map(|h| h.binaries.iter().find_map(|b| found.get(*b)).map(|path| (h.id.to_string(), path.clone()))).collect()
+    });
     *paths_cell().lock().unwrap() = Some(p.clone());
     p
+}
+
+/// Scenario runs only (LOUPE_STRESS set): LOUPE_FLOWS_AI=<path> is the one CLI found, as Claude. The flows fixture
+/// has a stub there, and /opt/homebrew/bin/claude (not logged in under the fixture's HOME) would be found first.
+fn flows_override() -> Option<HashMap<String, String>> {
+    std::env::var_os("LOUPE_STRESS")?;
+    let p = std::env::var("LOUPE_FLOWS_AI").ok().filter(|p| !p.is_empty())?;
+    Some(HashMap::from([("claude".to_string(), p)]))
 }
 
 /// What the last [`scan`] found; None before the first scan finished.

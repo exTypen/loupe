@@ -35,7 +35,7 @@ dropped when its key moves or another worktree is selected.
 | CH-18 | Context menu items in order | same items/order, Git LFS submenu; shots `swift-ctxmenu.png`, `gpui-ctxmenu.png`. Stage/Discard aren't offered for conflicted files | fixed-swift-bug (§14 Changes: conflicted files staged / discarded) |
 | CH-19 | Reveal in Finder / Open / Copy Path(s) | `open -R`, `open_with_system`, newline-joined paths | same |
 | CH-20 | Context Blame / File History set the panel | `open_panel` sets (not toggles) | same |
-| CH-21 | Submodule pane, LFS object view, lock badges | same; shots `swift-submodule.png` / `gpui-submodule.png`, `swift-lfs.png` / `gpui-lfs.png`. Lock badges also show in a worktree that refreshed while a sibling asked the server (`share_lfs_locks`) | same |
+| CH-21 | Submodule pane, LFS object view, lock badges | same; shots `swift-submodule.png` / `gpui-submodule.png`, `swift-lfs.png` / `gpui-lfs.png`. Lock badges also show in a worktree that refreshed while a sibling asked the server: `WorktreeModel::load_lfs_locks` hands its answer to the repository's other worktrees (i-core: billing's hero.psd and banner.png locked, `/tmp/flows-i-core/g-billing.png`) | same |
 | CH-22 | Stage `add -A`, undo "Stage x", no toast | `WorktreeModel::stage` (core recipe) | same |
 | CH-23 | Space stages the unstaged part / unstages all-staged; conflicted gets staged | same, but conflicted files are left out | fixed-swift-bug (§14 Changes: conflicted files can be staged with markers) |
 | CH-24 | Stage All (unstaged, no conflicts) | same | same |
@@ -133,9 +133,9 @@ dropped when its key moves or another worktree is selected.
 | DV-45 | Resize clamp | renderer | same (renderer) |
 | LF-01 | Detection from .gitattributes / lfs/objects | core `LfsState::check` | same |
 | LF-02 | "git-lfs isn't installed" banner, Copy Command, Dismiss (global) | same text, `lfsMissingBannerDismissed` | same |
-| LF-03 | LFS object view Before → After, sizes, oids | same; shots `swift-lfs.png`, `gpui-lfs.png`. The headline has no drive icon (renderer draws it) | same |
+| LF-03 | LFS object view Before → After, sizes, oids | same; shots `swift-lfs.png`, `gpui-lfs.png`. The headline has the drive icon (LFS.swift:242 `externaldrive`; `/tmp/flows-i-core/g-lf03.png`) | same |
 | LF-04 | Thumbnails ≤ 720 px, "Not downloaded" | same in Compact; also in the Full tab (was "Not downloaded" before this branch's fix) | same |
-| LF-05 | Locks once a minute per repository | core cache; plus siblings share the answer they already have | same |
+| LF-05 | Locks once a minute per repository | core cache; the worktree that asked hands the answer to its siblings (`load_lfs_locks`) | same |
 | LF-06 | Lock badge with "Locked by <owner> (Git LFS)" | same; shot `gpui-billing-locks.png` vs `swift-billing.png` | same |
 | LF-07 | Track *.ext / Track This File | same submenu | same |
 | LF-08 | Lock/Unlock N Files, reload at once | same (`lfs_lock` then `load_locks`) | same |
@@ -161,8 +161,8 @@ dropped when its key moves or another worktree is selected.
 
 ## Requests
 
-- `WorktreeModel::load_lfs_locks` should hand its answer to the repository's other worktrees (they got the
-  placeholder while it ran). Worked around in `ChangesView::share_lfs_locks`.
+- Done (i-core): `WorktreeModel::load_lfs_locks` hands its answer to the repository's other worktrees, so
+  `ChangesView::share_lfs_locks` is now redundant and can go.
 - `AppEvent::ShowStashes { worktree }` so the "N stashes" link opens History on the Stashes scope (SS-04).
 - History owner: call `views::changes::stash::WorktreeModel::stash_op` for Apply / Pop / Drop.
 - Integrator: ⌘Z with focus in a text field should be the field's undo (CH-31 edge).

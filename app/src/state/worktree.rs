@@ -143,15 +143,31 @@ impl WorktreeModel {
         cx.notify();
     }
 
-    /// LFS locks are asked once a minute per repository (LfsState decides when), off to the side.
+    /// LFS locks are asked once a minute per repository (LfsState decides when), off to the side. The answer goes to
+    /// the repository's other worktrees too: one that refreshed while this request ran only got the placeholder
+    /// (empty) answer, so its lock badges stayed off until the next minute.
     fn load_lfs_locks(&mut self, cx: &mut Context<Self>) {
         let path = self.state.path.clone();
         let key = self.state.lfs.key(&path);
-        let (app, remote, p) = (self.app.clone(), self.remote.clone(), self.path_str());
+        let (app, remote, p, repo) = (self.app.clone(), self.remote.clone(), self.path_str(), self.repo.clone());
         cx.spawn(async move |this, cx| {
             let env = app.read_with(cx, |a, _| a.git_auth(remote.as_ref(), &p)).unwrap_or_default();
-            let ans = cx.background_executor().spawn(async move { lfs::load_locks(&path, &key, &env) }).await;
-            this.update(cx, |m, cx| { m.state.lfs.apply_locks(ans); cx.notify() }).ok();
+            let k = key.clone();
+            let ans = cx.background_executor().spawn(async move { lfs::load_locks(&path, &k, &env) }).await;
+            this.update(cx, |m, cx| { m.state.lfs.apply_locks(ans.clone()); cx.notify() }).ok();
+            let Some((locks, supported)) = ans else { return };
+            let me = this.entity_id();
+            let others = app.read_with(cx, |a, _| a.worktrees_of(&repo).iter().filter_map(|w| a.model(&w.path)).filter(|o| o.entity_id() != me).collect::<Vec<_>>()).unwrap_or_default();
+            for o in others {
+                o.update(cx, |w, cx| {
+                    let l = &mut w.state.lfs;
+                    if l.common_dir.as_deref() == Some(key.as_str()) && (l.locks != locks || l.locking_supported != supported) {
+                        l.locks = locks.clone();
+                        l.locking_supported = supported;
+                        cx.notify();
+                    }
+                });
+            }
         }).detach();
     }
 

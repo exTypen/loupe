@@ -57,7 +57,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-17 | ⇧⌘V / `v`: mark viewed, next unviewed | Same (g-pd17b.png: Payment.java dimmed, Session.java selected, "1 of 52") | same |
 | PD-18 | ⌥↓ / ⌥↑ next/previous, clamped | Same (`PullFiles::move_by`) | same |
 | PD-19 | Compact/Full writes global `prFullMode`; the pane follows only while Files is mounted | The detail observes the app's `full_mode`, so it follows from any tab | fixed-swift-bug (§14 PR, PLAUSIBLE: `pull.fullMode` sync gap) |
-| PD-20 | Full: fetch head, `ls-tree`, untouched folders start collapsed (s-pd20.png) | Same (g-pd20.png). Fetches of the PR head are now serialized and retried once: Full mode's tree, file and Overview raced into "cannot lock ref" | same |
+| PD-20 | Full: fetch head, `ls-tree`, untouched folders start collapsed (s-pd20.png) | Same (g-pd20.png). Fetches of the PR head are now serialized per repository and retried once inside `pull::fetch_head` (test `concurrent_fetch_heads_succeed`): Full mode's tree, file and Overview raced into "cannot lock ref" | same |
 | PD-21 | Whole file via `git diff -U1000000 base...head` or `git show`; the spinner stays on failure | Same commands; a failure shows "Can't Load the File" with Retry (g-pd21.png) | fixed-swift-bug (§14 PR: "if `loadFull` fails, the file pane spins forever") |
 | PD-22 | Tab bar, close, context menu with Copy Path | `ui::tabs::tab_bar` (shared) with the same menu | same |
 | PD-23 | Reveal from Overview/Conversation, turns Full on for unchanged files | Same (`reveal`) | same |
@@ -69,7 +69,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-29 | Merge menu Merge/Rebase/Squash, disabled when not mergeable, "<Style> #N into base?" | Same menu, tooltip and confirmation (g-pd29a.png, g-pd29.png); body `{"Do":"merge"}` in forge.log | same |
 | PD-30 | After a merge: back, fetch base, History on `<remote>/<base>` with the merge selected | Leaves the PR, fetches `main`, emits `ShowBranch` (g-pd30.png: History tab shown; History itself is still the history agent's stub here) | same |
 | PD-31 | Merge rejected: "Forgejo 405: …" alert, stays on the PR | Same (g-pd31.png) | same |
-| PD-32 | `cat-file -e`, then fetch `refs/pull/N/head` and the base | `pull::fetch_head`, one at a time per app, retried once | same |
+| PD-32 | `cat-file -e`, then fetch `refs/pull/N/head` and the base | `pull::fetch_head`, one at a time per repository (git common dir), retried once; the view's mutex + retry wrapper is now redundant | same |
 | PD-33 | Alert titled "Forgejo" (also on GitHub), OK clears | Titled by the server (`client.server_name()`), OK clears (g-pd31.png) | fixed-swift-bug (§14 PR: "the detail alert is titled Forgejo for GitHub accounts too") |
 
 ## Conversation and review

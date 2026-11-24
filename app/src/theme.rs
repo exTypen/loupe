@@ -28,6 +28,12 @@ pub fn blue() -> Hsla { c(0x3b82f6) }            // unread / active dot, links, 
 pub fn green() -> Hsla { c(0x3fb950) }           // success, "Done", added
 pub fn red() -> Hsla { c(0xf85149) }             // failure, removed, destructive
 pub fn purple() -> Hsla { c(0xa371f7) }          // merged
+pub fn teal() -> Hsla { c(0x2bb5a5) }            // merge editor: the same change on both sides (MG-05)
+pub fn orange() -> Hsla { c(0xf0883e) }          // conflicts: tints, the operation banner, conflict icons
+// Muted tile tints (lens tiles): low saturation, so a strip of them doesn't shout over the accents above.
+pub fn brown() -> Hsla { c(0xa8825e) }
+pub fn indigo() -> Hsla { c(0x7c83f0) }
+pub fn gray() -> Hsla { c(0x8b949e) }
 
 // Diff tints over card().
 pub fn added_bg() -> Hsla { ca(0x2ea04326) }
