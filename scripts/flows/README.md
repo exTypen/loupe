@@ -31,7 +31,18 @@ change the served repos, and only `--reset` undoes those.
 export LOUPE_STRESS=<out>/scenario.json   # the scenario below
 export HOME=<out>/home                    # .gitconfig with user Alice Mock and the LFS filters
 export GIT_CONFIG_NOSYSTEM=1
+export LOUPE_FLOWS_AI=<out>/home/.local/bin/claude   # GPUI only: the stub AI CLI (see below)
 ```
+
+Settings never mix between fixtures or with the real app: the GPUI app's scenario domain is
+`dev.extypen.loupe.flows-gpui.<out folder name>` and run-swift.sh gives each `<out>/LoupeFlows.app` the bundle id
+`dev.extypen.loupe.flows.<out folder name>` (a prebuilt copy dropped in `<out>` is only re-signed). Both are wiped at
+launch, so two agents on two fixtures no longer flip each other's tab or Full mode.
+
+Both apps run the same StressDriver steps from the scenario's `"steps"` (worktrees, tabs, tabsonly, idle, history,
+bigfile, prs, hugepr, mergepr, checks, merge, create, rebase, stashes, submodule) and print the same
+`LOUPE_STRESS <event> t=` lines; copy scenario.json, set `"steps"`, and point LOUPE_STRESS at the copy (keep it in
+`<out>`, so it gets the same settings domain).
 
 `scenario.json` is a `StressDriver.Scenario` (Sources/Loupe/StressDriver.swift). With `"steps": []` the Swift driver
 does three things. It wipes the copy's defaults and writes one space, "Default", holding `repos`. It holds the account
@@ -128,6 +139,21 @@ closed.
 A third repo whose remote (`git.example.invalid`) has **no account**: no PRs and no CI ("No Remote"/no-account
 flows). It has k8s multi-document YAML, RBAC, a Helm template with `{{ }}` and `|`/`>` scalars, and two CRDs, with
 a commit adding the same field to both CRDs plus a type change. It also has an unstaged edit.
+
+### Extra conflict repos: `repos/extra/*` (merge-fixture.sh)
+
+One small repo per stopped state, for the merge editor (MG-01..26); not in `repos` (add them to scenario.json's
+`repos`, or open them): `merge-plain` (3 conflicts with merged regions, CRLF, no final newline, `merge.guitool` a stub
+that sleeps 1 s and copies theirs), `merge-diff3` (diff3 style, `merge.tool=vimdiff`), `rebase`, `cherry`, `revert`,
+`resolved` (staged, waiting for Continue), `outside` (edited after the stop) and `special` (add/add, delete/modify both
+ways, rename/delete, binary, symlink, submodule). Paths are in scenario.json `fixture.extra`.
+
+### Stub AI CLI: `home/.local/bin/claude`
+
+A fake Claude Code: a fenced "merged by AI: both changes" for a conflict prompt, a fixed commit message otherwise,
+nothing when `<out>/ai-empty` exists; calls are logged to `<out>/ai-calls.log`. The apps find /opt/homebrew/bin/claude
+first, so the GPUI app takes the stub only through `LOUPE_FLOWS_AI` (a scenario-run override in loupe_forge::ai); the
+Swift app can't be pointed at it.
 
 ### Pull requests on acme/app (17 open, 21 closed or merged)
 
@@ -239,7 +265,7 @@ create payloads can be checked.
 | RW-05: origin/x without local x, origin/y with local y, taken path, checked-out branch | ✓ origin/feat/*, origin/feature/*, `app-existing`, any worktree branch |
 | RW-06, RW-07: dirty and locked; removed and prunable | ✓ app-billing, app-search; app-gone (prunable); removing one via `git worktree remove` is a test step |
 | ST-14: `/user`, 401 for a bad token, unreachable URL | ✓ /user, 401; unreachable = any closed port; ✗ GitHub-mode `/user` |
-| ST-15, ST-03–06, CM-08–12, MG-17, PC-11: `gh` and AI CLIs on PATH | ✗ Loupe looks in /opt/homebrew/bin and the real home first (homeDirectoryForCurrentUser ignores `$HOME`), so a stub in `<out>/home` can't win; needs a PATH-isolated run |
+| ST-15, ST-03–06, CM-08–12, MG-17, PC-11: `gh` and AI CLIs on PATH | ◐ GPUI: the stub `home/.local/bin/claude` through `LOUPE_FLOWS_AI`; Swift looks in /opt/homebrew/bin and the real home first (homeDirectoryForCurrentUser ignores `$HOME`), so it can't win there; `gh` still needs a PATH-isolated run |
 | UP-01–04: appcast | ✗ updates are out of scope (the copy has no feed) |
 | MS-01–09: memtest scenario | n/a: that is scripts/memtest |
 | CH-01–03: ahead 2, behind fast-forward, diverged | ✓ app-router ↑6, lib ↓2 (ff), app main ↑2↓5 (diverged) |
@@ -252,7 +278,7 @@ create payloads can be checked.
 | CM-03–06: pushed commit, failing pre-commit, stopped merge | ✓ app-search HEAD is pushed; `.fail-pre-commit` in app-spike; app-sessions |
 | CM-07: interactive rebase at an `edit` stop | ✓ lib-ct |
 | SS-01–10: 3 stashes, one with untracked, one conflicting | ✓ app |
-| MG-01–03: merge, cherry-pick, revert, rebase with conflicts, all resolved, edit stop | ◐ merge (app-sessions), cherry-pick (app-cherry), edit stop (lib-ct); ✗ revert and rebase-with-conflicts stops (reproduce with app-router reorder) |
+| MG-01–03: merge, cherry-pick, revert, rebase with conflicts, all resolved, edit stop | ✓ merge (app-sessions, extra/merge-plain, extra/merge-diff3), cherry-pick (app-cherry, extra/cherry), revert and rebase stops (extra/revert, extra/rebase), all resolved (extra/resolved), edit stop (lib-ct) |
 | MG-04–13: one file with 3 conflicts and clean regions; diff3 | ◐ `db.rs` has 2 conflicts and merged regions; ✗ 3-conflict file, diff3 variant |
 | MG-16, MG-18, MG-21, MG-23–25: guitool, external edits, rename/delete, symlink, submodule, CRLF conflicts | ✗ |
 | MG-19, MG-20, MG-22: add/add, delete/modify, binary | ✓ app-sessions (delete/modify in one direction only) |

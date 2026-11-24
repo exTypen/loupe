@@ -3573,7 +3573,7 @@ I read every line of History.swift (698 lines), InteractiveRebase.swift (573) an
   - Empty result: "No Matches" (icon `magnifyingglass`).
   - Rebase drag-and-drop and the rebase context-menu section are disabled while the field is non-empty.
 - **Reaction:**
-  - Runs `git log … -i --grep=<s> --author=<s> <revs> --`. Git ORs the two conditions; matching is case-insensitive.
+  - Runs `git log … -i --grep=<s> --author=<s> <revs> --`. Git ANDs the two conditions (a commit must match both; see §14); matching is case-insensitive.
   - Paging still applies.
   - In the Stashes scope, the filter matches the subject.
 - **Edge cases:**
@@ -6126,6 +6126,7 @@ These were found while tracing. A GPUI port can fix them, but then the side-by-s
 11. FileInspector.swift:195 against History.swift:572-574. The File History panel opened from a commit's diff ignores `FileTarget.rev` and logs from HEAD. Blame honors `rev`.
 12. History.swift:313. During the first load the list is empty and `loading` is true, so the list is blank and there is no spinner.
 13. The vault is stale. The vault says "300 commits per page"; the code uses 100 (History.swift:154). The vault also says "Not built yet: … a commit graph", which is outdated: the graph exists (History.swift:80-131).
+14. HI-11, History.swift (search): `git log -i --grep=<s> --author=<s>` ANDs the two conditions, so a search only finds commits whose message *and* author both match: "carol" finds nothing unless Carol's commit messages say "carol". The field's tooltip "Commit message or author" promises OR. The GPUI app does the same, for parity (docs/gpui/parity/history.md HI-11).
 
 ## Pull Requests
 

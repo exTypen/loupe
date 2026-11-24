@@ -11,6 +11,7 @@ if [ "$1" = --reset ]; then shift; "$DIR/down.sh" "$OUT" >/dev/null 2>&1 || true
 [ -f "$OUT/scenario.json" ] || python3 "$DIR/mkflows.py" "$OUT" --port "${FLOWS_PORT:-8790}"
 URL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["forge"])' "$OUT/scenario.json")
 PORT=${URL##*:}
+AI=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fixture"].get("ai", ""))' "$OUT/scenario.json")
 if curl -sf -m 2 "$URL/_mock" >/dev/null 2>&1; then
   echo "mock forge already running on $URL"
 elif curl -s -m 2 -o /dev/null "$URL/" 2>/dev/null; then
@@ -28,5 +29,7 @@ Environment for an app (the Swift copy via run-swift.sh, or the GPUI app):
   export LOUPE_STRESS=$OUT/scenario.json
   export HOME=$OUT/home
   export GIT_CONFIG_NOSYSTEM=1
+  export LOUPE_FLOWS_AI=$AI   # GPUI only: the stub Claude (scenario runs)
+Settings: GPUI dev.extypen.loupe.flows-gpui.$(basename "$OUT" | LC_ALL=C tr -c 'A-Za-z0-9-\n' '-'), Swift copy dev.extypen.loupe.flows.<same> (both wiped at launch).
 Account: $URL, user alice, token flows-token (from scenario.json).
 MSG

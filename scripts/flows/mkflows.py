@@ -1544,6 +1544,30 @@ state = {"me": "alice", "token": "flows-token", "users": users,
 with open(os.path.join(FORGE, "state.json"), "w") as f:
     json.dump(state, f, indent=1)
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Extra conflict repos (merge editor, MG-01..26) and a stub AI CLI.
+# ---------------------------------------------------------------------------------------------------------------------
+log("extra conflict repos")
+subprocess.run(["sh", os.path.join(os.path.dirname(os.path.abspath(__file__)), "merge-fixture.sh"), OUT], env=ENV, check=True, stdout=subprocess.DEVNULL)
+EXTRA = {n: os.path.join(REPOS, "extra", n) for n in ("merge-plain", "merge-diff3", "rebase", "cherry", "revert", "resolved", "outside", "special")}
+# A fake Claude Code: a fenced merge for a conflict prompt, a commit message / PR text otherwise, nothing at all when
+# <out>/ai-empty exists. Every call goes to <out>/ai-calls.log. /opt/homebrew/bin/claude is found before it, so the GPUI
+# app takes it through LOUPE_FLOWS_AI=<this path> (loupe_forge::ai, scenario runs only); the Swift app can't be pointed.
+AI = os.path.join(HOME, ".local", "bin", "claude")
+os.makedirs(os.path.dirname(AI), exist_ok=True)
+with open(AI, "w") as f:
+    f.write(f"""#!/bin/sh
+# Stub Claude Code for the flows fixture (scripts/flows/mkflows.py).
+echo "$0 $*" >> '{OUT}/ai-calls.log'
+p=$(cat)
+[ -f '{OUT}/ai-empty' ] && exit 0
+case "$p" in
+  *onflict*) printf '```\\n  merged by AI: both changes\\n```\\n' ;;
+  *) printf 'Tidy the flows fixture\\n\\nWritten by the stub AI of the flows fixture.\\n' ;;
+esac
+""")
+os.chmod(AI, 0o755)
+
 worktrees = [APP, *WT.values(), LIB, LIBWT, INFRA]
 big_commit = git("log", "-1", "--format=%H", "--", "web/src/generated/schema.gen.ts", cwd=APP)
 scenario = {
@@ -1565,6 +1589,8 @@ scenario = {
                                "closed": [p["number"] for p in pulls if p["state"] == "closed"]},
                   "acme/lib": {"open": [2, 3], "closed": [1, 4]}},
         "hugeCommit": "the commit that added the 20k-line generated file",
+        "extra": EXTRA,   # not in "repos": add them there (or open them) to check the merge editor
+        "ai": AI,         # export LOUPE_FLOWS_AI=<this> for the GPUI app
     },
 }
 with open(os.path.join(OUT, "scenario.json"), "w") as f:
