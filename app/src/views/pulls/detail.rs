@@ -28,14 +28,14 @@ use gpui_kit::{
 };
 use loupe_core::diff as core;
 use loupe_core::file_tree::{self, TreeRow};
-use loupe_forge::ci::Checks;
+use crate::views::ci::{self, ChecksModel};
 use loupe_forge::pull::{self, DiffSource, LocalCheckout, PullFiles, ReviewerState};
 use loupe_forge::{Cancel, Client, DraftComment, IssueComment, MergeStyle, PrCommit, PullRequest, RemoteRepo, Review, ReviewComment, ReviewEvent, User};
 
 use super::{avatar::avatar, overview};
 use crate::diff::{self as rdiff, CodeAction, DiffSide, DiffView};
 use crate::shell::keys::{BackToList, CloseWindow, MarkViewed, NavigateBack, NavigateForward, NextFile, PreviousFile};
-use crate::state::{AppEvent, AppModel, DiffControls, Tab, ViewMode, adapt};
+use crate::state::{AppModel, DiffControls, Tab, ViewMode, adapt};
 use crate::ui::tabs::{self, CodeNav, NavHit, NavResults, TabEvent};
 use crate::{theme, ui};
 
@@ -70,8 +70,8 @@ pub struct PullDetail {
     /// The last load failure: shown once as an alert, then as a mark in the header until a load works again.
     load_error: Option<String>,
     pub last_loaded: Option<Instant>,
-    checks: Checks,
-    _checks: Option<Task<()>>,
+    /// The header's checks (CI-01): ci's shared model for this worktree, held while the PR shows.
+    checks: Option<(Entity<ChecksModel>, Subscription)>,
     pub tab: ViewMode,
     collapsed: HashSet<String>,
     full_collapsed: HashSet<String>,
@@ -171,13 +171,12 @@ impl PullDetail {
             InputEvent::Change => cx.notify(),
             _ => {}
         });
-        let checks = Checks::new(&pr.head.sha);
         let was_full = app.read(cx).full_mode;
         let d = PullDetail {
             app, worktree, pr, client, repo, local, reviews: vec![], conversation: vec![], commits: vec![], comments: vec![],
             data_version: 0, diffs: vec![], index: HashMap::new(), source: DiffSource::default(), files: PullFiles::new(viewed),
-            drafts, loading: false, reload_queued: false, load: None, error: None, load_error: None, last_loaded: None, checks,
-            _checks: None, tab: ViewMode::Files, collapsed: HashSet::new(), full_collapsed: HashSet::new(), rows: None, filter,
+            drafts, loading: false, reload_queued: false, load: None, error: None, load_error: None, last_loaded: None, checks: None,
+            tab: ViewMode::Files, collapsed: HashSet::new(), full_collapsed: HashSet::new(), rows: None, filter,
             adapted: None, diff_view: None, pending_reveal: None, tree: vec![], tree_sha: None, tree_error: None,
             tree_dirs: HashSet::new(), collapse_applied: false, _tree: None, full: HashMap::new(), full_sha: None,
             full_loading: HashSet::new(), nav: CodeNav::default(), nav_results: None, nav_busy: None, nav_task: None,
@@ -213,6 +212,7 @@ impl PullDetail {
         }));
         self.publish_controls(cx);
         self.ensure_full(cx);
+        self.refresh_checks(cx);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) { self.focus.focus(window, cx) }
@@ -226,7 +226,8 @@ impl PullDetail {
         self.reload_queued = false;
         if let Some((c, _)) = self.nav_task.take() { c.store(true, std::sync::atomic::Ordering::Relaxed) }
         self.nav_busy = None;
-        self._checks = None;
+        // Dropping the model cancels its request in flight (unless the overlay still holds it).
+        self.checks = None;
         self._tree = None;
         self.full_loading.clear();
         self.overview.cancel();
@@ -324,17 +325,13 @@ impl PullDetail {
         self.ensure_full(cx);
     }
 
-    /// Every load brings the header's checks up to date too, not only a new push.
+    /// CI-01 / CI-03: when the badge appears and after every load, the shared checks model follows the head and
+    /// refreshes (joining one in flight).
     fn refresh_checks(&mut self, cx: &mut Context<Self>) {
-        self.checks.set_sha(&self.pr.head.sha);
-        let (mut checks, client, repo) = (self.checks.clone(), self.client.clone(), self.repo.clone());
-        self._checks = Some(cx.spawn(async move |this, cx| {
-            let checks = cx.background_executor().spawn(async move { checks.refresh(&client, &repo); checks }).await;
-            this.update(cx, |d, cx| if checks.sha == d.pr.head.sha && checks.summary() != d.checks.summary() || d.checks.checks.is_empty() {
-                d.checks = checks;
-                cx.notify();
-            }).ok();
-        }));
+        if !self.shown { return }
+        let m = ChecksModel::shared(&self.app, &self.worktree, &self.pr.head.sha, Some(self.pr.number as u64), cx);
+        if self.checks.as_ref().is_none_or(|(c, _)| *c != m) { self.checks = Some((m.clone(), cx.observe(&m, |_, _, cx| cx.notify()))) }
+        m.update(cx, |m, cx| { m.refresh(cx); });
     }
 
     // MARK: Files and viewed
@@ -743,8 +740,6 @@ impl PullDetail {
         let review_label = if self.drafts.is_empty() { "Review".to_string() } else { format!("Review ({})", self.drafts.len()) };
         let (wt, n) = (self.worktree.clone(), pr.number as u64);
         let app = self.app.clone();
-        let checks = self.checks.summary();
-        let (wt2, sha2, app2) = (self.worktree.clone(), pr.head.sha.clone(), self.app.clone());
         let states = self.reviewer_states();
         let back = cx.listener(|_, _, _, cx| cx.emit(DetailEvent::Back));
         let load_error = self.load_error.clone();
@@ -788,20 +783,7 @@ impl PullDetail {
                             .child(ui::icon(icon).text_color(color)).child(format!("{n} {label}"))
                     })
                 }))
-                .child(div().id("pr-checks").flex().flex_none().items_center().gap_1().px_1p5().rounded(px(5.)).cursor_pointer().hover(|s| s.bg(theme::hover()))
-                    .tooltip(move |w, cx| Tooltip::new(format!("CI checks — {} passed, {} running, {} queued, {} failing", checks.passed, checks.running, checks.queued, checks.failing)).build(w, cx))
-                    .on_click(move |_, _, cx| app2.update(cx, |a, cx| a.emit(AppEvent::ShowChecks { worktree: wt2.clone(), sha: sha2.clone(), pull: Some(n) }, cx)))
-                    .map(|d| if checks.total == 0 {
-                        d.child(ui::icon("circle-dashed")).child(div().text_color(theme::text_muted()).child("Checks"))
-                    } else {
-                        let item = |icon: &str, n: usize, c| div().flex().items_center().gap_0p5().child(ui::icon(icon).text_color(c)).child(n.to_string());
-                        d.when(checks.failing > 0, |d| d.child(item("circle-x", checks.failing, theme::red())))
-                            // A static dot, never a pulse: a job can run for an hour, and an animation redraws every frame.
-                            .when(checks.running > 0, |d| d.child(item("circle", checks.running, theme::accent())))
-                            .when(checks.queued > 0, |d| d.child(item("circle-dashed", checks.queued, theme::text_muted())))
-                            .child(item("circle-check", checks.passed, theme::green()))
-                            .child(div().text_color(theme::text_muted()).child("checks"))
-                    }))
+                .when_some(self.checks.as_ref().map(|c| c.0.clone()), |d, m| d.child(ci::badge(&m, cx)))
                 .child(div().flex_1()))
             .into_any_element()
     }
