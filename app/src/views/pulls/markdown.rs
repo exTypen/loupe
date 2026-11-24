@@ -182,8 +182,22 @@ pub fn inline(s: &str) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
             i += end + 2;
             continue;
         }
-        // ![alt](url): the alt text
-        if rest.starts_with("![") { i += 1; continue }
+        // ![alt](url): the alt text, plain (as the Swift app shows it)
+        if rest.starts_with("![") && let Some(close) = rest.find("](") && let Some(paren) = rest[close..].find(')') {
+            out.push_str(&rest[2..close]);
+            i += close + paren + 1;
+            continue;
+        }
+        // A bare http(s) URL is a link too, without trailing punctuation.
+        if (rest.starts_with("https://") || rest.starts_with("http://")) && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let url = rest[..end].trim_end_matches(['.', ',', ')', ';', ':']);
+            let start = out.len();
+            out.push_str(url);
+            hl.push((start..out.len(), style(&|h| h.color = Some(theme::blue()))));
+            i += url.len();
+            continue;
+        }
         // [text](url)
         if rest.starts_with('[') && let Some(close) = rest.find("](") && let Some(paren) = rest[close..].find(')') {
             let start = out.len();
@@ -296,5 +310,9 @@ mod tests {
         assert_eq!(&t[h[1].0.clone()], "bold");
         assert_eq!(inline("snake_case_name").0, "snake_case_name");
         assert_eq!(inline("a *b* c").0, "a b c");
+        let (t, h) = inline("see https://acme.example. and ![pic](u)");
+        assert_eq!(t, "see https://acme.example. and pic");
+        assert_eq!(&t[h[0].0.clone()], "https://acme.example");
+        assert_eq!(h.len(), 1);
     }
 }
