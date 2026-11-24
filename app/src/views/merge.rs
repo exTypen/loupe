@@ -276,6 +276,7 @@ impl MergeEditor {
             self.starts = HashMap::from([(Role::Ours, session::line_starts(&t))]);
             self.survivor = Some(make(t, true, window, cx));
         }
+        if self.s.is_none() { self.reveal = true }
         self.loaded = Some(l);
         cx.notify();
     }
@@ -500,8 +501,9 @@ impl MergeEditor {
             "resolve" => self.resolve(None, cx),
             "useours" => self.resolve(Some(ConflictSide::Current), cx),
             "usetheirs" => self.resolve(Some(ConflictSide::Incoming), cx),
-            "abort" => self.model.update(cx, |m, cx| m.finish_operation(true, cx).detach()),
-            "continue" => self.model.update(cx, |m, cx| m.finish_operation(false, cx).detach()),
+            "keep" => if let Some(k) = self.loaded.as_ref().map(|l| l.kind()) { self.resolve(Some(keep_side(k)), cx) },
+            "delete" => self.delete_file(cx),
+            "sub" => if let Some((_, sha)) = arg.parse().ok().and_then(|st: u8| self.loaded.as_ref()?.stages.entries.get(&st).cloned()) { self.use_submodule(sha, cx) },
             "close" => self.close(cx),
             _ => {}
         }
@@ -767,7 +769,7 @@ impl MergeEditor {
                 }
             },
             ConflictKind::DeletedByUs | ConflictKind::DeletedByThem | ConflictKind::AddedByUs | ConflictKind::AddedByThem => {
-                let side = if matches!(kind, ConflictKind::DeletedByThem | ConflictKind::AddedByUs) { ConflictSide::Current } else { ConflictSide::Incoming };
+                let side = keep_side(kind);
                 buttons = buttons
                     .child(ui::pill_primary("keep-file", "Keep File", theme::blue()).on_click(cx.listener(move |v, _, _, cx| v.resolve(Some(side), cx))))
                     .child(ui::pill_primary("delete-file", "Delete File", theme::red()).on_click(cx.listener(|v, _, _, cx| v.delete_file(cx))));
@@ -803,6 +805,11 @@ impl MergeEditor {
     }
 }
 
+/// Keep File takes the side that still has the file.
+fn keep_side(k: ConflictKind) -> ConflictSide {
+    if matches!(k, ConflictKind::DeletedByThem | ConflictKind::AddedByUs) { ConflictSide::Current } else { ConflictSide::Incoming }
+}
+
 /// ByteCountFormatter's .file style: decimal units.
 fn byte_count(b: usize) -> String {
     match b {
@@ -815,12 +822,14 @@ fn byte_count(b: usize) -> String {
 impl Render for MergeEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The panes are laid out now: scroll them to the first conflict (MergeEditor's `.task { focus }`).
-        if self.reveal && self.panes.as_ref().is_some_and(|p| p.result.read(cx).line_height().is_some()) {
+        let laid_out = |p: &Panes| p.result.read(cx).line_height().is_some();
+        if self.reveal && (self.s.is_none() || self.panes.as_ref().is_some_and(laid_out)) {
             self.reveal = false;
             let k = self.s.as_ref().map_or(0, |s| s.current);
             cx.defer_in(window, move |v, w, cx| v.focus_conflict(k, w, cx));
             if let Some(steps) = std::env::var(TEST_STEPS).ok().filter(|_| !self.stepped) {
                 self.stepped = true;
+                let model = self.model.clone();
                 cx.spawn_in(window, async move |this, cx| {
                     // Leaked: Keystroke::parse wants 'static, and this runs once per launch of a test hook.
                     for st in Box::leak(steps.into_boxed_str()).split(',') {
@@ -829,6 +838,11 @@ impl Render for MergeEditor {
                         // there's no real input), e.g. key:enter, key:alt-cmd-down.
                         if let Some(k) = st.strip_prefix("key:").and_then(|k| gpui_kit::Keystroke::parse(k).ok()) {
                             if cx.update(|w, cx| { w.dispatch_keystroke(k, cx); }).is_err() { break }
+                            continue;
+                        }
+                        // The operation's buttons outlive the editor (it closes once the last conflict is resolved).
+                        if st == "abort" || st == "continue" {
+                            model.update(cx, |m, cx| m.finish_operation(st == "abort", cx).detach());
                             continue;
                         }
                         if this.update_in(cx, |v, w, cx| v.step(st, w, cx)).is_err() { break }
