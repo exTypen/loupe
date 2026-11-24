@@ -9,6 +9,7 @@
 //! - nothing runs while the tab is hidden: leaving it cancels the list, detail and whole-file loads;
 //! - only the shown worktree keeps its commit's files; another worktree's come back when it's shown again.
 mod graph;
+mod panel;
 mod rebase;
 mod sheets;
 
@@ -151,6 +152,7 @@ pub struct HistoryView {
     avatars: Avatars,
     /// ShowCommit for a commit not loaded yet: selected when a load brings it.
     pending_select: Option<String>,
+    file_panel: panel::FilePanel,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -170,7 +172,7 @@ impl HistoryView {
         ];
         let mut v = HistoryView {
             app, model: None, logs: HashMap::new(), search, diff: None, whole: HashMap::new(), whole_load: None, whole_key: None, shown: false,
-            last_busy: None, drop_target: None, avatars: Avatars::load(), pending_select: None, focus: cx.focus_handle(), _subs: subs,
+            last_busy: None, drop_target: None, avatars: Avatars::load(), pending_select: None, file_panel: panel::FilePanel::new(), focus: cx.focus_handle(), _subs: subs,
         };
         v.sync(window, cx);
         v
@@ -490,7 +492,7 @@ impl HistoryView {
         cx.notify();
     }
 
-    fn cancel_whole(&mut self) { if let Some((c, _)) = self.whole_load.take() { c.cancel() } }
+    fn cancel_whole(&mut self) { if let Some((c, _)) = self.whole_load.take() { c.cancel() } self.file_panel.cancel() }
 
     /// The diff pane follows the selected file, loading the whole file for Full mode and Before / After; the toolbar
     /// offers Compact/Full while a file shows.
@@ -510,10 +512,14 @@ impl HistoryView {
                 f.view.clone()
             }
         };
+        self.sync_panel(&c, &f, window, cx);
+        let file = self.panel_picked_diff().unwrap_or(file);
+        let blame = self.panel_blame(&c, &f);
         let images = self.lfs_images(&f, cx);
         match &self.diff {
             Some(d) => d.update(cx, |d, cx| {
                 d.set_file(file, cx);
+                d.set_blame(blame, cx);
                 d.set_side(side, cx);
                 d.set_layout(layout, cx);
                 d.set_change_ruler(full, cx);
@@ -521,8 +527,12 @@ impl HistoryView {
             }),
             None => {
                 let app = self.app.clone();
+                let me = cx.entity().downgrade();
                 self.diff = Some(cx.new(|cx| {
                     let mut d = DiffView::new(file, cx);
+                    d.set_blame(blame, cx);
+                    let me = me.clone();
+                    d.header_actions(move |_, cx| HistoryView::header_buttons(&me, cx));
                     d.set_highlighter(Some(adapt::highlighter()), cx);
                     d.set_side(side, cx);
                     d.set_layout(layout, cx);
@@ -829,7 +839,7 @@ impl HistoryView {
             if l.loading { return div().flex_1().flex().items_center().justify_center().child(gpui_kit::component::spinner::Spinner::new().small()).into_any_element() }
             let (icon, title, msg) = if !l.search.is_empty() { ("search", "No Matches", "") }
                 else if l.scope == Scope::Stashes { ("inbox", "No Stashes", "Stash changes from the Changes tab to set them aside.") }
-                else { ("history", "No Commits", "") };
+                else { ("rotate-ccw-clock", "No Commits", "") };
             return div().flex_1().child(ui::empty_state(icon, title, msg)).into_any_element();
         }
         let this = cx.entity();
@@ -962,13 +972,16 @@ impl HistoryView {
     fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(l) = self.log(cx) else { return div().size_full().into_any_element() };
         let Some(c) = l.selected_commit().cloned() else {
-            return div().size_full().child(ui::empty_state("history", "Select a Commit", "")).into_any_element();
+            return div().size_full().child(ui::empty_state("rotate-ccw-clock", "Select a Commit", "")).into_any_element();
         };
         let header = self.render_header(&c, cx);
         let tree = self.render_tree(cx);
         let l = self.log(cx).unwrap();
         let right = match (l.selected_file(), &self.diff) {
-            (Some(_), Some(d)) => div().size_full().p_2().child(d.clone()).into_any_element(),
+            (Some(f), Some(d)) => {
+                let body = self.render_markdown(&c, f).unwrap_or_else(|| d.clone().into_any_element());
+                div().size_full().p_2().child(self.render_file_panel(body, cx)).into_any_element()
+            }
             _ if l.detail_loading => div().size_full().flex().items_center().justify_center().child(gpui_kit::component::spinner::Spinner::new()).into_any_element(),
             _ => div().size_full().into_any_element(),
         };
