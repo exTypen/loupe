@@ -265,7 +265,7 @@ create payloads can be checked.
 | RW-05: origin/x without local x, origin/y with local y, taken path, checked-out branch | ✓ origin/feat/*, origin/feature/*, `app-existing`, any worktree branch |
 | RW-06, RW-07: dirty and locked; removed and prunable | ✓ app-billing, app-search; app-gone (prunable); removing one via `git worktree remove` is a test step |
 | ST-14: `/user`, 401 for a bad token, unreachable URL | ✓ /user, 401; unreachable = any closed port; ✗ GitHub-mode `/user` |
-| ST-15, ST-03–06, CM-08–12, MG-17, PC-11: `gh` and AI CLIs on PATH | ✗ Loupe looks in /opt/homebrew/bin and the real home first (homeDirectoryForCurrentUser ignores `$HOME`), so a stub in `<out>/home` can't win; needs a PATH-isolated run |
+| ST-15, ST-03–06, CM-08–12, MG-17, PC-11: `gh` and AI CLIs on PATH | ◐ GPUI: the stub `home/.local/bin/claude` through `LOUPE_FLOWS_AI`; Swift looks in /opt/homebrew/bin and the real home first (homeDirectoryForCurrentUser ignores `$HOME`), so it can't win there; `gh` still needs a PATH-isolated run |
 | UP-01–04: appcast | ✗ updates are out of scope (the copy has no feed) |
 | MS-01–09: memtest scenario | n/a: that is scripts/memtest |
 | CH-01–03: ahead 2, behind fast-forward, diverged | ✓ app-router ↑6, lib ↓2 (ff), app main ↑2↓5 (diverged) |
@@ -278,7 +278,7 @@ create payloads can be checked.
 | CM-03–06: pushed commit, failing pre-commit, stopped merge | ✓ app-search HEAD is pushed; `.fail-pre-commit` in app-spike; app-sessions |
 | CM-07: interactive rebase at an `edit` stop | ✓ lib-ct |
 | SS-01–10: 3 stashes, one with untracked, one conflicting | ✓ app |
-| MG-01–03: merge, cherry-pick, revert, rebase with conflicts, all resolved, edit stop | ◐ merge (app-sessions), cherry-pick (app-cherry), edit stop (lib-ct); ✗ revert and rebase-with-conflicts stops (reproduce with app-router reorder) |
+| MG-01–03: merge, cherry-pick, revert, rebase with conflicts, all resolved, edit stop | ✓ merge (app-sessions, extra/merge-plain, extra/merge-diff3), cherry-pick (app-cherry, extra/cherry), revert and rebase stops (extra/revert, extra/rebase), all resolved (extra/resolved), edit stop (lib-ct) |
 | MG-04–13: one file with 3 conflicts and clean regions; diff3 | ◐ `db.rs` has 2 conflicts and merged regions; ✗ 3-conflict file, diff3 variant |
 | MG-16, MG-18, MG-21, MG-23–25: guitool, external edits, rename/delete, symlink, submodule, CRLF conflicts | ✗ |
 | MG-19, MG-20, MG-22: add/add, delete/modify, binary | ✓ app-sessions (delete/modify in one direction only) |
