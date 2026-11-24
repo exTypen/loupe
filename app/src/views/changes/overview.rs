@@ -77,7 +77,7 @@ impl ChangesView {
                     let (path, line) = (f.path.clone(), f.line);
                     body = body.child(div().id(("fact", k)).flex().items_center().gap_2().px_1().h(px(24.)).rounded(theme::RADIUS_ROW)
                         .when(path.is_some(), |d| d.cursor_pointer().hover(|s| s.bg(theme::hover())))
-                        .child(ui::badge(f.kind.label()))
+                        .when(f.kind != lens::FactKind::Info, |d| d.child(ui::badge(f.kind.label())))
                         .child(div().flex_none().text_color(theme::text()).child(f.title.clone()))
                         .when_some(f.detail.clone(), |d, t| d.child(div().min_w_0().truncate().text_color(theme::text_muted()).child(t)))
                         .child(div().flex_1())

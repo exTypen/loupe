@@ -115,6 +115,7 @@ impl ChangesView {
                     })),
                 }
                 v.full.file = Some((path, d));
+                v.push_images(cx);
                 v.update(cx);
             }).ok();
         }));

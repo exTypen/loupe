@@ -113,8 +113,8 @@ impl ChangesView {
                         (find(&l.old, None), find(&l.new, disk.as_deref()))
                     }).await;
                     this.update(cx, |v, cx| if v.pane.images.0 == key {
-                        v.pane.images = (key, a.clone(), b.clone());
-                        if let Some(d) = &v.diff { d.update(cx, |d, cx| d.set_images(a, b, cx)) }
+                        v.pane.images = (key, a, b);
+                        v.push_images(cx);
                         cx.notify()
                     }).ok();
                 }));
@@ -135,6 +135,15 @@ impl ChangesView {
                     this.update(cx, |v, cx| if let Some(x) = &mut v.pane.markdown && x.0 == key { x.1 = t; cx.notify() }).ok();
                 }));
             }
+        }
+    }
+
+    /// LF-04: the thumbnails go to the Compact diff and to the Full-mode tab when it shows the same file.
+    pub(crate) fn push_images(&self, cx: &mut Context<Self>) {
+        let (key, a, b) = self.pane.images.clone();
+        if let Some(d) = &self.diff { let (a, b) = (a.clone(), b.clone()); d.update(cx, |d, cx| d.set_images(a, b, cx)) }
+        if let (Some(v), Some((p, _))) = (self.full.view(), self.full.blame_target()) && !key.is_empty() && key.starts_with(&format!("{p} ")) {
+            v.update(cx, |d, cx| d.set_images(a, b, cx))
         }
     }
 
