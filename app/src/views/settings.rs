@@ -186,6 +186,13 @@ impl Settings {
         }));
     }
 
+    /// Leaving a tab stops recording, closes its sheet and drops a model listing still running (reloaded on return).
+    fn leave_tab(&mut self) {
+        self.recording = None;
+        self.adding = None;
+        if self.models_task.take().is_some() { self.ai_key = "\0".into() }
+    }
+
     fn set_pref(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
         prefs::shared().set_string(key, value);
         cx.notify();
@@ -509,7 +516,7 @@ fn picker(id: &'static str, label: impl Into<SharedString>, f: impl Fn(PopupMenu
 
 /// A card's caption: grey, wrapping (a form section's footer).
 fn foot(text: impl Into<SharedString>) -> gpui_kit::Div {
-    div().px_3().py_2().border_t_1().border_color(theme::border()).text_size(px(12.)).text_color(theme::text_muted()).child(text.into())
+    div().w_full().px_3().py_2().border_t_1().border_color(theme::border()).text_size(px(12.)).text_color(theme::text_muted()).child(text.into())
 }
 
 /// A label on the left, its control on the right: a grouped form row.
@@ -540,7 +547,7 @@ impl Render for Settings {
                 .child(div().flex().flex_1().justify_center().pr(px(80.))
                     .child(ui::segmented("settings-tabs", &tabs.map(|t| t.1), sel,
                         // Leaving a tab stops recording and closes its sheet (the Swift monitor ends with the view).
-                        move |i, _, cx| me.update(cx, |s, cx| { s.state.tab = tabs[i].0.into(); s.state.save(); s.recording = None; s.adding = None; cx.notify() })))))
+                        move |i, _, cx| me.update(cx, |s, cx| { s.state.tab = tabs[i].0.into(); s.state.save(); s.leave_tab(); cx.notify() })))))
             .child(div().id("settings-body").flex_1().min_h_0().overflow_y_scroll().p_5().bg(theme::canvas())
                 .border_t_1().border_color(theme::border()).child(body))
             .children(sheet)
