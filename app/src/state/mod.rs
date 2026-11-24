@@ -412,14 +412,20 @@ impl AppModel {
     pub fn refresh_worktrees(&mut self, repo: String, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             let r = repo.clone();
-            let Ok(list) = cx.background_executor().spawn(async move { git::worktrees(Path::new(&r)) }).await else { return };
+            let Ok((list, missing)) = cx.background_executor().spawn(async move {
+                let list = git::worktrees(Path::new(&r))?;
+                // A prunable worktree whose folder is gone gets no model: its watcher and git status would run in a
+                // missing folder.
+                let missing: Vec<String> = list.iter().filter(|w| w.is_prunable && !Path::new(&w.path).exists()).map(|w| w.path.clone()).collect();
+                loupe_core::Result::Ok((list, missing))
+            }).await else { return };
             this.update(cx, |m, cx| {
                 let old = m.state.selection.clone();
                 let gone = m.state.apply_worktrees(&repo, list);
-                for g in &gone { m.models.remove(g); m.status.remove(g); }
+                for g in gone.iter().chain(&missing) { m.models.remove(g); m.status.remove(g); }
                 let paths: Vec<String> = m.worktrees_of(&repo).iter().map(|w| w.path.clone()).collect();
                 let app = cx.entity().downgrade();
-                for p in &paths {
+                for p in paths.iter().filter(|p| !missing.contains(p)) {
                     match m.models.get(p) {
                         Some(wm) => wm.update(cx, |w, cx| { w.set_worktrees(paths.clone()); w.refresh(cx) }),
                         None => {
@@ -443,10 +449,7 @@ impl AppModel {
     pub fn add_worktree(&mut self, repo: String, path: String, branch: String, base: String, new_branch: bool, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         cx.spawn(async move |this, cx| {
             let (r, p) = (repo.clone(), path.clone());
-            cx.background_executor().spawn(async move {
-                let names = git::all_branch_names(Path::new(&r));
-                loupe_core::model::add_worktree_for_branch(Path::new(&r), &p, &branch, &base, new_branch, &names)
-            }).await.map_err(|e| e.user_message().unwrap_or_default())?;
+            cx.background_executor().spawn(async move { loupe_core::model::add_worktree_for_branch(Path::new(&r), &p, &branch, &base, new_branch) }).await.map_err(|e| e.user_message().unwrap_or_default())?;
             let t = this.update(cx, |m, cx| m.refresh_worktrees(repo, cx)).map_err(|e| e.to_string())?;
             t.await;
             this.update(cx, |m, cx| m.select(Some(path), cx)).ok();
@@ -454,7 +457,7 @@ impl AppModel {
         })
     }
 
-    /// Removes a worktree (git worktree remove [--force]); the selection moves to the repository.
+    /// Removes a worktree (git worktree remove [-f -f]: a locked one goes too); the selection moves to the repository.
     pub fn remove_worktree(&mut self, repo: String, path: String, force: bool, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         cx.spawn(async move |this, cx| {
             let (r, p) = (repo.clone(), path.clone());
@@ -470,11 +473,13 @@ impl AppModel {
         })
     }
 
-    /// Checks out PR `number` in a sibling worktree "<repo>-pr-N" (or selects the worktree already on pr/N).
+    /// Checks out PR `number` in a sibling worktree "<repo>-pr-N", or selects this repository's worktree already on
+    /// pr/N. Only this repository's count: Swift searched every repository, so PR #5 of one could select another's
+    /// pr/5 worktree (FLOWS.md §14).
     pub fn checkout_pull(&mut self, worktree: &str, number: u64, cx: &mut Context<Self>) {
-        if let Some(w) = self.state.worktree_with_branch(&format!("pr/{number}")).map(|w| w.path.clone()) { return self.select(Some(w), cx) }
-        let Some(wm) = self.models.get(worktree).cloned() else { return };
         let repo = self.state.repo_containing(worktree).unwrap_or(worktree).to_string();
+        if let Some(w) = self.state.worktree_with_branch(&repo, &format!("pr/{number}")).map(|w| w.path.clone()) { return self.select(Some(w), cx) }
+        let Some(wm) = self.models.get(worktree).cloned() else { return };
         let (remote, env) = { let w = wm.read(cx); (w.state.remote_name.clone(), self.git_auth(w.remote.as_ref(), worktree)) };
         wm.update(cx, |w, cx| {
             let r = repo.clone();
@@ -484,7 +489,7 @@ impl AppModel {
                 let Some(app) = w.update(cx, |w, _| w.app.clone()).ok() else { return };
                 let Ok(t) = app.update(cx, |a, cx| a.refresh_worktrees(repo, cx)) else { return };
                 t.await;
-                app.update(cx, |a, cx| a.select(Some(dest), cx)).ok();
+                app.update(cx, |a, cx| if Path::new(&dest).exists() { a.select(Some(dest), cx) }).ok();
             }).detach();
         });
     }
