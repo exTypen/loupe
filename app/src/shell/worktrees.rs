@@ -1,9 +1,8 @@
 //! New Worktree (AddWorktreeSheet in App.swift), Remove Worktree and Prune Stale Worktrees.
 //!
-//! Fixed against the Swift app (FLOWS.md §14): an existing "origin/x" with a local x checks out x instead of failing
-//! on `-b x`; the suggested folder drops the remote's name ("upstream/x" → "<repo>-x") and no longer cuts "origin-"
-//! out of the middle of a branch ("fix-origin-check"); Force Remove passes `-f -f`, so a locked worktree goes too;
-//! a prune failure shows instead of being swallowed.
+//! Fixed against the Swift app (FLOWS.md §14), in loupe_core::model: an existing "origin/x" with a local x checks out
+//! x instead of failing on `-b x`; Force Remove passes `-f -f`, so a locked worktree goes too. Here: the suggested
+//! folder uses the branch's local name ("upstream/x" → "<repo>-x"); a prune failure shows instead of being swallowed.
 use std::path::Path;
 
 use gpui_kit::{
@@ -17,8 +16,9 @@ use gpui_kit::{
     },
 };
 use loupe_core::git;
+use loupe_core::model::remote_branch_local_name;
 
-use crate::state::AppModel;
+use crate::state::{AppModel, suggest_worktree_path};
 use crate::{theme, ui};
 
 /// A branch the sheet offers: "feature/x" (local) or "origin/x" (remote, `local` = "x").
@@ -40,56 +40,16 @@ pub fn list_branches(repo: &Path) -> Vec<BranchRef> {
 fn parse_ref(full: &str, remotes: &[String]) -> Option<BranchRef> {
     if let Some(b) = full.strip_prefix("refs/heads/") { return Some(BranchRef { name: b.into(), local: None }) }
     let short = full.strip_prefix("refs/remotes/")?;
-    // The longest remote name that prefixes it: a remote may itself contain "/".
-    let local = remotes.iter().filter(|r| short.starts_with(&format!("{r}/"))).max_by_key(|r| r.len())
-        .map(|r| short[r.len() + 1..].to_string())
-        .or_else(|| short.split_once('/').map(|x| x.1.to_string()));
+    let local = remote_branch_local_name(remotes, short).or_else(|| short.split_once('/').map(|x| x.1.to_string()));
     Some(BranchRef { name: short.into(), local })
 }
 
-/// Beside the repository, "<repo>-<branch with / → ->"; "<repo>-worktree" until a branch is typed.
-pub fn suggest_path(repo: &str, branch: &str) -> String {
-    let p = Path::new(repo);
-    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let slug = if branch.is_empty() { "worktree".to_string() } else { branch.replace('/', "-") };
-    p.parent().unwrap_or(Path::new("/")).join(format!("{name}-{slug}")).to_string_lossy().into_owned()
-}
-
-/// What Create runs: `worktree add -b <new> <path> [<base>]`, `worktree add <path> <local>`, or for a remote branch
-/// with no local one `worktree add -b <x> <path> <remote>/<x>`.
-pub fn add_args(path: &str, new_branch: Option<(&str, &str)>, existing: Option<&BranchRef>, local_exists: bool) -> Vec<String> {
-    let mut a: Vec<String> = vec!["worktree".into(), "add".into()];
-    match (new_branch, existing) {
-        (Some((name, base)), _) => {
-            a.extend(["-b".into(), name.into(), path.into()]);
-            if !base.is_empty() { a.push(base.into()) }
-        }
-        (None, Some(r)) if r.local.is_some() && !local_exists => a.extend(["-b".into(), r.local_name().into(), path.into(), r.name.clone()]),
-        (None, Some(r)) => a.extend([path.into(), r.local_name().into()]),
-        (None, None) => {}
-    }
-    a
-}
-
 impl AppModel {
-    /// `git worktree remove [-f -f] <path>` (two: a locked worktree needs both), then the list again; the selection
-    /// moves to the repository when it was on the removed one. A failure goes to the window's "Error" alert.
+    /// Remove Worktree's confirmation: `AppModel::remove_worktree`; a failure goes to the window's "Error" alert.
     pub fn remove_worktree_confirmed(&mut self, repo: String, path: String, force: bool, cx: &mut Context<Self>) {
+        let t = self.remove_worktree(repo, path, force, cx);
         cx.spawn(async move |this, cx| {
-            let (r, p) = (repo.clone(), path.clone());
-            let res = cx.background_executor().spawn(async move {
-                let mut a = vec!["worktree", "remove"];
-                if force { a.extend(["-f", "-f"]) }
-                a.push(&p);
-                git::run(&r, a).map(drop)
-            }).await;
-            this.update(cx, |m, cx| match res {
-                Ok(()) => {
-                    loupe_core::model::forget(Path::new(&path));
-                    m.refresh_worktrees(repo, cx).detach();
-                }
-                Err(e) => if let Some(msg) = e.user_message() { m.error = Some(msg); cx.notify() },
-            }).ok();
+            if let Err(msg) = t.await && !msg.is_empty() { this.update(cx, |m, cx| { m.error = Some(msg); cx.notify() }).ok(); }
         }).detach();
     }
 
@@ -139,7 +99,7 @@ pub fn open_add_worktree(app: &Entity<AppModel>, repo: String, initial_base: Str
 impl AddWorktreeSheet {
     fn new(app: Entity<AppModel>, repo: String, initial_base: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("feature/my-change"));
-        let path = cx.new(|cx| InputState::new(window, cx).default_value(suggest_path(&repo, "")));
+        let path = cx.new(|cx| InputState::new(window, cx).default_value(suggest_worktree_path(&repo, "")));
         let base = cx.new(|cx| SelectState::new(SearchableVec::new(vec!["HEAD".to_string()]), Some(IndexPath::new(0)), window, cx).searchable(true));
         let existing = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx).searchable(true));
         name.update(cx, |i, cx| i.focus(window, cx));
@@ -196,7 +156,7 @@ impl AddWorktreeSheet {
         if !self.path_edited {
             let b = self.branch(cx).unwrap_or_default();
             let slug = self.refs.iter().find(|r| r.name == b && !self.new_branch).map_or(b.as_str(), |r| r.local_name()).to_string();
-            let p = suggest_path(&self.repo, &slug);
+            let p = suggest_worktree_path(&self.repo, &slug);
             self.path.update(cx, |i, cx| i.set_value(p, window, cx));
         }
         cx.notify();
@@ -230,28 +190,15 @@ impl AddWorktreeSheet {
         let Some(branch) = self.branch(cx) else { return };
         let path = self.path.read(cx).value().trim().to_string();
         let base = self.base.read(cx).selected_index(cx).and_then(|i| self.base_values.get(i.row).cloned()).unwrap_or_default();
-        let existing = (!self.new_branch).then(|| self.refs.iter().find(|r| r.name == branch).cloned()
-            .unwrap_or(BranchRef { name: branch.clone(), local: None }));
         let new_branch = self.new_branch;
         self.working = true;
         self.error = None;
         cx.notify();
-        let (repo, app) = (self.repo.clone(), self.app.clone());
-        cx.spawn(async move |this, cx| {
-            let (r, p) = (repo.clone(), path.clone());
-            let res = cx.background_executor().spawn(async move {
-                let local_exists = existing.as_ref().is_some_and(|e| e.local.is_some() && git::is_local_branch(Path::new(&r), e.local_name()));
-                let a = add_args(&p, new_branch.then_some((branch.as_str(), base.as_str())), existing.as_ref(), local_exists);
-                git::run(&r, a).map(drop)
-            }).await;
-            match res {
-                Ok(()) => {
-                    let t = app.update(cx, |a, cx| a.refresh_worktrees(repo, cx));
-                    t.await;
-                    app.update(cx, |a, cx| { a.select(Some(path), cx); a.dismiss(cx) });
-                }
-                Err(e) => { this.update(cx, |s, cx| { s.working = false; s.error = e.user_message(); cx.notify() }).ok(); }
-            }
+        let t = self.app.update(cx, |a, cx| a.add_worktree(self.repo.clone(), path, branch, base, new_branch, cx));
+        let app = self.app.clone();
+        cx.spawn(async move |this, cx| match t.await {
+            Ok(()) => { app.update(cx, |a, cx| a.dismiss(cx)); }
+            Err(e) => { this.update(cx, |s, cx| { s.working = false; s.error = Some(e).filter(|e| !e.is_empty()); cx.notify() }).ok(); }
         }).detach();
     }
 
@@ -301,31 +248,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn suggested_path_keeps_origin_inside_names() {
-        assert_eq!(suggest_path("/r/app", ""), "/r/app-worktree");
-        assert_eq!(suggest_path("/r/app", "feature/x"), "/r/app-feature-x");
-        // Swift cut "origin-" anywhere: "fix-origin-check" became "fix-check".
-        assert_eq!(suggest_path("/r/app", "fix-origin-check"), "/r/app-fix-origin-check");
-    }
-
-    #[test]
     fn remote_refs_know_their_local_name() {
         let remotes = vec!["origin".to_string(), "up/stream".to_string()];
         assert_eq!(parse_ref("refs/heads/main", &remotes), Some(BranchRef { name: "main".into(), local: None }));
         assert_eq!(parse_ref("refs/remotes/origin/feature/x", &remotes).unwrap().local_name(), "feature/x");
         assert_eq!(parse_ref("refs/remotes/up/stream/x", &remotes).unwrap().local_name(), "x");
-    }
-
-    #[test]
-    fn create_arguments() {
-        let s = |v: Vec<String>| v.join(" ");
-        assert_eq!(s(add_args("/p", Some(("n", "")), None, false)), "worktree add -b n /p");
-        assert_eq!(s(add_args("/p", Some(("n", "abc")), None, false)), "worktree add -b n /p abc");
-        let remote = BranchRef { name: "origin/x".into(), local: Some("x".into()) };
-        assert_eq!(s(add_args("/p", None, Some(&remote), false)), "worktree add -b x /p origin/x");
-        // Swift ran `-b x` here too and failed with "a branch named 'x' already exists".
-        assert_eq!(s(add_args("/p", None, Some(&remote), true)), "worktree add /p x");
-        let local = BranchRef { name: "dev".into(), local: None };
-        assert_eq!(s(add_args("/p", None, Some(&local), false)), "worktree add /p dev");
     }
 }

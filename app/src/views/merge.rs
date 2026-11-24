@@ -35,7 +35,6 @@ use crate::{theme, ui};
 /// separated, then drives it once it's loaded (see `step`), for screenshots of each flow without a mouse.
 const TEST_HOOK: &str = "LOUPE_FLOWS_MERGE";
 const TEST_STEPS: &str = "LOUPE_FLOWS_MERGE_DO";
-const TEST_AI: &str = "LOUPE_FLOWS_AI";
 
 pub fn install(app: &Entity<AppModel>, window: &mut Window, cx: &mut App) -> Subscription {
     let opener = cx.new(|cx| Opener::new(app.clone(), cx));
@@ -104,7 +103,7 @@ pub fn banner(model: &Entity<WorktreeModel>, cx: &App) -> Option<AnyElement> {
     let s = &model.read(cx).state;
     let n = s.conflicted().len();
     if s.operation.is_none() && n == 0 { return None }
-    let (icon, color) = if n > 0 { ("triangle-alert", theme::accent()) } else if s.stopped_to_edit { ("pencil", theme::blue()) } else { ("circle-check", theme::green()) };
+    let (icon, color) = if n > 0 { ("triangle-alert", theme::orange()) } else if s.stopped_to_edit { ("pencil", theme::blue()) } else { ("circle-check", theme::green()) };
     let title = s.operation.map_or("Conflicts".to_string(), |op| format!("{} {}", op.verb(), s.operation_subject));
     let subtitle = if n > 0 { format!("{n} file{} with conflicts. Resolve each one, then continue.", if n == 1 { "" } else { "s" }) }
         else if s.stopped_to_edit { "Stopped to edit this commit. Change it (commit with Amend), then continue.".into() }
@@ -112,7 +111,7 @@ pub fn banner(model: &Entity<WorktreeModel>, cx: &App) -> Option<AnyElement> {
     let busy = s.busy.is_some();
     let (m1, m2) = (model.clone(), model.clone());
     Some(div().flex().items_center().gap_2p5().px_3().py_2().flex_none()
-        .bg(if n > 0 { theme::accent() } else { theme::green() }.opacity(0.08)).border_b_1().border_color(theme::border())
+        .bg(if n > 0 { theme::orange() } else { theme::green() }.opacity(0.08)).border_b_1().border_color(theme::border())
         .child(ui::icon(icon).text_color(color))
         .child(div().flex().flex_col().flex_1().min_w_0().gap_px()
             .child(tip(div().id("op-title").truncate().font_weight(FontWeight::MEDIUM).text_size(theme::UI_SIZE).text_color(theme::text())
@@ -215,11 +214,8 @@ impl MergeEditor {
         };
         v.load(window, cx);
         cx.spawn(async move |this, cx| {
-            // LOUPE_FLOWS_AI=<path>: a stub Claude for the flows fixture, since /opt/homebrew/bin wins over $HOME.
-            let stub = std::env::var(TEST_AI).ok().filter(|p| !p.is_empty());
-            let paths = cx.background_executor().spawn(async move {
-                match stub { Some(p) => HashMap::from([("claude".to_string(), p)]), None => ai::installed().unwrap_or_else(ai::scan) }
-            }).await;
+            // ai::scan honours LOUPE_FLOWS_AI (the flows fixture's stub Claude) in scenario runs.
+            let paths = cx.background_executor().spawn(async move { ai::installed().unwrap_or_else(ai::scan) }).await;
             this.update(cx, |v, cx| { v.ai = ai::selected(&settings::shared(), &paths); cx.notify() }).ok();
         }).detach();
         v
@@ -551,16 +547,15 @@ fn scroll_to_row(e: &Entity<EditorState>, row: usize, cx: &mut App) {
 }
 
 fn tint_color(t: Tint) -> Hsla {
-    // ponytail: theme.rs has no teal or orange; amber stands in for orange and grey for teal (requested).
     match t {
         Tint::Ours => theme::blue().opacity(0.13),
         Tint::OursPicked => theme::blue().opacity(0.32),
         Tint::Theirs => theme::purple().opacity(0.13),
         Tint::TheirsPicked => theme::purple().opacity(0.32),
-        Tint::Both => theme::text_muted().opacity(0.12),
+        Tint::Both => theme::teal().opacity(0.12),
         Tint::Changed => theme::text_muted().opacity(0.15),
-        Tint::Conflict => theme::accent().opacity(0.16),
-        Tint::ConflictCurrent => theme::accent().opacity(0.30),
+        Tint::Conflict => theme::orange().opacity(0.16),
+        Tint::ConflictCurrent => theme::orange().opacity(0.30),
         Tint::Resolved => theme::green().opacity(0.12),
         Tint::ResolvedCurrent => theme::green().opacity(0.25),
     }
@@ -638,7 +633,7 @@ impl MergeEditor {
         let tool = l.and_then(|l| l.merge_tool.clone());
         div().flex().items_center().gap_2().px_3().h(px(38.)).flex_none().bg(theme::sidebar()).border_b_1().border_color(theme::border())
             .text_size(theme::UI_SIZE)
-            .child(ui::icon("triangle-alert").text_color(theme::accent()))
+            .child(ui::icon("triangle-alert").text_color(theme::orange()))
             .child(div().min_w_0().flex_shrink(1.).truncate().font_weight(FontWeight::MEDIUM).text_color(theme::text()).child(self.path.clone()))
             .when(kind == Some(ConflictKind::BothAdded), |d| d.child(div().flex_none().text_color(theme::text_muted()).child("added on both sides")))
             .when(text && n > 0, |d| d
@@ -783,7 +778,7 @@ impl MergeEditor {
         let survivor = self.survivor.clone().filter(|_| kind != ConflictKind::Submodule && !l.binary);
         div().flex().flex_col().flex_1().min_h_0()
             .child(div().flex().flex_col().items_center().gap_2p5().p_6().flex_none()
-                .child(ui::icon(icon).size(px(28.)).text_color(theme::accent()))
+                .child(ui::icon(icon).size(px(28.)).text_color(theme::orange()))
                 .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(title))
                 .child(div().max_w(px(460.)).text_center().text_color(theme::text_muted()).child(detail))
                 .child(buttons))
