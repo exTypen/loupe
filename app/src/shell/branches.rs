@@ -33,6 +33,8 @@ impl BranchPicker {
         let subs = vec![cx.subscribe(&input, |this, _, e: &InputEvent, cx| match e {
             InputEvent::Change => cx.notify(),
             InputEvent::PressEnter { .. } => {
+                // §14: Return with nothing typed switched to the newest other branch. It only picks a match.
+                if this.input.read(cx).value().trim().is_empty() { return }
                 let current = this.model.read(cx).state.branch.clone();
                 let (l, r) = this.matching(cx);
                 if let Some((b, remote)) = l.into_iter().map(|b| (b, false)).chain(r.into_iter().map(|b| (b, true))).find(|(b, _)| Some(b) != current.as_ref()) {
