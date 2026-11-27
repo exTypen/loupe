@@ -452,7 +452,9 @@ impl PullsView {
             let n = rows.len();
             let rows = std::rc::Rc::new(rows);
             let this = cx.entity();
-            uniform_list("pr-list", n, move |range, _, cx| {
+            // Keyed by worktree: another worktree's list starts at the top, as Swift's rebuilt view does, not at the
+            // offset the last one was scrolled to.
+            uniform_list(SharedString::from(format!("pr-list-{}", c.path)), n, move |range, _, cx| {
                 if wants_more && range.end + 3 >= n {
                     let t = this.downgrade();
                     cx.defer(move |cx| { t.update(cx, |v, cx| v.load_more(cx)).ok(); });
