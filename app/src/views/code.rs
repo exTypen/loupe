@@ -538,7 +538,7 @@ impl CodeBrowser {
             range.map(|i| {
                 let r = rows[i].clone();
                 let me = me.clone();
-                let row = div().id(i).flex().items_center().gap(px(6.)).h(px(24.)).pr_2().pl(px(6. + 10. * r.depth as f32))
+                let row = div().id(i).w_full().flex().items_center().gap(px(6.)).h(px(24.)).pr_2().pl(px(6. + 10. * r.depth as f32))
                     .rounded(theme::RADIUS_ROW).text_size(px(12.5)).cursor_pointer();
                 if let Some(dir) = r.dir_path.clone() {
                     let open = rows.get(i + 1).is_some_and(|n| n.depth > r.depth);

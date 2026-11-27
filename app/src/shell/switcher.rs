@@ -55,7 +55,12 @@ impl Switcher {
     }
 
     fn open(&mut self, item: SwitcherItem, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |w, cx| { w.collapsed.remove(&item.repo); w.select(Some(item.wt.path), cx) });
+        self.workspace.update(cx, |w, cx| {
+            w.collapsed.remove(&item.repo);
+            // Same rule as a sidebar click (RW-07): a folder deleted with rm -rf is re-listed, never selected.
+            if item.wt.is_prunable || !std::path::Path::new(&item.wt.path).exists() { w.refresh_worktrees(item.repo.clone(), cx).detach() }
+            else { w.select(Some(item.wt.path), cx) }
+        });
         cx.emit(DismissEvent);
     }
 }

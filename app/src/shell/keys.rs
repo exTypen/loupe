@@ -213,7 +213,10 @@ pub fn install(cx: &mut App) {
     ours.extend(fixed.into_iter().map(|(k, a)| (k.to_string(), a)));
     // The sidebar's ⌥⌘1…9 hints: the n-th worktree shown.
     ours.extend((0..9).filter_map(|i| select_worktree_action(i).map(|a| (format!("alt-cmd-{}", i + 1), a))));
-    let mut bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, false, None, cx).ok()).collect();
+    // Key equivalents on: ⌘[ or ⌘, sit on the key in that position on the current layout (⌘ğ, ⌘ö on Turkish), as
+    // AppKit localizes the Swift app's menu shortcuts. Without it a Turkish ⌘[ could only be typed as ⌥⌘8, which is
+    // the 8th worktree.
+    let mut bindings: Vec<KeyBinding> = ours.into_iter().filter_map(|(k, a)| KeyBinding::load(&k, a, None, true, None, cx).ok()).collect();
     // CH-31 / KB-14: a context-free binding ties the text input's own ⌘Z at the deepest depth and, bound later,
     // wins it. "!Input" leaves a focused field (and the merge result editor) its own Undo/Redo; anywhere else ⌘Z
     // is the worktree's git undo.
@@ -289,8 +292,9 @@ fn menus(undo: &str) -> Vec<Menu> {
         Menu::new("View").items([
             a("Toggle Sidebar", ToggleSidebar), MenuItem::separator(),
             a("Changes", ChangesTab), a("History", HistoryTab), a("Pull Requests", PullsTab), MenuItem::separator(),
-            a("Go to Worktree…", GoToWorktree), MenuItem::separator(),
-            a("Enter Full Screen", ToggleFullScreen),
+            // No "Enter Full Screen" here: AppKit adds its own to a menu named View (as in Swift), so ours was a
+            // second copy. ⌃⌘F stays bound to ToggleFullScreen.
+            a("Go to Worktree…", GoToWorktree),
         ]),
         Menu::new("Review").items([
             a("Next File", NextFile), a("Previous File", PreviousFile), a("Mark Viewed & Next", MarkViewed),

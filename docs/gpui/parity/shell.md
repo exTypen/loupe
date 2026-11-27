@@ -102,4 +102,94 @@ settles, and its old page is dropped by one 450 ms timer. Nothing polls.
 - The "Can't Undo" dialog (Revert Commit / Cancel, or OK) is implemented in `shell/mod.rs` (`undo_or_refusal`,
   `revert_refused`) and its revert is now recorded for ⌘Z (§14 History #6), but no refused undo was produced on the
   mock in this pass.
-- A row's tooltip can show over its own open context menu.
+- A row's tooltip can show over its own open context menu (still in the final pass: gpui-component's context menu
+  occludes the row, but a tooltip timer started by the hover before the right-click still fires).
+
+## Final pass (merged app, branch gpui-z-shell)
+
+Both apps on the merged `gpui` (5dde615 + this branch) and the prebuilt `LoupeFlows.app` (fde8251), side by side on the
+flows mock (port 8831, `/tmp/flows-z-shell`). Shots are in `/tmp/flows-z-shell/shots/` (`g-*` GPUI, `s-*` Swift; `gpui-*` /
+`swift-*` for key-driven pairs). Input was real (cliclick clicks, System Events keys, under `/tmp/loupe-gui.lock`).
+Note for testers: on this machine's Turkish-QWERTY-PC layout `cliclick kp:return` / `kp:esc` reach neither app; send
+keys with System Events `key code 36` / `53`. Idle CPU, GPUI, sidebar + PR list open and again with ⌘K open:
+`0.0 0:01.36` → `0.0 0:01.36` and `0.0 0:01.41` → `0.0 0:01.41`, 10 s apart.
+
+Fixed in this pass:
+- **SH-13**: the repo header "+" showed only on hover; it is always shown, as in Swift (`g-sh24.png` vs `s-launch.png`).
+- **KB-22**: the View menu had two "Enter Full Screen" items (ours plus the one AppKit adds to any "View" menu); ours is
+  gone, ⌃⌘F stays bound. Menu dump of both apps now matches item for item except the documented About/Services/Help.
+- **KB-02, KB-17 (all customizable shortcuts)**: bindings load with gpui key equivalents, so a shortcut sits on the key in
+  that position on the current layout, as AppKit localizes the Swift menus: Settings reads ⌘Ö on Turkish in both apps.
+  Before, ⌘[ could only be typed as ⌥⌘8 on Turkish, which selected the 8th worktree (`gpui-kb17.png` before; after:
+  ⌘ğ in an open PR went back to the list and kept the selection, `g-kb17.png`). Swift itself ignores ⌘ğ and ⌥⌘8 there
+  (`s-kb17.png`, `s-kb17b.png`): its Back to List is a button shortcut AppKit doesn't localize.
+- **SH-06, SH-25, SH-27, RW-06, KB-21**: Return/Esc on the Git/Error alert and Esc on the sidebar's confirmation dialogs
+  did nothing (nothing inside them had focus); they now dismiss as NSAlert and confirmationDialog do
+  (`g-sh25.png` → `g-sh25-ret.png`).
+- **SH-04**: with nothing selected the title bar was empty; it reads "Loupe" as Swift's window title does (`s-sh24.png`).
+- **MS-04**: a LOUPE_STRESS run now opens the window at the screen's visible frame (Swift: setFrame(visibleFrame)), at
+  0,39 1800×1069 like LoupeFlows (0,39 1800×1068). It used to open centered and then grow, so the sidebar footer and the
+  commit box sat under the Dock and real clicks there hit the Dock.
+- **QS-06 / RW-07**: picking a prunable worktree ("gone") in ⌘K selected its missing folder; it re-lists instead, like a
+  sidebar click (`g-qs-gone.png`: selection stays on Root).
+- shared (code area, CB-02 / FT-02): the Full-mode tree's rows didn't span the pane, so status icons followed the name
+  instead of sitting at the trailing edge as in Swift (`g-full.png` vs `s-full.png`).
+
+| ID | Final pass (merged app) |
+|---|---|
+| SH-01 | same: launch, restored sidebar, Changes on app (`g-launch.png`, `s-launch.png`) |
+| SH-02, SH-03 | same (code; ⌘W is Close Window in both menus) |
+| SH-04 | fixed (title "Loupe"); same text/button (`g-sh24.png`, `s-sh24.png`). GPUI also writes "No repositories" in an empty page: intentional (the filter's empty state) |
+| SH-05 | same: branch/path button, selection per row (`g-click.png`) |
+| SH-06, SH-25 | fixed keys; same text: pull on diverged main and push rejected show git's stderr (`g-sh25.png`/`s-sh25.png`, `g-sh31.png`/`s-sh31.png`) |
+| SH-07, SH-08 | same (hosts; owned by ci / pr_create) |
+| SH-09 | same (`g-qs01.png`, `s-qs01.png`) |
+| SH-10 | same + footer filter (intentional, as before) |
+| SH-11 | same rows, badges, Merged, lock; GPUI "missing" on the prunable row (fixed-swift-bug, as before) |
+| SH-12 | same: collapsed app shows 39 in both (`g-sh12.png`, `s-sh12.png`) |
+| SH-13 | fixed (always-visible "+"); tooltip "New Worktree in lib…" (`g-rw05.png`) |
+| SH-14 | same: dragged infra above lib (`g-sh14.png`) |
+| SH-15 | same (code; not re-dragged) |
+| SH-16 | same items and order (`g-sh16.png`, `s-sh16.png`) |
+| SH-17, SH-18, SH-20 | same items incl. Create Pull Request… and Remove Worktree… (`g-sh17.png`, `s-sh17.png`) |
+| SH-19 | same tooltips. Still different: a tooltip can show over its own open context menu (`g-sh26menu.png`), see gaps |
+| SH-21 | same |
+| SH-22 | same: dot click back to Default, its selection restored (`g-sh22.png`) |
+| SH-23 | intentional (commit on release), not driven (no trackpad gestures from cliclick) |
+| SH-24 | same: "Space 2", empty page, empty state (`g-sh24.png`, `s-sh24.png`) |
+| SH-26 | same: Rename Space dialog prefilled, Return renamed to "Work" (`g-sh26.png`, `g-sh26b.png`) |
+| SH-27 | same text, Delete moved back (`g-sh27.png`/`s-sh27.png`, `g-sh27b.png`/`s-sh27b.png`) |
+| SH-28 | same (code) |
+| SH-29, SH-30, SH-31 | same: Pull on lib (ff) then Edit menu "Undo Pull" and ⌘Z → "Undone: Pull", lib back to behind 2 (`g-kb14.png`) |
+| SH-32..35 | same (toolbar segments in every shot) |
+| SH-36 | same (`g-kb14.png`) |
+| SH-37 | same: a worktree added and removed by the other app appeared/vanished without refresh (`s-rw07.png`, `s-rw07b.png`) |
+| SH-38, SH-39 | same (code; SH-39 owned by history) |
+| KB-01 | same (hidden, no updater) |
+| KB-02 | fixed: ⌘Ö on Turkish in both menus |
+| KB-03 | same (⌘O) |
+| KB-04 | same (`gpui-kb04.png`, `swift-kb04.png`) |
+| KB-05..07 | same (`gpui-kb04b.png`, `gpui-kb07.png`, `swift-kb07.png`) |
+| KB-08 | same (⌘K) |
+| KB-09..13 | same menu items and keys (menu dump); ⇧⌘V marked the PR file viewed in both (`gpui-kb11.png`, `swift-kb11.png`) |
+| KB-14, KB-15 | same (`g-kb14.png`) |
+| KB-16..20 | same defaults; positional on non-US layouts now (see KB-17 above) |
+| KB-17 | fixed (see above) |
+| KB-21 | fixed for alerts/dialogs; sheets same (New Worktree: Return created lib-zdemo, `g-rw05c.png`) |
+| KB-22 | fixed duplicate Enter Full Screen; About/Services/Help intentional as before |
+| RW-01, RW-02 | same (code; the panel opens on ⌘O) |
+| RW-03, RW-04 | fixed-swift-bug as before |
+| RW-05 | same sheet (`g-rw05.png`, `s-rw05.png`); created lib-zdemo on branch zdemo and selected it (`g-rw05c.png`) |
+| RW-06 | same dialog; Remove deleted the folder, kept the branch, selected lib Root (`g-rw06.png`, `g-rw06b.png`) |
+| RW-07 | same; prunable handling fixed-swift-bug, now also in ⌘K |
+| RW-08, RW-09 | same (code) |
+| QS-01..05, QS-07 | same (`g-qs01.png`, `g-qs03.png`, `gpui-qs04.png`/`swift-qs04.png`: ⌘K ↓ ↑ ↩ toggled back to Root in both) |
+| QS-06 | same (`g-qs06.png`, `s-qs06.png`: "rout" ↩ opened router); fixed for prunable rows |
+| MS-01 | same as before: `--api /repos/acme/app/pulls/1` printed PR #1's JSON |
+| MS-02 | same: `--lens repos/app HEAD~3 HEAD` answered in 16 ms |
+| MS-03, MS-04 | fixed window origin (see above); `window 1800x1069 t=1.94 … finished` |
+| MS-05 | same: steps worktrees 5.6 s, tabsonly 2.1 s, `unknown-step bogus` |
+| MS-06..09, MS-11..14 | same (code and the previous pass; not re-run) |
+| MS-10 | intentional (AppKit-only hooks) |
+| MS-15, MS-16 | same (see changes.md) |
+| FT-01..09, UP-01..04 | see changes.md and settings.md |

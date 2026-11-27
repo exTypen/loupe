@@ -166,3 +166,16 @@ dropped when its key moves or another worktree is selected.
 - Done by the views integrator: `AppEvent::ShowStashes` (SS-04), History's stash buttons through `stash_op`, ⌘Z in a
   text field (CH-31), the code browser and ChangeOverview (CH-09, CH-41/42, DV-29), the merge and PR banners (CH-08).
   GPUI shots of that run: `/tmp/flows-i-views/shots/`.
+
+### Final pass (merged app): FT-01..09, MS-15..16
+
+Driven in both apps on the flows mock (`/tmp/flows-z-shell/shots/`, see shell.md's final pass for the setup).
+- FT-01, FT-02, FT-08, MS-15: same order, compaction, icons and status icons in Changes Compact on app-billing
+  (`g-ft01.png`, `s-ft01.png`). Full mode: fixed (shared, views/code.rs) — the tree rows didn't span the pane, so
+  status icons followed the name; now trailing as in Swift (`g-full.png`, `s-full.png`). GPUI also writes the LFS lock
+  owner after the lock ("bob", "carol"); Swift shows the lock only (left to the code owner).
+- FT-03: clicking "db" folded it in both (`g-ft03.png`, `s-ft03.png`).
+- FT-04: Full-tree menu on "assets": Collapse / Expand All / Collapse All in both (`g-ft04.png`, `s-ft04.png`).
+- FT-05, FT-06: same (PR #26/#32 Files tree with done/total per folder and "N of M files viewed", `g-pr26.png`, `s-pr26.png`).
+- FT-07: "sql" filtered PR #26's tree to db/ and dev/test_data with folders open (`g-ft07.png`; Swift `s-ft07.png` on #32).
+- FT-09, MS-16: same (code; not re-dragged).
