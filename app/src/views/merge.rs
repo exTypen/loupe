@@ -76,7 +76,10 @@ impl Opener {
         let m = self.app.read(cx).selected_model();
         if m.as_ref().map(|m| m.entity_id()) == self.model.as_ref().map(|x| x.0.entity_id()) { return }
         self.opened = None;
-        self.model = m.map(|m| (m.clone(), cx.observe(&m, |o, m, cx| o.check(m, cx))));
+        self.model = m.clone().map(|m| (m.clone(), cx.observe(&m, |o, m, cx| o.check(m, cx))));
+        // A worktree whose status is already loaded may not notify again for a while: a conflicted file selected
+        // on arrival showed the "Open Merge Editor" placeholder where Swift shows the editor.
+        if let Some(m) = m { self.check(m, cx) }
     }
 
     fn check(&mut self, m: Entity<WorktreeModel>, cx: &mut Context<Self>) {
