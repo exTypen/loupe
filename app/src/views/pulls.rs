@@ -420,7 +420,8 @@ impl PullsView {
                 .border_1().border_color(theme::border()).child(Input::new(&self.filter).appearance(false)))
             .when(can_create, |d| d.child({
                 let tip: SharedString = format!("Create a pull request for {branch}").into();
-                ui::icon_button("pr-create", "plus").tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                // Swift: a bordered "+ Create Pull Request…" button, not a bare icon (PC-05).
+                ui::pill("pr-create", "Create Pull Request…").flex_row_reverse().child(ui::icon("plus")).tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
                     .on_click(move |_, _, cx| app.update(cx, |a, cx| a.emit(AppEvent::CreatePull { worktree: wt.clone() }, cx)))
             }))
             .child(div().flex_1())
