@@ -119,3 +119,42 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 - Nothing animates: the spinners exist only while loading, and the running-CI dot is static.
 - Caches follow the Swift keys: list freshness 30 s, "Create Pull Request" per `head_oid refs_version`, the diff hash skip,
   and the conversation memo per data version.
+
+## Final pass (merged app)
+
+Branch `gpui-z-pulls` on the merged `gpui` (5dde615), both apps side by side on the flows mock (`FLOWS_PORT=8835`,
+`/tmp/flows-z-pulls`). Screenshots are in `/tmp/flows-z-pulls/shots/` (`s-*` Swift LoupeFlows, `g-*` GPUI). Every row
+above was re-read against the merged code; the ones below were driven by real clicks and keys in both apps.
+
+| ID | Final pass: what both apps did | result |
+|---|---|---|
+| PR-01, PR-06, PR-07, PR-08 | Same tab, sections (Other Worktrees / All, This Branch on app-search), rows, avatars, F fallback (`s-pr01`, `g-pr01`, `g-pr21`) | same |
+| PR-09, PR-11 | Closed list and the "Payments" filter match (`g-try`/`s-x`, `g-pr11`) | same |
+| PR-14, PR-18 | **Fixed:** after a worktree switch dropped an open PR, coming back showed the list with the stale selection still set, and `load()` returned early, so Refresh and ⌘R did nothing (no request reached the forge). Now the worktree comes back on its PR, like Swift (`list.selected` survives). With a 401 fault the refresh shows "Couldn't refresh" (`g-pr18`) | fixed |
+| PR-21 | Back button returns and reloads (`g-pr21`). ⌘[ can't be typed by cliclick on this Turkish layout (it sends ⌥8 → ⌥⌘8 = SelectWorktree8); the key path is unchanged | same |
+| PR-22 | **Fixed** (see PR-14): billing → back to Root reopens #26 (`g-x` after the fix) | fixed |
+| PR-02, PR-03 | infra: "Connect git.example.invalid" + Open Settings… (`s-pr03`, `g-pr03`) | same |
+| PD-01, PD-04, PD-07 | Header, badges, Overview/Files/Conversation, Compact/Full only on Files (`s-pd01`, `g-pd01`) | same |
+| PD-02, PD-03 | Same two items; GPUI now has Swift's compass and link icons (`s-pd02c`, `g-pd02c`) | fixed |
+| PD-09 | Overview tiles, "6 commits behind main", Database section match (`s-pd09`, `g-pd09`). The Files tile's composition bar overflows its card (code view's `ChangeOverview`, not this area) | same (note for code) |
+| PD-13 | **Fixed (shared):** the tree sorted `charge.go` before `charge_test.go`; Finder (`localizedStandardCompare`) puts punctuation before letters in ICU order, so Swift shows `charge_test.go` first. `loupe_core::file_tree::standard_compare` now follows ICU's punctuation order and Finder's lowercase-first tie-break (test `orders_names_like_finder`) | fixed |
+| PD-14 | Same folder menu items (`s-pd14c`, `g-pd14c`) | same |
+| PD-17 | `v` marks viewed and moves on once the diff has focus, in both (`s-pd17`, `g-pd17`); neither takes `v` before the detail is focused | same |
+| PD-20, PD-22 | Full tree with untouched folders collapsed matches (`s-pd20`, `g-pd20`). **Fixed:** a PR opened while Full mode is on showed its first file with no tab; Swift's `selectedPath` didSet opens it as a tab | fixed |
+| PD-28 | Check Out on #27 created `app-pr-27` on `pr/27` and selected it (`g-pd28`) | same |
+| PD-29, PD-30 | Same "Merge #32 into main?" confirmation (`s-alert`, `g-pd29b`); GPUI merged (`{"Do":"merge"}` in forge.log), left the PR and showed origin/main in History with the merge selected (`g-pd30`) | same |
+| RV-01 | **Fixed:** the timeline's rail (the line the avatars sit on) was missing; drawn per row now, so the sidebar's jump indices stay the entries (`g-rv01-final`) | fixed |
+| RV-04, RV-06 | **Fixed:** dates read "2 weeks ago" where Swift says "3 weeks ago": Foundation's named relative format rounds (7–12 days "last week", 20 days "3 weeks ago", 30 days "last month", seconds under a minute). `pulls/time.rs::relative` follows it, thresholds read off `Date.RelativeFormatStyle` day by day | fixed |
+| RV-09 | **Fixed:** Markdown tables stretched across the card; Swift's Grid sizes columns to content (`s-rv01`, `g-rv01-final`) | fixed |
+| RV-10 | 500 fault: both alert "Forgejo 500: boom"; GPUI keeps "Thanks" (§14), then posts it (`s-rv10a`, `g-rv10a`, `g-rv10b`) | same / fixed-swift-bug |
+| RV-12, RV-13, RV-15 | Right-click › Add Comment…, "You · Pending" draft, bubble count 1, "Review (1)" (`g-rv12a`, `g-rv12b`) | same / intentional (inline editor) |
+| RV-16, RV-17 | "Finish your review" popover, ⌘↩ posts `{"event":"COMMENT","comments":[{"new_position":3,"old_position":null}]}` (`g-rv16`, `g-rv17`) | same |
+| FG-02, FG-03 | "Forgejo 401: token is required" / "Forgejo 500: boom" texts | same |
+| FG-11 | `loupe --api /repos/acme/app/pulls/1` printed PR #1's JSON from the mock | same |
+| PR-04, PR-05, PR-10, PR-12, PR-13, PR-15–17, PR-19, PR-20, PD-05, PD-06, PD-08, PD-10–12, PD-15, PD-16, PD-18, PD-19, PD-21, PD-23–27, PD-31–33, RV-02, RV-03, RV-05, RV-07, RV-08, RV-11, RV-14, FG-01, FG-04–FG-10 | Not driven again: their code is unchanged by the merge (only `use` paths moved); the rows above stand | as above |
+
+Idle CPU (merged app): a PR open, `ps -o %cpu=,time=` 0.0 / 0:01.39 twice, 10 s apart; on the list 0.0 / 0:01.52 →
+0.0 / 0:01.54 (the 60 s open-list poll and the once-a-minute "Updated" label).
+
+Left as is: the PR detail's own alert centres on the detail pane, not the window; three copies of a relative-date
+formatter exist (`pulls/time.rs`, `history/sheets.rs`, `changes/inspector.rs`), only the pulls one was changed.
