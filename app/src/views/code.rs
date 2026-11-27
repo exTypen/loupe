@@ -654,7 +654,7 @@ impl Render for CodeBrowser {
             None => ui::empty_state("file-search", "No File Open", "Open one from the tree, or ⌘-click a name to go to its definition.").into_any_element(),
             Some(p) => match (self.files.get(p), &self.diff) {
                 (Some(f), _) if !f.is_binary && f.lines.is_empty() => ui::empty_state("file", "Empty File", "").into_any_element(),
-                (Some(_), Some(d)) => div().size_full().p_2().child(d.clone()).into_any_element(),
+                (Some(_), Some(d)) => div().size_full().child(d.clone()).into_any_element(),
                 _ => div().size_full().flex().items_center().justify_center().child(ui::icon("loader").size(px(16.))).into_any_element(),
             },
         };

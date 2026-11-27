@@ -117,6 +117,11 @@ exactly as they do in your terminal.
 - GitHub's API refuses diffs over 300 files or 20,000 lines. Loupe fetches the pull request and computes the
   same diff locally instead.
 
+**Updates**
+- Loupe updates itself with Sparkle: it checks the GitHub release feed once a day, and "Check for Updates…" sits
+  at the top of the app menu. Settings › General turns automatic checks and automatic download-and-install on or
+  off. Every update is EdDSA-signed and verified before it replaces the app.
+
 ## Install
 
 Download `Loupe-<version>.dmg` from the [latest release](https://github.com/exTypen/loupe/releases/latest), open it
@@ -192,7 +197,7 @@ Developer ID Application certificate and stored notary credentials.
 ## Not built yet
 
 Stacked pull requests, GitLab and Bitbucket, threaded replies to review comments, syncing viewed files with
-GitHub, and updating itself (download new releases from the releases page for now).
+GitHub.
 
 ## License
 

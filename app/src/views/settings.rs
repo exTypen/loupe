@@ -284,8 +284,19 @@ impl Settings {
             .child(ui::card()
                 .child(ui::card_header(div().font_weight(FontWeight::SEMIBOLD).child("Updates"), ""))
                 .child(row("Version", div().text_color(theme::text_muted()).child(env!("CARGO_PKG_VERSION"))))
-                .child(row("", div().opacity(0.4).child(ui::pill("check-updates", "Check for Updates…").cursor_default())))
-                .child(foot("This build has no updater: Sparkle is part of the Swift app only. Install new versions by hand.")))
+                .map(|card| {
+                    use crate::updates;
+                    if !updates::available() {
+                        return card.child(foot("This build has no updater (it isn't a bundled Loupe.app). Install new versions by hand."));
+                    }
+                    let checks = updates::automatically_checks();
+                    card.child(row("", ui::pill("check-updates", "Check for Updates…").on_click(|_, _, _| updates::check_for_updates())))
+                        .child(row("", gpui_kit::component::checkbox::Checkbox::new("auto-check").label("Automatically check for updates").checked(checks)
+                            .on_click(cx.listener(|_, on: &bool, _, cx| { updates::set_automatically_checks(*on); cx.notify() }))))
+                        .when(checks, |d| d.child(row("", gpui_kit::component::checkbox::Checkbox::new("auto-install").label("Automatically download and install updates")
+                            .checked(updates::automatically_downloads())
+                            .on_click(cx.listener(|_, on: &bool, _, cx| { updates::set_automatically_downloads(*on); cx.notify() })))))
+                }))
     }
 
     // MARK: Spaces

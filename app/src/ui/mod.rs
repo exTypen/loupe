@@ -67,6 +67,11 @@ pub fn icon(name: &str) -> Svg {
 }
 
 /// Rounded, 1px border, the card surface. Put a `card_header` first for a title strip.
+/// A pane that fills its slot edge to edge (a diff, a preview, the code browser): the card's colour, no border.
+pub fn pane() -> Div {
+    div().flex().flex_col().bg(theme::card()).overflow_hidden()
+}
+
 pub fn card() -> Div {
     div().flex().flex_col().bg(theme::card()).border_1().border_color(theme::border()).rounded(theme::RADIUS_CARD).overflow_hidden()
 }

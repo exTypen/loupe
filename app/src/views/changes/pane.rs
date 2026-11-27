@@ -174,7 +174,7 @@ impl ChangesView {
             else { ui::empty_state("file", "No Content Changes", "Mode change or rename only.") }.into_any_element()
         } else { self.diff.clone().map(|d| d.into_any_element()).unwrap_or_else(spinner) };
         let target = has_target(&f);
-        ui::card().size_full().child(header).child(self.with_panel(target, body, window, cx)).into_any_element()
+        ui::pane().size_full().child(header).child(self.with_panel(target, body, window, cx)).into_any_element()
     }
 
     /// DV-03: icon, "old →", path, +N −N, Diff / Before / After, Blame and History, Preview, the actions.
@@ -292,7 +292,7 @@ impl ChangesView {
                 col.into_any_element()
             }
         };
-        ui::card().size_full().child(header).child(body).into_any_element()
+        ui::pane().size_full().child(header).child(body).into_any_element()
     }
 
     /// MG-05's entry: the merge editor is an overlay in this app (views/merge.rs); this pane opens it.

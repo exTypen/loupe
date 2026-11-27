@@ -1074,7 +1074,7 @@ impl Render for DiffView {
                 if !e.modifiers.platform && v.hover.take().is_some() { cx.notify() }
             }))
             .size_full().flex().flex_col().overflow_hidden()
-            .bg(theme::card()).border_1().border_color(theme::border()).rounded(theme::RADIUS_CARD)
+            .bg(theme::card())
             .font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
             .children(header).children(find);
 

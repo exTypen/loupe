@@ -124,6 +124,6 @@ impl ChangesView {
         let path = b.read(cx).nav.selected.clone();
         let target = path.is_some_and(|p| change(m.read(cx).state.files(), &p).is_none_or(has_target));
         let body = div().id("full-browser").size_full().child(b).into_any_element();
-        ui::card().size_full().child(self.with_panel(target, body, window, cx)).into_any_element()
+        ui::pane().size_full().child(self.with_panel(target, body, window, cx)).into_any_element()
     }
 }

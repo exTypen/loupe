@@ -280,7 +280,7 @@ impl Shell {
     fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let ws = self.workspace.read(cx);
         let panel = div().size_full().bg(theme::canvas()).border_l_1().border_t_1().border_color(theme::border())
-            .rounded_tl(theme::RADIUS_CARD).overflow_hidden();
+            .overflow_hidden();
         if ws.selected_worktree().is_none() {
             return panel.child(ui::empty_state("git-branch", "No Worktree Selected", "Open a repository to review its changes and pull requests.")
                 .child(div().pt_2().child(ui::pill("open-repo-empty", "Open Repository…").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenRepository), cx))))).into_any_element();

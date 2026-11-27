@@ -275,12 +275,13 @@ pub fn select_worktree_action(n: usize) -> Option<Box<dyn Action>> {
 fn menus(undo: &str) -> Vec<Menu> {
     fn a(name: &'static str, action: impl Action) -> MenuItem { MenuItem::action(name, action) }
     vec![
-        // No "Check for Updates…": the Swift app hides it when Sparkle isn't configured, and this build has no updater.
-        Menu::new("Loupe").items([
+        // "Check for Updates…" only where Sparkle is there (a bundled Loupe.app), as the Swift app hid it otherwise.
+        Menu::new("Loupe").items(crate::updates::available().then(|| [a("Check for Updates…", CheckForUpdates), MenuItem::separator()])
+            .into_iter().flatten().chain([
             a("Settings…", OpenSettings), MenuItem::separator(),
             a("Hide Loupe", Hide), a("Hide Others", HideOthers), a("Show All", ShowAll), MenuItem::separator(),
             a("Quit Loupe", Quit),
-        ]),
+        ])),
         Menu::new("File").items([a("Open Repository…", OpenRepository), MenuItem::separator(), a("Close Window", CloseWindow)]),
         Menu::new("Edit").items([
             MenuItem::os_action(undo.to_string(), Undo, OsAction::Undo), MenuItem::os_action("Redo", Redo, OsAction::Redo),

@@ -1,6 +1,6 @@
 [package]
 name = "loupe"
-version = "0.10.0"
+version = "0.10.1"
 edition.workspace = true
 
 [lib]
@@ -20,6 +20,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 plist = "1.10"
 futures = "0.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Sparkle, loaded at run time (updates.rs).
+objc2 = "0.6"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

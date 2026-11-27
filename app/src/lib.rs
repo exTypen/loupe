@@ -6,3 +6,5 @@ pub mod diff;
 pub mod state;
 pub mod shell;
 pub mod views;
+#[cfg(target_os = "macos")]
+pub mod updates;

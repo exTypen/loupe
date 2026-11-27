@@ -1,0 +1,4 @@
+# Sparkle EdDSA public key that update signatures are checked against: the base64 line generate_keys prints
+# (see the setup notes at the top of scripts/release.sh). Paste it below; lines starting with # are ignored,
+# and $LOUPE_SPARKLE_PUBLIC_KEY overrides this file. With no key, builds hide "Check for Updates…".
+nIpJUuyuiN/PBBNErhR3hBkSsZRVXuccL+GRf47vqpg=

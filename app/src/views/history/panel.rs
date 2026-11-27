@@ -216,7 +216,7 @@ impl HistoryView {
                 .child(div().font_weight(FontWeight::MEDIUM).child(name)))
             .child(div().flex_1())
             .child(self.buttons_for(cx.entity(), cx));
-        Some(ui::card().size_full().child(header)
+        Some(ui::pane().size_full().child(header)
             .child(div().id("md-preview-body").flex_1().min_h_0().overflow_y_scroll().px(px(28.)).py(px(22.)).flex().justify_center().child(body))
             .into_any_element())
     }

@@ -36,6 +36,9 @@ fn main() {
         let app = state::init(cx);
         state::adapt::apply_code_theme();
         shell::keys::install(cx);
+        // Sparkle's scheduled checks start with the app; the menu item asks right away.
+        loupe_app::updates::start();
+        cx.on_action(|_: &shell::keys::CheckForUpdates, _| loupe_app::updates::check_for_updates());
         cx.on_action(|_: &shell::keys::Quit, cx| cx.quit());
         cx.on_action(|_: &shell::keys::Hide, cx| cx.hide());
         cx.on_action(|_: &shell::keys::HideOthers, cx| cx.hide_other_apps());

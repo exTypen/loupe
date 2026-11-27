@@ -1103,7 +1103,7 @@ impl PullDetail {
                 Some(t) => div().max_w(px(860.)).w_full().child(gpui_kit::component::text::TextView::markdown(SharedString::from(format!("pr-md-{p}")), t)).into_any_element(),
                 None => ui::empty_state("loader", "", "").into_any_element(),
             };
-            let content = ui::card().size_full().child(header)
+            let content = ui::pane().size_full().child(header)
                 .child(div().id("pr-md-body").flex_1().min_h_0().overflow_y_scroll().px(px(28.)).py(px(22.)).flex().justify_center().child(body));
             return div().flex().flex_col().size_full().min_w(px(360.))
                 .when(full && !self.nav.tabs.is_empty(), |d| {
@@ -1112,7 +1112,7 @@ impl PullDetail {
                     let diffs: HashMap<String, gpui_kit::Hsla> = self.diffs.iter().map(|f| (f.path().to_string(), badge(f).1)).collect();
                     d.child(tabs::tab_bar(&self.nav, move |p| diffs.get(p).copied(), on))
                 })
-                .child(div().flex_1().min_h_0().p_2().child(content))
+                .child(div().flex_1().min_h_0().child(content))
                 .into_any_element();
         }
         let content = match shown {
@@ -1145,7 +1145,7 @@ impl PullDetail {
                     d.set_change_ruler(whole && changed, cx);
                     if let Some(l) = reveal { d.reveal(l, cx) }
                 });
-                div().flex_1().min_h_0().p_2().child(d).into_any_element()
+                div().flex_1().min_h_0().child(d).into_any_element()
             }
             Err(e) => {
                 let p = sel.clone().unwrap_or_default();

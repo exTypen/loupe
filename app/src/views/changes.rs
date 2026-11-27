@@ -313,12 +313,12 @@ impl Render for ChangesView {
             .child(self.render_commit_box(&m, window, cx));
         let browser = self.browser();
         let peek = browser.as_ref().is_some_and(|b| b.read(cx).peeking());
-        let right = div().flex_1().min_w(px(360.)).h_full().min_h_0().p_2().flex().flex_col()
+        let right = div().flex_1().min_w(px(360.)).h_full().min_h_0().flex().flex_col()
             .child(div().flex_1().min_h_0().child(
                 if self.overview { self.render_overview() }
                 else if full_mode { self.render_full_pane(&m, window, cx) }
                 // A jump to a file the change doesn't touch shows it here, in place (CB-15).
-                else if peek && let Some(b) = browser.clone() { ui::card().size_full().child(b).into_any_element() }
+                else if peek && let Some(b) = browser.clone() { ui::pane().size_full().child(b).into_any_element() }
                 else { self.render_pane(&m, window, cx) }))
             // Definitions / references under the Compact diff (the browser shows its own in Full and peek).
             .when(!full_mode && !peek && !self.overview, |d| d.children(browser.as_ref().and_then(|b| crate::views::code::CodeBrowser::results_panel(b, cx))));

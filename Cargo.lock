@@ -4049,13 +4049,15 @@ dependencies = [
 
 [[package]]
 name = "loupe"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "futures",
  "gpui-kit",
+ "libc",
  "loupe-code",
  "loupe-core",
  "loupe-forge",
+ "objc2 0.6.5",
  "plist",
  "serde",
  "serde_json",
