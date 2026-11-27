@@ -240,7 +240,8 @@ fn build_menu(view: &Entity<ChangesView>, mut menu: PopupMenu, clicked: &str, wi
         let files: Vec<String> = fs.iter().filter(|f| f.submodule.is_none()).map(|f| f.path.clone()).collect::<HashSet<_>>().into_iter().collect();
         if lfs::installed() && !files.is_empty() {
             let me2 = me.clone();
-            menu = menu.separator().submenu("Git LFS", window, cx, move |mut sm, _, _| {
+            // No divider before it, as in Swift (LFSMenuItems follows Stash / the submodule items directly).
+            menu = menu.submenu("Git LFS", window, cx, move |mut sm, _, _| {
                 let me = me2.clone();
                 let act = |label: String, f: Box<dyn Fn(&mut ChangesView, &mut Context<ChangesView>)>| {
                     let me = me.clone();
