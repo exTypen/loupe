@@ -1158,6 +1158,14 @@ impl Render for PullDetail {
             // DV-32: ⌘F finds in the shown diff wherever focus is in the PR (Swift's window-wide key monitor).
             .capture_key_down(cx.listener(|d, e: &gpui_kit::KeyDownEvent, w, cx| {
                 let k = &e.keystroke;
+                // RV-10 / PD-33: like NSAlert, Return takes the default button and Esc cancels, wherever focus is.
+                if !k.modifiers.modified() && matches!(k.key.as_str(), "enter" | "escape") {
+                    if d.error.is_some() { d.error = None; cx.notify(); cx.stop_propagation(); return }
+                    if let Some(s) = d.merge_confirm {
+                        if k.key == "enter" { d.merge(s, cx) } else { d.merge_confirm = None; cx.notify() }
+                        cx.stop_propagation(); return
+                    }
+                }
                 if k.key == "f" && k.modifiers.platform && !k.modifiers.shift && d.tab == ViewMode::Files && let Some(v) = d.diff_view.clone() {
                     v.update(cx, |v, cx| v.open_find(w, cx));
                     cx.stop_propagation();

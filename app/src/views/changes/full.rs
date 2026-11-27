@@ -113,7 +113,9 @@ impl ChangesView {
     /// CH-41: every file of the worktree.
     pub(crate) fn render_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(b) = self.browser() else { return div().flex_1().into_any_element() };
-        div().flex_1().min_h_0().child(CodeBrowser::tree(&b, cx)).into_any_element()
+        // The view's focus lives here in Full mode, as on the list in Compact: a tab switch focuses it (DV-32), and an
+        // undrawn handle would swallow every key, ⌘1–⌘3 included, until a click.
+        div().id("changes-tree").track_focus(&self.focus).flex_1().min_h_0().child(CodeBrowser::tree(&b, cx)).into_any_element()
     }
 
     /// CH-42: the browser, inside the Blame / File History panel.

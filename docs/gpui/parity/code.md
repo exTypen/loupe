@@ -232,7 +232,7 @@ Idle CPU: Full-mode browser open `0.0 0:01.80` → `0.0 0:01.83` 10 s later; PR 
 
 | ID | Final pass result | Shots |
 |---|---|---|
-| CO-01 / LN-01 | same: Overview / Files in Changes, Compact/Full hidden while it shows. The "real click on Overview doesn't switch" note in VIEWS.md was the harness: the GPUI window opened partly off-screen (x 180 + 1800 on an 1800-pt display). Fixed anyway: a title-bar segment press is now `prevent_default`, so a drift can't turn it into a window move (shared commit) | g-ov, s-ov |
+| CO-01 / LN-01 | same: Overview / Files in Changes, Compact/Full hidden while it shows. The "real click on Overview doesn't switch" note in VIEWS.md was the harness: the GPUI window opened partly off-screen (x 180 + 1800 on an 1800-pt display). Fixed anyway: a title-bar segment press is now `prevent_default`, so a drift can't turn it into a window move (shared commit). z-verify: a single click also works when the window isn't active, where Swift's toolbar item only activates the window (shell.md) | g-ov, s-ov |
 | CO-02..CO-19 | same (billing worktree: tiles, kind bar, SQL chip popover, two folders of tables, Definition disclosure, config rows) | g-bill, s-bill, g-chip, s-chip, g-def |
 | CO-20 / LN-07 | **fixed**: a row with no line (config key, dependency) selected and revealed line 1 in the diff; it now opens the file with no line, as Swift (rows with a line still reveal it, §14 #4) | g-co20, s-co20 |
 | CO-21 / LN-03 / LN-10 | same: PR #23 Overview "6 commits behind main · None of them change these files · Merges cleanly" | g-prov, s-prov |

@@ -1005,7 +1005,7 @@ impl DiffView {
             // Swift's ContentUnavailableView("Binary File", systemImage: "doc.zipper"): a large symbol over a title.
             Placeholder::Binary if self.images.0.is_none() && self.images.1.is_none() => div().flex_1().flex().flex_col().items_center().justify_center().gap(px(10.))
                 .child(crate::ui::icon("file-archive").size(px(40.)).text_color(theme::text_faint()))
-                .child(div().text_color(theme::text()).text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Binary File")).into_any_element(),
+                .child(div().text_color(theme::text_muted()).text_size(px(22.)).font_weight(FontWeight::BOLD).child("Binary File")).into_any_element(),
             Placeholder::Binary => div().p(px(20.)).flex().gap(px(24.))
                 .children([("Before", &self.images.0), ("After", &self.images.1)].into_iter().filter(|(_, p)| p.is_some()).map(|(t, p)| {
                     div().flex().flex_col().gap(px(6.)).child(div().text_color(theme::text_muted()).text_size(px(11.)).child(t)).children(image(p))
