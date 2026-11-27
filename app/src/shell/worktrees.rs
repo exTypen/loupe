@@ -230,7 +230,7 @@ impl Render for AddWorktreeSheet {
             .child(field_row().child(label("Location")).child(div().flex_1().min_w_0().child(Input::new(&self.path)))
                 .child(ui::pill("wt-choose", "Choose…").on_click(cx.listener(|s, _, _, cx| s.choose_location(cx)))))
             .when_some(self.error.clone(), |d, e| d.child(div().text_size(px(12.5)).text_color(theme::red()).child(e)));
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .capture_key_down(cx.listener(|s, e: &gpui_kit::KeyDownEvent, _, cx| if e.keystroke.key == "escape" { s.cancel(cx); cx.stop_propagation() }))
             .child(ui::card().w(px(480.)).bg(theme::sidebar())
                 .child(ui::card_header(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("New Worktree"), div()))

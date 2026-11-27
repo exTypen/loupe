@@ -94,3 +94,35 @@ down/up pair does not reach gpui buttons), screenshots in `/tmp/flows-z-history/
 | UN-02, UN-04, UN-08 | unchanged since the per-view pass |
 
 Idle CPU with History open (app, origin/main after the merge): `0.0 0:00.93` twice, 10 s apart.
+
+## Final pass, remaining IDs (merged app, branch gpui-z-hist2)
+
+Both apps side by side on one mock (port 8861, `/tmp/flows-z-hist2`, `scen-x.json` = scenario.json plus the extra
+conflict repos), real CGEvent clicks/drags and System Events keys, git calls read from GIT_TRACE2_EVENT of each app.
+Screenshots in `/tmp/flows-z-hist2/shots/` (`g-*` GPUI, `s-*` Swift, `*-c.png` crops). Every HI/RB/UN ID now has a
+final-pass result (this table plus the one above).
+
+| ID | Final pass (merged app) |
+|---|---|
+| HI-02 | same: first visit runs log/for-each-ref/rev-list/show ×2 in both; Changes → History again runs no git in either (`g-hi02-b.png` / `s-hi02-b.png`) |
+| HI-06 | same: scrolling to the end loads `--skip=100` then `--skip=200` in both, graph continues (`g-hi06-crop.png` / `s-hi06-crop.png`) |
+| HI-08 | fixed-swift-bug (§14 History #2): "readme" typed without Return, ⌘R: Swift's log carries `-i --grep=readme --author=readme`, GPUI's reload has no search (`g-hi08.png` / `s-hi08.png`) |
+| HI-12 | same: click a row → `show -s --format=%B` + `show --diff-merges=first-parent <sha>` in both, nothing else (`g-hi12.png` / `s-hi12.png`) |
+| HI-13 | same: merge row shows "merge of" with two links, root shows no parent section, copy button puts the full SHA on the pasteboard, parent link selects the parent (`g-hi13-merge-c.png`, `g-hi13-root-c.png`, `g-hi13-copy-crop.png` vs `s-*`) |
+| HI-20 | same: "New Worktree from Here…" → sheet based on the commit (sha10), name typed, Create → `git worktree add -b`, new worktree selected in the sidebar; both made the worktree at the clicked commit (`g-hi20-sheet.png`, `g-hi20-created.png` / `s-hi20-sheet.png`, `s-hi20-created.png`) |
+| HI-22 | same: lib + Stashes → "No Stashes" in both (`g-hi22-nostash-c.png` / `s-hi22-nostash-c.png`). Swift's app History on Stashes showed "0 files / No File Changes" after coming back to the worktree (`s-rb12.png`), GPUI reloads the files: fixed-swift-bug (§14 History #1) |
+| RB-03 | same on drop: dragging "remove the dead /legacy route" below "table-driven routes" in GPUI ran the reorder (`rebase -i … 8906108`) and stopped on the expected conflict (`g-rb03-drop.png`). Swift's List drag could not be started with synthetic CGEvent or cliclick drags (`s-rb03-drop.png`), so Swift's reaction was taken from the same reorder through Move Down (identical todo, identical conflict) |
+| RB-04 | **fixed**: (1) the caret started at the top of the message, so typing went before the subject; it now starts after the message, as in Swift (`g-rb04-sheet2-c.png` vs `s-rb04-sheet.png`); (2) ⌘Z right after the sheet closed did nothing (focus stayed on the dropped editor) and the HEAD row kept a stale "HEAD" badge: both fixed (see UN-05). Reword itself same: `tests: cover the route table (v2)` + body in both; ⌘↩ vs click: fixed-swift-bug (§14 History #9) |
+| RB-05 | same: Edit (Stop Here) → Changes, blue "Rebasing … Stopped to edit this commit" banner, Abort Rebase restores the branch in both (`g-rb05.png` / `s-rb05.png`) |
+| RB-06 | same: Squash into Parent on the `squash!` commit, no sheet; both made "router: table-driven routes\n\nsquash! router: table-driven routes", ⌘Z restores 764f66e |
+| RB-09 | same: dialog "Drop “tests: cover the route table”?" with the reflog text, Drop Commit; both dropped it; ⌘Z → "Undone: Drop" (`g-rb09-dialog.png`, `g-rb09-undo-c.png` / `s-*`) |
+| RB-10 | same planner: "7 commits onto f8e95f13…", per-row action menus, cloud on pushed rows, orange "Rewrites 1 pushed commit: f8e95f1", Start Rebase; Squash on the bottom row → "has no older commit left to squash into", Start disabled (`g-rb10.png`, `g-rb10-sqd-c.png` / `s-rb10.png`, `s-rb10-pick-c.png`); drops still confirmed in GPUI: fixed-swift-bug (§14 History #7) |
+| RB-11 | same: Move Down with an unstaged edit in main.rs: both rebased with `--autostash`, the edit came back, no stash left behind; ⌘Z restored 764f66e with the edit kept |
+| RB-12 | fixed-swift-bug (§14 History #5): on the commit below "Merge pull request 'Batch invoice totals' (#20)", Swift enables Reword… and fails after the sheet with the "Git" alert "The commits to rewrite include the merge 568bf2bf … (git rebase -i --rebase-merges)" (`s-rb12-alert.png`); GPUI disables the rewrite items there (`g-rb12-c.png`) |
+| RB-13 | **fixed**: two Move Downs (legacy below table-driven) stop on `UU src/server/router.rs` in both, app on Changes with the orange "Rebasing …" banner and the editor (`g-rb13b.png` / `s-rb13.png`). Clicking Abort Rebase in the GPUI editor's banner also hit the Changes banner's Abort underneath (two `rebase --abort`, the second failing on index.lock → "Git" alert); overlays now occlude the mouse. Use Your Commit + Continue finished the rebase in both, ⌘Z → "Undone: Rebase" |
+| UN-02 | same: ⇧⌘Z in History does nothing in either |
+| UN-04 | same: Revert Commit, push, ⌘Z → "Can't Undo" "… is already on origin/feature/fresh. Undoing it would rewrite pushed history. Revert it instead…" with Revert Commit / Cancel in both (`g-un04.png` / `s-un04.png`); its revert records an undo in GPUI: fixed-swift-bug (§14 History #6) |
+| UN-05 | **fixed** with RB-04: ⌘Z right after Reword/the planner now undoes ("Undone: Reword", `g-un05-reword3-c.png`) as Swift does (`s-un05-reword.png`); Squash into Parent, Drop, Move Down, autostash Move Down also undone in both |
+| UN-06 | same: Continue after the RB-13 conflict, ⌘Z → "Undone: Rebase" in both (`s-un06-c.png`) |
+| UN-07 | same: Pop of the spike stash → toast "Pop Stash  Undo", ⌘Z → "Undone: Pop Stash", 3 stashes and the same two changed files again (`g-un07-pop-c.png`, `g-un07-undo-c.png` / `s-un07-pop-c.png`). Popping the changelog stash fails in both with git's "would be overwritten" alert (config/app.yaml) |
+| UN-08 | same: a commit made in a terminal on fresh, then ⌘Z: the entry was pruned in both, nothing happens, HEAD stays (`g-un08.png` / `s-un08.png`) |

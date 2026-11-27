@@ -116,7 +116,7 @@ impl Settings {
         let a = self.adding.as_ref().expect("sheet shown only while adding");
         let enabled = !a.url.read(cx).value().is_empty() && !a.token.read(cx).value().is_empty() && !a.checking;
         let github = a.github;
-        div().absolute().inset_0().flex().flex_col().items_center().pt(px(60.)).bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().flex_col().items_center().pt(px(60.)).bg(theme::backdrop())
             .child(ui::card().w(px(460.)).bg(theme::sidebar())
                 .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(ui::card_header("Add Account", ""))

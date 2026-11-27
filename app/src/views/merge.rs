@@ -76,7 +76,10 @@ impl Opener {
         let m = self.app.read(cx).selected_model();
         if m.as_ref().map(|m| m.entity_id()) == self.model.as_ref().map(|x| x.0.entity_id()) { return }
         self.opened = None;
-        self.model = m.map(|m| (m.clone(), cx.observe(&m, |o, m, cx| o.check(m, cx))));
+        self.model = m.clone().map(|m| (m.clone(), cx.observe(&m, |o, m, cx| o.check(m, cx))));
+        // A worktree whose status is already loaded may not notify again for a while: a conflicted file selected
+        // on arrival showed the "Open Merge Editor" placeholder where Swift shows the editor.
+        if let Some(m) = m { self.check(m, cx) }
     }
 
     fn check(&mut self, m: Entity<WorktreeModel>, cx: &mut Context<Self>) {
@@ -640,7 +643,7 @@ impl MergeEditor {
                 .when(role == Role::Ours, |d| d.child(
                     tip(div().id("base-toggle").flex().items_center().h(px(18.)).px_1p5().rounded(px(5.)).cursor_pointer().text_size(px(11.))
                         .border_1().border_color(theme::border_strong())
-                        .map(|d| if show_base { d.bg(theme::selected()).text_color(theme::text()) } else { d.text_color(theme::text_muted()) })
+                        .map(|d| if show_base { d.bg(theme::blue()).border_color(theme::blue()).text_color(gpui_kit::white()) } else { d.text_color(theme::text_muted()) })
                         .child("Base"), Some("Show the common ancestor between the two sides".into()))
                         .on_click(cx.listener(|v, _, _, cx| { v.show_base = !v.show_base; cx.notify() })))))
             .child(div().id(SharedString::from(format!("pane-{role:?}"))).relative().flex_1().min_h_0().overflow_hidden().bg(theme::card())
@@ -824,7 +827,7 @@ impl MergeEditor {
 
     fn reset_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.path.rsplit('/').next().unwrap_or(&self.path).to_string();
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .child(ui::card().w(px(380.)).p_4().gap_3().bg(theme::raised())
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(format!("Bring back the conflicts in {name}?")))
                 .child(div().text_size(px(12.)).text_color(theme::text_muted()).child("Your edits to the result are lost."))
@@ -887,7 +890,7 @@ impl Render for MergeEditor {
         };
         let busy = self.model.read(cx).state.busy.clone();
         // Below the title bar (42 pt), which stays usable; the editor covers the sidebar and Changes.
-        div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").absolute().top(px(42.)).left_0().right_0().bottom_0()
+        div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").occlude().absolute().top(px(42.)).left_0().right_0().bottom_0()
             .border_t_1().border_color(theme::border()).flex().flex_col().bg(theme::canvas())
             .font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
             // Return takes the suggestion (its prominent button), before the result editor would insert a newline.

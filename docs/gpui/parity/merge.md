@@ -74,3 +74,31 @@ Same mock as the History final pass (port 8834, `/tmp/flows-z-history/shots/`). 
 | other MG | unchanged since the per-view pass |
 
 Idle CPU with the editor open on `merge-plain`: `0.0 0:00.29` twice, 10 s apart.
+
+## Final pass, remaining IDs (merged app, branch gpui-z-hist2)
+
+Same mock and method as history.md's last table (port 8861, `/tmp/flows-z-hist2/shots/`, real clicks and keys in
+both apps; `special` restored from a copy between the two apps). Every MG ID now has a final-pass result.
+
+| ID | Final pass (merged app) |
+|---|---|
+| MG-04 | **fixed** (follow-up to the earlier pass): selecting a worktree whose selected file is conflicted showed GPUI's "Open Merge Editor" placeholder until the next status refresh; Swift shows the editor at once. The Opener now checks the selection on arrival (`g-mp.png` / `s-mp.png`) |
+| MG-06 | **fixed**: Base toggle shows the Base pane "the common ancestor" between the sides in both (`g-mg06.png` / `s-mg06.png`); its on state is now the accent fill Swift's selected toggle has (it was a faint grey) |
+| MG-10 | same: click "ONE ours" in Your Branch, then "two theirs" in Incoming → result `ONE ours` / `two theirs`, picked lines tinted, "· 2 left" (`g-mg10-c.png` / `s-mg10-c.png`) |
+| MG-11 | same: typing "XY" at the end of the first result line wrote `headerXY` to disk after the debounce in both |
+| MG-12 | same: ⌘Z → `header`, ⇧⌘Z → `headerXY` in both |
+| MG-15 | same: "Bring back the conflicts in notes.txt?" / "Your edits to the result are lost." / Cancel, Reset File; Reset File → `header` and 3 conflict blocks again in both (`g-mg15.png` / `s-mg15.png`) |
+| MG-16 | same: Merge Tool (stub guitool) → notes.txt staged, `notes.txt.orig` left untracked, Changes shows the staged diff in both (`g-mg16.png` / `s-mg16.png`); disabled on `outside` (no tool) in both |
+| MG-17 | same render in GPUI (popover "Suggested merge", "merged by AI: both changes", caption, Discard / Use Suggestion, `g-mg17.png`); Swift can only reach the real `/opt/homebrew/bin/claude`, which answers "Not logged in · Please run /login" under the fixture HOME (`s-mg17.png`), as recorded in the per-view pass |
+| MG-14 | same: header Use Your Branch/Use Your Commit on router.rs and on `special`'s both-deleted `renamed.txt` (git rm fallback) leave the same `git status` in both |
+| MG-18 | same: `outside/notes.txt` opens with "header edited in vim" and the footer "This file was changed outside Loupe, so only its remaining conflict markers are tracked." in both (`g-mg18.png` / `s-mg18.png`) |
+| MG-19 | same: both.yaml "added on both sides", one conflict, ⌥⌘→ + Mark Resolved → `M  both.yaml` = `flag: theirs`, staged entry selected in both; Use Base disabled in GPUI / base section shown in Swift: fixed-swift-bug (§14 "Merge editor adds base sections git did not write") |
+| MG-20 | same: delthem "Changed on Your Branch, deleted on Incoming", delus the reverse, trash icon, survivor pane; Keep File / Delete File; header Use/Reset only in Swift: fixed-swift-bug (§14 duplicate buttons) (`g-sp-delthem-c.png` / `s-sp-delthem-c.png`) |
+| MG-21 | same: "Only on Your Branch" / "Only on Incoming" with the rename text; Keep and Delete (`g-sp-rours-c.png` / `s-sp-rours-c.png`) |
+| MG-22 | same: "Binary file conflict … Your Branch 13 bytes, Incoming 22 bytes.", Use Incoming staged logo.png (`g-sp-logo-c.png` / `s-sp-logo-c.png`) |
+| MG-23 | same: "Symbolic link conflict", Use Your Branch → link → target-ours (`g-sp-link-c.png`) |
+| MG-24 | same: "Submodule conflict", "Use Your Branch · 31d64714" / "Use Incoming · 57bd08d9"; Use Incoming recorded lib at 57bd08d9 in both (`g-sp-lib-c.png` / `s-sp-lib-c.png`) |
+| MG-20..24 reactions | the same seven clicks in each app (Keep, Delete, Keep, Delete, Use Your Branch, Use Incoming ×2) left byte-identical `git status --short` (`st-g.txt` = `st-s.txt` in `/tmp/flows-z-hist2`) |
+| MG-26 | same: typing and switching worktree or pressing Esc within 350 ms still wrote the edit (`headerW` / `elevenW` on disk) in both |
+
+Not re-driven here: nothing; MG-01..05, 07..09, 13, 25 are in the table above.
