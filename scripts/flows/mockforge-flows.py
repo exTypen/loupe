@@ -600,7 +600,8 @@ class H(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *a):
         if args.verbose:
-            print(f"{self.command} {self.path} {self.headers.get('Range') or ''} -> {a[1] if len(a) > 1 else ''}", file=sys.stderr, flush=True)
+            print(f"{self.command} {self.path} {self.headers.get('Range') or ''} -> {a[1] if len(a) > 1 else ''}"
+                  f" [{self.headers.get('User-Agent', '')[:24]} | {self.headers.get('Accept', '')} | {(self.headers.get('Authorization') or '').split(' ')[0]}]", file=sys.stderr, flush=True)
 
     def send(self, code, body=None, ctype="application/json", headers=()):
         if body is None:

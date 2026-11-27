@@ -157,6 +157,8 @@ impl PullsView {
 
     fn show(&mut self, c: &Ctx, window: &mut Window, cx: &mut Context<Self>) {
         self.details_of = Some(c.path.clone());
+        // Swift's filter is the list view's own @State: another worktree or tab builds a new view with an empty one.
+        if !self.filter.read(cx).value().is_empty() { self.filter.update(cx, |s, cx| s.set_value("", window, cx)) }
         let list = self.list(&c.path);
         list.restore_cache(&c.remote); // instant list from the last session; the fetch replaces it
         let load = list.should_load_on_show();
@@ -452,7 +454,9 @@ impl PullsView {
             let n = rows.len();
             let rows = std::rc::Rc::new(rows);
             let this = cx.entity();
-            uniform_list("pr-list", n, move |range, _, cx| {
+            // Keyed by worktree: another worktree's list starts at the top, as Swift's rebuilt view does, not at the
+            // offset the last one was scrolled to.
+            uniform_list(SharedString::from(format!("pr-list-{}", c.path)), n, move |range, _, cx| {
                 if wants_more && range.end + 3 >= n {
                     let t = this.downgrade();
                     cx.defer(move |cx| { t.update(cx, |v, cx| v.load_more(cx)).ok(); });

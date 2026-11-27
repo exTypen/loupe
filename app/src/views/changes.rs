@@ -15,6 +15,7 @@ mod inspector;
 mod list;
 mod overview;
 mod pane;
+pub(crate) use pane::is_markdown;
 pub mod stash;
 pub mod tree;
 

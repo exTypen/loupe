@@ -253,6 +253,8 @@ impl DiffView {
     pub fn can_comment(&mut self, f: impl Fn(&DiffLine) -> bool + 'static) { self.can_comment = Some(Rc::new(f)) }
     /// ⌘-click and the context menu's Go to Definition / Find References.
     pub fn on_navigate(&mut self, f: impl Fn(String, CodeAction, &mut Window, &mut App) + 'static) { self.on_navigate = Some(Rc::new(f)) }
+    /// No ⌘-click and no Go to Definition / Find References items (a PR's Compact diff, as in Swift).
+    pub fn clear_navigate(&mut self) { self.on_navigate = None }
     /// The v key (PR review marks the file viewed and moves on).
     pub fn on_mark_viewed(&mut self, f: impl Fn((), &mut Window, &mut App) + 'static) { self.on_mark_viewed = Some(Rc::new(f)) }
     /// The header's Diff / Before / After and Unified / Split: the integrator persists them ("diffSide").

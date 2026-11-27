@@ -95,6 +95,9 @@ pub struct PullDetail {
     nav_busy: Option<String>,
     nav_task: Option<(Arc<AtomicBool>, Task<()>)>,
     outlines: HashMap<String, tabs::Outline>,
+    /// The Markdown preview's text: ("<head sha> <path>", the file at the head once read).
+    md: Option<(String, Option<String>)>,
+    _md: Option<Task<()>>,
     review: Option<ReviewPopover>,
     badge_open: Option<ReviewerState>,
     merge_confirm: Option<MergeStyle>,
@@ -171,7 +174,7 @@ impl PullDetail {
             adapted: None, diff_view: None, pending_reveal: None, tree: vec![], tree_sha: None, tree_error: None,
             tree_dirs: HashSet::new(), collapse_applied: false, _tree: None, full: HashMap::new(), full_sha: None,
             full_loading: HashSet::new(), nav: CodeNav::default(), nav_results: None, nav_busy: None, nav_task: None,
-            outlines: HashMap::new(), review: None, badge_open: None, merge_confirm: None,
+            outlines: HashMap::new(), md: None, _md: None, review: None, badge_open: None, merge_confirm: None,
             composer: Composer { input: composer_input, sending: false, clear: false, _sub: csub }, overview: overview::State::default(),
             conv_scroll: ScrollHandle::new(), conv_at_bottom: false, poll: None, shown: false, focus: cx.focus_handle(),
             _subs: subs, was_full,
@@ -904,7 +907,7 @@ impl PullDetail {
         } else {
             let rows = self.tree_rows(cx);
             let this = cx.entity();
-            uniform_list("pr-tree", rows.len(), move |range, _, cx| {
+            uniform_list(SharedString::from(format!("pr-tree-{}", self.pr.number)), rows.len(), move |range, _, cx| {
                 range.map(|i| this.update(cx, |d, cx| d.tree_row(&rows[i], cx))).collect::<Vec<_>>()
             }).flex_1().into_any_element()
         };
@@ -997,22 +1000,44 @@ impl PullDetail {
             d.set_highlighter(Some(adapt::highlighter()), cx);
             d.set_side(side, cx);
             d.set_layout(layout, cx);
-            let (w1, w2, w3, w4, w5, w6) = (w.clone(), w.clone(), w.clone(), w.clone(), w.clone(), w);
+            let (w1, w2, w3, w4, w6) = (w.clone(), w.clone(), w.clone(), w.clone(), w);
             d.on_add_comment(move |new, old, body, _, cx| { w1.update(cx, |p, cx| if let Some(path) = p.selected() { p.add_draft(path, new, old, body, cx) }).ok(); });
             d.on_delete_draft(move |id, _, cx| { w2.update(cx, |p, cx| p.delete_draft(id, cx)).ok(); });
             d.can_comment(move |l| w3.upgrade().is_some_and(|_| l.kind != rdiff::LineKind::Meta) && COMMENTABLE.with(|c| c.borrow().as_ref().is_none_or(|(new, old)| {
                 if l.kind == rdiff::LineKind::Removed { l.old_line.is_some_and(|n| old.contains(&n)) } else { l.new_line.is_some_and(|n| new.contains(&n)) }
             })));
             d.on_mark_viewed(move |_, _, cx| { w4.update(cx, |p, cx| p.mark_viewed_and_advance(cx)).ok(); });
-            d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if p.full_mode(cx) && let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); });
             d.on_side_change(move |side, layout, _, cx| app.update(cx, |a, cx| a.set_diff_side(side, layout, cx)));
             d.header_actions(move |window, cx| w6.upgrade().map(|p| p.update(cx, |p, cx| p.file_header_actions(window, cx))).unwrap_or_else(|| div().into_any_element()));
             d
         })
     }
 
+    /// Swift's `.markdownPreview`: a .md file that exists at the head can show rendered instead of as a diff.
+    fn md_preview(&self, path: &str) -> bool {
+        crate::views::changes::is_markdown(path) && loupe_forge::settings::shared().bool("markdownPreview")
+            && self.file(path).is_none_or(|f| f.new_path.is_some())
+    }
+
+    /// The file at the head (fetched first), as the Swift preview reads it: `git show <head>:<path>`.
+    fn ensure_md(&mut self, path: &str, cx: &mut Context<Self>) {
+        let key = format!("{} {path}", self.pr.head.sha);
+        if self.md.as_ref().is_some_and(|m| m.0 == key) { return }
+        self.md = Some((key.clone(), None));
+        let (pr, local, path) = (self.pr.clone(), self.local.clone(), path.to_string());
+        self._md = Some(cx.spawn(async move |this, cx| {
+            let t = cx.background_executor().spawn(async move {
+                pull::fetch_head(&pr, &local, None).ok()?;
+                git(&local.dir, &["show", &format!("{}:{path}", pr.head.sha)], &[], None).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+            }).await;
+            this.update(cx, |d, cx| if let Some(m) = &mut d.md && m.0 == key { m.1 = Some(t.unwrap_or_default()); cx.notify() }).ok();
+        }));
+    }
+
     /// The file header's extras: Full mode's back / forward / outline, then the Viewed checkbox or "Unchanged".
-    fn file_header_actions(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn file_header_actions(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement { self.header_extras(cx) }
+
+    fn header_extras(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(path) = self.selected() else { return div().into_any_element() };
         let changed = self.file(&path).is_some();
         let whole = self.whole(cx);
@@ -1021,8 +1046,15 @@ impl PullDetail {
         let outline = self.outlines.get(&path).cloned().unwrap_or(tabs::Outline::None);
         let viewed = self.is_viewed(&path);
         let p = path.clone();
+        let md = crate::views::changes::is_markdown(&path) && self.file(&path).is_none_or(|f| f.new_path.is_some());
+        let preview = md && loupe_forge::settings::shared().bool("markdownPreview");
         div().flex().items_center().gap_2()
-            .when(whole && self.full_mode(cx), |d| d.child(tabs::nav_controls(&self.nav, &path, &outline, self.nav_busy.as_deref(), on)))
+            .when(md, |d| d.child(div().id("pr-md-preview").flex().items_center().gap_1().cursor_pointer().text_size(px(12.)).text_color(theme::text_muted())
+                .on_click(cx.listener(move |_, _, _, cx| { loupe_forge::settings::shared().set_bool("markdownPreview", !preview); cx.notify() }))
+                .child(ui::icon(if preview { "square-check" } else { "square" }).size(px(13.)).text_color(if preview { theme::blue() } else { theme::text_muted() }))
+                .child("Preview")))
+            // Swift's fullFile: Before / After in Compact show the whole file with the same controls as Full.
+            .when(whole, |d| d.child(tabs::nav_controls(&self.nav, &path, &outline, self.nav_busy.as_deref(), on)))
             .map(|d| if changed {
                 d.child(div().id("viewed").flex().items_center().gap_1().cursor_pointer().text_size(px(12.)).text_color(theme::text_muted())
                     .on_click(cx.listener(move |d, _, _, cx| d.toggle_viewed(&p, cx)))
@@ -1054,6 +1086,35 @@ impl PullDetail {
             },
             None => Ok(None),
         };
+        if let Some(p) = sel.clone().filter(|p| self.md_preview(p)) {
+            self.ensure_md(&p, cx);
+            let text = self.md.as_ref().and_then(|m| m.1.clone());
+            let (dir, name) = match p.rsplit_once('/') { Some((d, n)) => (format!("{d}/"), n.to_string()), None => (String::new(), p.clone()) };
+            let extras = self.header_extras(cx);
+            let header = div().h(px(38.)).flex_none().flex().items_center().gap(px(8.)).px(px(12.)).bg(theme::card_header()).border_b_1().border_color(theme::border())
+                .child(ui::file_icon(&p))
+                .child(div().flex().min_w_0().overflow_hidden().whitespace_nowrap()
+                    .child(div().text_color(theme::text_muted()).child(dir)).child(div().font_weight(FontWeight::MEDIUM).child(name)))
+                .when_some(self.file(&p).map(|f| (f.additions, f.deletions)), |d, (a, r)| d
+                    .child(div().text_size(px(12.)).text_color(theme::green()).child(format!("+{a}")))
+                    .child(div().text_size(px(12.)).text_color(theme::red()).child(format!("−{r}"))))
+                .child(div().flex_1()).child(extras);
+            let body = match text {
+                Some(t) => div().max_w(px(860.)).w_full().child(gpui_kit::component::text::TextView::markdown(SharedString::from(format!("pr-md-{p}")), t)).into_any_element(),
+                None => ui::empty_state("loader", "", "").into_any_element(),
+            };
+            let content = ui::card().size_full().child(header)
+                .child(div().id("pr-md-body").flex_1().min_h_0().overflow_y_scroll().px(px(28.)).py(px(22.)).flex().justify_center().child(body));
+            return div().flex().flex_col().size_full().min_w(px(360.))
+                .when(full && !self.nav.tabs.is_empty(), |d| {
+                    let w = cx.weak_entity();
+                    let on: tabs::OnTabEvent = Rc::new(move |e, _, cx| { w.update(cx, |d, cx| d.tab_event(e, cx)).ok(); });
+                    let diffs: HashMap<String, gpui_kit::Hsla> = self.diffs.iter().map(|f| (f.path().to_string(), badge(f).1)).collect();
+                    d.child(tabs::tab_bar(&self.nav, move |p| diffs.get(p).copied(), on))
+                })
+                .child(div().flex_1().min_h_0().p_2().child(content))
+                .into_any_element();
+        }
         let content = match shown {
             Ok(Some(file)) => {
                 let path = file.path().to_string();
@@ -1072,7 +1133,11 @@ impl PullDetail {
                     Some(d) => d.clone(),
                     None => { let d = self.make_diff_view(file.clone(), cx); self.diff_view = Some(d.clone()); d }
                 };
+                let w5 = cx.weak_entity();
                 d.update(cx, |d, cx| {
+                    // Swift wires navigation only into whole files (Full, Before / After), not the Compact diff.
+                    if whole { d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); }) }
+                    else { d.clear_navigate() }
                     d.set_file(file, cx);
                     d.set_comments(comments, cx);
                     d.set_side(side, cx);
@@ -1098,15 +1163,20 @@ impl PullDetail {
         div().flex().flex_col().size_full().min_w(px(360.))
             .when(full && !self.nav.tabs.is_empty(), |d| d.child(tabs::tab_bar(&self.nav, move |p| diffs.get(p).copied(), on.clone())))
             .child(content)
-            .when_some(self.nav_results.as_ref().filter(|_| full), |d, r| d.child(div().h(px(220.)).flex_none().border_t_1().border_color(theme::border()).child(tabs::results_panel(r, on))))
+            .when_some(self.nav_results.as_ref().filter(|_| whole), |d, r| d.child(div().h(px(220.)).flex_none().border_t_1().border_color(theme::border()).child(tabs::results_panel(r, on))))
             .into_any_element()
     }
 
     fn files_tab(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let tree = self.tree_pane(cx);
         let pane = self.file_pane(cx);
+        // Swift's ResizableSplit: "prTreeWidth", 90% of the 460 maximum until dragged, and the drag is saved.
+        let width = crate::views::changes::pref_f32("prTreeWidth", 414.).clamp(250., 460.);
         ui::h_resizable("pr-files-split")
-            .child(ui::resizable_panel().size(px(300.)).size_range(px(250.)..px(460.)).child(tree))
+            .on_resize(|s, _, cx| if let Some(w) = s.read(cx).sizes().first() {
+                loupe_forge::settings::shared().set_f64("prTreeWidth", f64::from(f32::from(*w)).round());
+            })
+            .child(ui::resizable_panel().size(px(width)).size_range(px(250.)..px(460.)).child(tree))
             .child(ui::resizable_panel().child(pane))
             .into_any_element()
     }

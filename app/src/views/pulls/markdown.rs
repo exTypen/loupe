@@ -228,24 +228,30 @@ fn styled(s: &str) -> StyledText {
     StyledText::new(SharedString::from(t)).with_highlights(hl)
 }
 
-/// A code block's lines with the code theme's token colours.
-fn code_block(lang: &str, text: &str) -> AnyElement {
+/// Lines of a file at `path` with the code theme's token colours, tokenized in order (state carries across lines).
+pub(super) fn highlighted(path: &str, lines: &[&str]) -> Vec<StyledText> {
     use loupe_code::syntax::{Language, State, tokenize};
     let colors = loupe_code::theme::CodeTheme::named(
         &loupe_forge::settings::shared().string(loupe_code::theme::EditorSettings::KEY_DARK_THEME).unwrap_or_default(), true).tokens;
-    let lang = Language::for_path(&format!("x.{}", if lang.is_empty() { "txt" } else { lang }));
+    let lang = Language::for_path(path);
     let mut st = State::default();
+    lines.iter().map(|l| {
+        let hl: Vec<(Range<usize>, HighlightStyle)> = lang.map(|g| tokenize(l, g, &mut st)).unwrap_or_default().into_iter()
+            .filter(|s| (s.start + s.len) as usize <= l.len())
+            .map(|s| (s.start as usize..(s.start + s.len) as usize, HighlightStyle { color: Some(rgb(colors[s.kind as usize % 9]).into()), ..Default::default() }))
+            .collect();
+        StyledText::new(SharedString::from(l.to_string())).with_highlights(hl)
+    }).collect()
+}
+
+/// A code block's lines with the code theme's token colours.
+fn code_block(lang: &str, text: &str) -> AnyElement {
     let lines: Vec<&str> = text.split('\n').collect();
     let shown = lines.len().min(30);
+    let path = format!("x.{}", if lang.is_empty() { "txt" } else { lang });
     div().flex().flex_col().w_full().px_3().py_2().rounded(px(6.)).bg(theme::card()).border_1().border_color(theme::border())
         .font_family(theme::CODE_FONT).text_size(px(12.)).overflow_hidden()
-        .children(lines[..shown].iter().map(|l| {
-            let hl: Vec<(Range<usize>, HighlightStyle)> = lang.map(|g| tokenize(l, g, &mut st)).unwrap_or_default().into_iter()
-                .filter(|s| (s.start + s.len) as usize <= l.len())
-                .map(|s| (s.start as usize..(s.start + s.len) as usize, HighlightStyle { color: Some(rgb(colors[s.kind as usize % 9]).into()), ..Default::default() }))
-                .collect();
-            div().whitespace_nowrap().min_h(px(17.)).child(StyledText::new(SharedString::from(l.to_string())).with_highlights(hl))
-        }))
+        .children(highlighted(&path, &lines[..shown]).into_iter().map(|t| div().whitespace_nowrap().min_h(px(17.)).child(t)))
         .when(lines.len() > shown, |d| d.child(div().text_color(theme::text_faint()).child(format!("… {} more lines", lines.len() - shown))))
         .into_any_element()
 }
