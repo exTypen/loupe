@@ -174,8 +174,10 @@ impl HistoryView {
             if stopped == Some(true) { app.update(cx, |a, cx| a.set_tab(Tab::Changes, cx)); }
             this.update_in(cx, |v, w, cx| {
                 if let Some(l) = v.logs.get_mut(&path) { l.rebasing = false }
-                // A failed rewrite leaves HEAD where it was, so the key wouldn't reload; the rewritable set may have moved.
-                if stopped.is_none() { v.reload(w, cx) }
+                // Always, like Swift's history.reload() after a rewrite: a failed one leaves HEAD where it was, and a
+                // status refresh mid-rebase can load the list while HEAD is detached on the final commit, so the key
+                // (HEAD oid) doesn't move when the branch is reattached and the rows kept a "HEAD" badge.
+                v.reload(w, cx);
                 cx.notify();
             }).ok();
         }).detach();
@@ -199,7 +201,14 @@ impl RewordSheet {
     fn present(app: &Entity<AppModel>, history: WeakEntity<HistoryView>, sha: String, message: String, window: &mut Window, cx: &mut App) {
         let a = app.clone();
         let v = cx.new(|cx| {
-            let text = cx.new(|cx| { let mut t = TextareaState::new(window, cx); t.set_value(message, window, cx); t });
+            // The caret starts after the message, as in Swift's TextEditor, so typing adds to it.
+            let end = gpui_kit::component::input::Position::new(message.matches('\n').count() as u32, u32::MAX);
+            let text = cx.new(|cx| {
+                let mut t = TextareaState::new(window, cx);
+                t.set_value(message, window, cx);
+                t.set_cursor_position(end, window, cx);
+                t
+            });
             let sub = cx.subscribe_in(&text, window, |v: &mut Self, _, e: &InputEvent, w, cx| match e {
                 InputEvent::PressEnter { secondary: true, .. } => v.finish(w, cx),
                 InputEvent::Change => cx.notify(),

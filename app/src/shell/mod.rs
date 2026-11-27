@@ -53,6 +53,8 @@ pub struct Shell {
     settling: bool,
     /// The tab last shown, to move focus into the next one (DV-32).
     shown_tab: Tab,
+    /// Whether an overlay was up, so its dismissal can hand focus back to the shown view.
+    had_overlay: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -70,6 +72,11 @@ impl Shell {
             cx.observe_in(&app, window, |s, a, w, cx| {
                 let t = a.read(cx).tab;
                 if t != s.shown_tab { s.shown_tab = t; s.focus_shown(w, cx) }
+                // A sheet that closed (Reword, the planner, a dialog) leaves focus on its dropped editor, which isn't
+                // drawn any more, so ⌘Z, ⌘R and ⌥⌘↓ reached nothing until a click.
+                let up = a.read(cx).overlay.is_some();
+                if s.had_overlay && !up { s.focus_shown(w, cx) }
+                s.had_overlay = up;
             }),
         ];
         let views = [
@@ -84,7 +91,7 @@ impl Shell {
         let mut s = Self { workspace: app, views, sidebar_open: true, focus, filter, switcher: None, branches: None,
                            toast: None, toast_timer: None, next_toast: 0, watched: None, modal: None, swipe: None, slide: None,
                            slide_timer: None, next_slide: 0, page_width: Default::default(), last_space: 0, settling: false,
-                           shown_tab: Tab::Changes, _subs: subs };
+                           shown_tab: Tab::Changes, had_overlay: false, _subs: subs };
         s.shown_tab = s.workspace.read(cx).tab;
         s.last_space = s.space_index(cx);
         s.watch_selected(cx);
