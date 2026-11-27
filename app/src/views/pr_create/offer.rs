@@ -4,15 +4,17 @@
 //! One rule for all three (the Swift app had three: the toolbar ignored `isMerged` and only looked at the loaded
 //! list, and the sidebar item checked nothing, FLOWS.md §14): the branch is set, there's a client, it has commits
 //! the default branch hasn't, it isn't merged, and the forge has no open PR for it. Checked once per
-//! "HEAD refs-version branch client merged" key (vault: 1d10383, "checked once per HEAD"); a key change cancels the
-//! check in flight. Nothing polls.
+//! "HEAD refs-version branch client merged ahead" key (vault: 1d10383, "checked once per HEAD"); a key change cancels
+//! the check in flight. Nothing polls. The commit count comes from the status refresh's merged check
+//! (`WorktreeState::ahead_of_default`), so the offer runs no git: only the forge's open-PR lookup, and only when
+//! there is something to offer.
 use std::collections::HashMap;
 
 use gpui_kit::{
     App, AnyElement, Entity, FontWeight, Global, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, div, px,
 };
-use loupe_forge::{Cancel, pull_create, settings};
+use loupe_forge::{Cancel, settings};
 
 use crate::state::{AppEvent, WorktreeModel};
 use crate::{theme, ui};
@@ -50,21 +52,20 @@ fn known(model: &Entity<WorktreeModel>, cx: &mut App) -> Option<Option<Offer>> {
     let Some(branch) = m.state.branch.clone() else { return Some(None) };
     let (Some(app), Some(remote)) = (m.app.upgrade(), m.remote.clone()) else { return Some(None) };
     let client = app.read(cx).client_for(&remote, &path);
-    let key = format!("{} {} {branch} {} {}", m.state.head_oid, m.state.refs_version, client.is_some(), m.state.is_merged);
-    let (merged, remote_name) = (m.state.is_merged, m.state.remote_name.clone());
+    let ahead = m.state.ahead_of_default.clone();
+    let key = format!("{} {} {branch} {} {} {ahead:?}", m.state.head_oid, m.state.refs_version, client.is_some(), m.state.is_merged);
+    let merged = m.state.is_merged;
     if !cx.has_global::<Offers>() { cx.set_global(Offers::default()) }
     if let Some(e) = cx.global::<Offers>().0.get(&path) && e.key == key { return e.result.clone() }
     if let Some(c) = cx.global_mut::<Offers>().0.remove(&path).and_then(|e| e.cancel) { c.cancel() }
-    let Some(client) = client.filter(|_| !merged) else {
+    let (Some(client), Some((ahead, target))) = (client.filter(|_| !merged), ahead) else {
         cx.global_mut::<Offers>().0.insert(path, Entry { key, result: Some(None), cancel: None, _task: None });
         return Some(None);
     };
     let cancel = Cancel::new();
     let (c, p, k, weak) = (cancel.clone(), path.clone(), key.clone(), model.downgrade());
     let task = cx.spawn(async move |cx| {
-        let dir = p.clone();
         let r = cx.background_executor().spawn(async move {
-            let (ahead, target) = pull_create::ahead_of_default(&dir, &remote_name, &branch)?;
             // Offline or no access: say nothing rather than offer something that will fail.
             match client.with_cancel(&c).open_pull(&remote, &branch) {
                 Ok(None) => Some(Offer { ahead, target, branch }),

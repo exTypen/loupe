@@ -572,7 +572,8 @@ impl CodeBrowser {
                         .child(div().w(px(10.)).flex_none())
                         .child(ui::file_icon(&p))
                         .child(div().flex_1().min_w_0().truncate().child(r.name.clone()))
-                        .when_some(lock, |d, o| d.child(ui::icon("lock").size(px(11.)).text_color(theme::accent())).child(ui::kbd(o)))
+                        .when_some(lock, |d, o| d.child(div().id(("lock", i)).child(ui::icon("lock").size(px(11.)).text_color(theme::text_muted()))
+                            .tooltip(move |w, cx| Tooltip::new(format!("Locked by {o} (Git LFS)")).build(w, cx))))
                         .when_some(kind, |d, k| d.child(status_icon(k)))
                         .into_any_element()
                 }

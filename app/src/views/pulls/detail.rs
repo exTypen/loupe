@@ -17,6 +17,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    AnchoredPositionMode, anchored, deferred, point,
     uniform_list,
     component::{
         Disableable as _, Icon, Sizable as _,
@@ -104,7 +105,7 @@ pub struct PullDetail {
     poll: Option<Task<()>>,
     shown: bool,
     was_full: bool,
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -834,22 +835,22 @@ impl PullDetail {
                 .into_any_element()))
     }
 
-    fn merge_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn merge_dialog(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = self.merge_confirm?;
         let name = match s { MergeStyle::Merge => "Merge", MergeStyle::Rebase => "Rebase", MergeStyle::Squash => "Squash" };
         Some(modal(format!("{name} #{} into {}?", self.pr.number, self.pr.base.ref_), None,
             div().flex().justify_end().gap_2()
                 .child(ui::pill("merge-cancel", "Cancel").on_click(cx.listener(|d, _, _, cx| { d.merge_confirm = None; cx.notify() })))
                 .child(ui::pill_primary("merge-ok", name, theme::blue()).on_click(cx.listener(move |d, _, _, cx| d.merge(s, cx))))
-                .into_any_element()))
+                .into_any_element(), window))
     }
 
     /// The detail's alert, titled by the forge it talks to (the Swift app said "Forgejo" on GitHub too).
-    fn error_alert(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn error_alert(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let e = self.error.clone()?;
         Some(modal(self.client.server_name().into(), Some(e),
             div().flex().justify_end().child(ui::pill_primary("pr-alert-ok", "OK", theme::blue())
-                .on_click(cx.listener(|d, _, _, cx| { d.error = None; cx.notify() }))).into_any_element()))
+                .on_click(cx.listener(|d, _, _, cx| { d.error = None; cx.notify() }))).into_any_element(), window))
     }
 
     // MARK: Files tab
@@ -1126,13 +1127,15 @@ fn popover_frame(close: impl Fn(&gpui_kit::MouseDownEvent, &mut Window, &mut App
         .into_any_element()
 }
 
-/// A centred alert over the detail: a title, a message, the buttons.
-fn modal(title: String, message: Option<String>, buttons: AnyElement) -> AnyElement {
-    div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop()).occlude()
+/// A centred alert over the window, as NSAlert and the shell's alerts are: a title, a message, the buttons.
+fn modal(title: String, message: Option<String>, buttons: AnyElement, window: &Window) -> AnyElement {
+    let size = window.viewport_size();
+    deferred(anchored().position_mode(AnchoredPositionMode::Window).position(point(px(0.), px(0.))).child(
+    div().id("pr-modal").w(size.width).h(size.height).flex().items_center().justify_center().bg(theme::backdrop()).occlude()
         .child(ui::card().w(px(420.)).p_4().gap_3().bg(theme::raised())
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
             .when_some(message, |d, m| d.child(div().id("modal-text").max_h(px(300.)).overflow_y_scroll().text_size(px(12.)).text_color(theme::text_muted()).child(m)))
-            .child(buttons))
+            .child(buttons)))).with_priority(2)
         .into_any_element()
 }
 
@@ -1149,8 +1152,8 @@ impl Render for PullDetail {
         };
         let badge = self.badge_popover(cx);
         let review = self.review_popover(cx);
-        let merge = self.merge_dialog(cx);
-        let alert = self.error_alert(cx);
+        let merge = self.merge_dialog(window, cx);
+        let alert = self.error_alert(window, cx);
         div().id("pr-detail").track_focus(&self.focus).key_context("PullDetail").relative().flex().flex_col().size_full().bg(theme::canvas())
             // DV-32: ⌘F finds in the shown diff wherever focus is in the PR (Swift's window-wide key monitor).
             .capture_key_down(cx.listener(|d, e: &gpui_kit::KeyDownEvent, w, cx| {

@@ -468,6 +468,13 @@ impl PullsView {
     }
 }
 
+/// What the shell focuses when Pull Requests is shown (DV-32): the open PR, else the list.
+impl gpui_kit::Focusable for PullsView {
+    fn focus_handle(&self, cx: &gpui_kit::App) -> FocusHandle {
+        self.selected_detail().map_or_else(|| self.focus.clone(), |d| d.read(cx).focus.clone())
+    }
+}
+
 impl Render for PullsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.shown.is_some() && self.selected_detail().is_none() && window.focused(cx).is_none() { self.focus.focus(window, cx) }

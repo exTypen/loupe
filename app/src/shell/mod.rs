@@ -51,6 +51,8 @@ pub struct Shell {
     /// The shown space's index, to slide when a dot click (or a jump) changes it; `settling`: a swipe did.
     last_space: usize,
     settling: bool,
+    /// The tab last shown, to move focus into the next one (DV-32).
+    shown_tab: Tab,
     _subs: Vec<Subscription>,
 }
 
@@ -65,6 +67,10 @@ impl Shell {
                 _ => {}
             }),
             cx.subscribe(&filter, |_, _, e: &InputEvent, cx| if matches!(e, InputEvent::Change) { cx.notify() }),
+            cx.observe_in(&app, window, |s, a, w, cx| {
+                let t = a.read(cx).tab;
+                if t != s.shown_tab { s.shown_tab = t; s.focus_shown(w, cx) }
+            }),
         ];
         let views = [
             cx.new(|cx| views::changes::ChangesView::new(app.clone(), window, cx)).into(),
@@ -77,10 +83,26 @@ impl Shell {
         focus.focus(window, cx);
         let mut s = Self { workspace: app, views, sidebar_open: true, focus, filter, switcher: None, branches: None,
                            toast: None, toast_timer: None, next_toast: 0, watched: None, modal: None, swipe: None, slide: None,
-                           slide_timer: None, next_slide: 0, page_width: Default::default(), last_space: 0, settling: false, _subs: subs };
+                           slide_timer: None, next_slide: 0, page_width: Default::default(), last_space: 0, settling: false,
+                           shown_tab: Tab::Changes, _subs: subs };
+        s.shown_tab = s.workspace.read(cx).tab;
         s.last_space = s.space_index(cx);
         s.watch_selected(cx);
         s
+    }
+
+    /// A tab switch leaves focus on the hidden view's element: it isn't drawn, so keys reached nothing (not even
+    /// ⌘1–⌘3) until a click, and the render fallback below doesn't see it because something is still focused.
+    /// The shown view takes it instead, unless focus is already inside it.
+    fn focus_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::Focusable as _;
+        let v = self.views[self.shown_tab.index()].clone();
+        let h = match self.shown_tab {
+            Tab::Changes => v.downcast::<views::changes::ChangesView>().ok().map(|v| v.focus_handle(cx)),
+            Tab::History => v.downcast::<views::history::HistoryView>().ok().map(|v| v.focus_handle(cx)),
+            Tab::Pulls => v.downcast::<views::pulls::PullsView>().ok().map(|v| v.focus_handle(cx)),
+        };
+        if let Some(h) = h && !h.contains_focused(window, cx) { h.focus(window, cx) }
     }
 
     fn watch_selected(&mut self, cx: &mut Context<Self>) {
