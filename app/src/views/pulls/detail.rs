@@ -904,7 +904,7 @@ impl PullDetail {
         } else {
             let rows = self.tree_rows(cx);
             let this = cx.entity();
-            uniform_list("pr-tree", rows.len(), move |range, _, cx| {
+            uniform_list(SharedString::from(format!("pr-tree-{}", self.pr.number)), rows.len(), move |range, _, cx| {
                 range.map(|i| this.update(cx, |d, cx| d.tree_row(&rows[i], cx))).collect::<Vec<_>>()
             }).flex_1().into_any_element()
         };
@@ -1105,8 +1105,13 @@ impl PullDetail {
     fn files_tab(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let tree = self.tree_pane(cx);
         let pane = self.file_pane(cx);
+        // Swift's ResizableSplit: "prTreeWidth", 90% of the 460 maximum until dragged, and the drag is saved.
+        let width = crate::views::changes::pref_f32("prTreeWidth", 414.).clamp(250., 460.);
         ui::h_resizable("pr-files-split")
-            .child(ui::resizable_panel().size(px(300.)).size_range(px(250.)..px(460.)).child(tree))
+            .on_resize(|s, _, cx| if let Some(w) = s.read(cx).sizes().first() {
+                loupe_forge::settings::shared().set_f64("prTreeWidth", f64::from(f32::from(*w)).round());
+            })
+            .child(ui::resizable_panel().size(px(width)).size_range(px(250.)..px(460.)).child(tree))
             .child(ui::resizable_panel().child(pane))
             .into_any_element()
     }
