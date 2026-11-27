@@ -213,6 +213,8 @@ impl Shell {
                 // Left: the sidebar toggle, then fetch / pull / push beside the branch they act on.
                 .child(div().flex().flex_1().items_center().gap_1().min_w_0()
                     .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| { s.sidebar_open = !s.sidebar_open; cx.notify() })))
+                    // Nothing selected: the window's own title, as Swift shows it (SH-04).
+                    .when(wt.is_none(), |d| d.child(div().pl_2().font_weight(FontWeight::SEMIBOLD).child("Loupe")))
                     .when_some(wt.clone(), |d, wt| d
                         .child(div().w(px(10.)))
                         .child(branch_button(&wt, branch))
@@ -344,6 +346,7 @@ impl Render for Shell {
         let _ = window;
         div().id("shell").track_focus(&self.focus).key_context("Loupe").relative().flex().flex_col().size_full()
             .bg(theme::sidebar()).text_color(theme::text()).font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
+            .capture_key_down(cx.listener(|s, e, _, cx| s.alert_keys(e, cx)))
             .on_action(cx.listener(|s, _: &OpenRepository, _, cx| s.open_repository(cx)))
             .on_action(cx.listener(|s, _: &GoToWorktree, w, cx| s.open_switcher(w, cx)))
             .on_action(cx.listener(|s, _: &ToggleSidebar, _, cx| { s.sidebar_open = !s.sidebar_open; cx.notify() }))
@@ -405,6 +408,20 @@ impl Render for Shell {
 }
 
 impl Shell {
+    /// Return or Esc on the alert, Esc on a dialog: what NSAlert and confirmationDialog do. Here at the root,
+    /// because nothing inside them has focus.
+    fn alert_keys(&mut self, e: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) {
+        let key = e.keystroke.key.as_str();
+        if !matches!(key, "enter" | "escape") || e.keystroke.modifiers.modified() { return }
+        let model = self.selected().filter(|m| m.read(cx).state.error.is_some());
+        if let Some(m) = model { m.update(cx, |m, cx| m.clear_error(cx)) }
+        else if self.workspace.read(cx).error.is_some() { self.workspace.update(cx, |a, cx| { a.error = None; cx.notify() }) }
+        else if key == "escape" && self.modal.is_some() { self.modal = None; cx.notify() }
+        else if matches!(self.modal, Some(sidebar::Modal::CantUndo { revert: None, .. })) { self.modal = None; cx.notify() }
+        else { return }
+        cx.stop_propagation();
+    }
+
     /// The "Git" alert (SH-06, SH-25): the selected worktree's error, else the app's. OK clears it.
     fn alert(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let model = self.selected().filter(|m| m.read(cx).state.error.is_some());
