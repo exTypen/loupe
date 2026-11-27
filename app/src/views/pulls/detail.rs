@@ -1004,7 +1004,7 @@ impl PullDetail {
                 if l.kind == rdiff::LineKind::Removed { l.old_line.is_some_and(|n| old.contains(&n)) } else { l.new_line.is_some_and(|n| new.contains(&n)) }
             })));
             d.on_mark_viewed(move |_, _, cx| { w4.update(cx, |p, cx| p.mark_viewed_and_advance(cx)).ok(); });
-            d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if p.full_mode(cx) && let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); });
+            d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if p.whole(cx) && let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); });
             d.on_side_change(move |side, layout, _, cx| app.update(cx, |a, cx| a.set_diff_side(side, layout, cx)));
             d.header_actions(move |window, cx| w6.upgrade().map(|p| p.update(cx, |p, cx| p.file_header_actions(window, cx))).unwrap_or_else(|| div().into_any_element()));
             d
@@ -1022,7 +1022,8 @@ impl PullDetail {
         let viewed = self.is_viewed(&path);
         let p = path.clone();
         div().flex().items_center().gap_2()
-            .when(whole && self.full_mode(cx), |d| d.child(tabs::nav_controls(&self.nav, &path, &outline, self.nav_busy.as_deref(), on)))
+            // Swift's fullFile: Before / After in Compact show the whole file with the same controls as Full.
+            .when(whole, |d| d.child(tabs::nav_controls(&self.nav, &path, &outline, self.nav_busy.as_deref(), on)))
             .map(|d| if changed {
                 d.child(div().id("viewed").flex().items_center().gap_1().cursor_pointer().text_size(px(12.)).text_color(theme::text_muted())
                     .on_click(cx.listener(move |d, _, _, cx| d.toggle_viewed(&p, cx)))
@@ -1098,7 +1099,7 @@ impl PullDetail {
         div().flex().flex_col().size_full().min_w(px(360.))
             .when(full && !self.nav.tabs.is_empty(), |d| d.child(tabs::tab_bar(&self.nav, move |p| diffs.get(p).copied(), on.clone())))
             .child(content)
-            .when_some(self.nav_results.as_ref().filter(|_| full), |d, r| d.child(div().h(px(220.)).flex_none().border_t_1().border_color(theme::border()).child(tabs::results_panel(r, on))))
+            .when_some(self.nav_results.as_ref().filter(|_| whole), |d, r| d.child(div().h(px(220.)).flex_none().border_t_1().border_color(theme::border()).child(tabs::results_panel(r, on))))
             .into_any_element()
     }
 
