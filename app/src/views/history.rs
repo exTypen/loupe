@@ -1251,6 +1251,14 @@ impl Render for HistoryView {
         let detail = self.render_detail(cx);
         let left = div().flex().flex_col().size_full().bg(theme::canvas()).child(toolbar).child(ui::divider()).child(list);
         div().id("history").track_focus(&self.focus).key_context("History").size_full().flex()
+            // DV-32: ⌘F finds in the shown diff wherever focus is in History (Swift's window-wide key monitor).
+            .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, w, cx| {
+                let k = &e.keystroke;
+                if k.key == "f" && k.modifiers.platform && !k.modifiers.shift && !v.overview && let Some(d) = v.diff.clone() {
+                    d.update(cx, |d, cx| d.open_find(w, cx));
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, w, cx| {
                 if e.keystroke.modifiers.modified() { return }
                 match e.keystroke.key.as_str() {
