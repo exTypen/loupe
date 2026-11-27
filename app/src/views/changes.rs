@@ -295,6 +295,11 @@ impl ChangesView {
     }
 }
 
+/// What the shell focuses when Changes is shown (DV-32): the file list, like Swift's table.
+impl gpui_kit::Focusable for ChangesView {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle { self.focus.clone() }
+}
+
 impl Render for ChangesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(m) = self.selected() else { return div().size_full().into_any_element() };

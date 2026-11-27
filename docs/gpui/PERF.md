@@ -152,3 +152,14 @@ Runs:
 - `measure-switch.sh`'s final "open PR" click missed once in GPUI: the Pull Requests segment click after a Changes
   click 5 s earlier didn't switch. It didn't reproduce on its own, and `measure-pr.sh` checks the state with a
   screenshot.
+
+## Create-PR offer without git (gpui-z-last)
+
+The offer (`views/pr_create/offer.rs`) no longer runs `rev-parse origin/HEAD` and `rev-list --count` per worktree:
+the status refresh's merged check already counts the branch's commits not on the default branch
+(`git::merge_state`), and keeps them in `WorktreeState::ahead_of_default`. Measured with `wt.py` (flows fixture on
+`/tmp/flows-z-last`, debug builds, GIT_TRACE2_EVENT file count), 3 runs each:
+- before (gpui 3e5e52e): first round 26 / 26 / 26 (7 × rev-parse origin/HEAD, 6 × rev-list --count), then 13 / 13.
+- after: first round 13 / 12 / 12, then 12–13, the same as the steady rounds. Whole run (launch + 3 rounds): 300 → 286.
+- Swift on the same fixture: 6 / 12 / 11, 285 in all (it loads the 6–7 selected-file diffs at launch, so its first
+  round has none; GPUI loads them on the first visit).

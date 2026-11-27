@@ -309,6 +309,10 @@ pub struct WorktreeState {
     change_count: usize,
     pub stash_count: usize,
     pub is_merged: bool, // the branch's work is already on the default branch
+    /// The branch's commits that the default branch hasn't, and that branch ("main", without "<remote>/"): read by
+    /// the merged check, so the "Create Pull Request" offer runs no git of its own. None: no branch, no target, the
+    /// branch is the target, or nothing to count.
+    pub ahead_of_default: Option<(usize, String)>,
     merged_key: String,
     pub operation: Option<GitOperation>, // a merge, cherry-pick, revert or rebase waiting to be continued or aborted
     pub operation_subject: String,       // the commit it's applying
@@ -350,8 +354,8 @@ pub struct StatusSnapshot {
     pub stopped_to_edit: bool,
     pub lfs: LfsCheck,
     pub uninitialized_submodules: Vec<String>,
-    /// The merged check's key and answer when it had to run again; None: nothing it depends on moved.
-    pub merged: Option<(String, bool)>,
+    /// The merged check's key, answer and `ahead_of_default` when it had to run again; None: nothing it depends on moved.
+    pub merged: Option<(String, bool, Option<(usize, String)>)>,
 }
 
 impl WorktreeState {
@@ -359,7 +363,7 @@ impl WorktreeState {
         WorktreeState {
             path: path.into(), branch: None, head_oid: String::new(), ahead: 0, behind: 0,
             files: vec![], staged: vec![], unstaged: vec![], conflicted: vec![], listed: vec![], change_count: 0,
-            stash_count: 0, is_merged: false, merged_key: String::new(), operation: None, operation_subject: String::new(),
+            stash_count: 0, is_merged: false, ahead_of_default: None, merged_key: String::new(), operation: None, operation_subject: String::new(),
             stopped_to_edit: false, git_dir: None, selected_file_id: None, selected_file_ids: HashSet::new(), diff: None,
             commit_message: String::new(), amend: false, busy: None, error: None, remote_name: "origin".into(),
             refs_version: 0, status_version: 0, lfs: LfsState::default(), uninitialized_submodules: vec![],
@@ -424,9 +428,10 @@ impl WorktreeState {
         let ids: HashSet<String> = self.files.iter().map(FileChange::id).collect();
         self.selected_file_ids.retain(|i| ids.contains(i));
         if self.selected_file_ids.is_empty() { self.selected_file_ids.extend(self.selected_file_id.clone()) }
-        if let Some((key, merged)) = s.merged {
+        if let Some((key, merged, ahead)) = s.merged {
             self.merged_key = key;
             self.is_merged = merged;
+            self.ahead_of_default = ahead;
         }
         let f = self.selected_file().cloned();
         if f.is_none() { self.diff = None }
@@ -471,13 +476,14 @@ pub fn read_status(q: &StatusQuery) -> Result<StatusSnapshot> {
 }
 
 /// Runs on every status refresh, so the check itself only happens when the branch or its target moved.
-fn detect_merged(dir: &Path, branch: Option<&str>, head: &str, remote: &str, last_key: &str) -> Option<(String, bool)> {
+fn detect_merged(dir: &Path, branch: Option<&str>, head: &str, remote: &str, last_key: &str) -> Option<(String, bool, Option<(usize, String)>)> {
     let target = branch.and_then(|b| git::integration_target(remote, dir).filter(|t| t.0 != b && t.0 != format!("{remote}/{b}")));
-    let (Some(branch), Some((name, oid))) = (branch, target) else { return Some((String::new(), false)) };
+    let (Some(branch), Some((name, oid))) = (branch, target) else { return Some((String::new(), false, None)) };
     let key = format!("{head}{oid}");
     if key == last_key { return None }
-    let merged = git::is_merged(branch, &name, dir);
-    Some((key, merged))
+    let (ahead, merged) = git::merge_state(branch, &name, dir);
+    let short = name.strip_prefix(&format!("{remote}/")).unwrap_or(&name).to_string();
+    Some((key, merged, ahead.filter(|n| *n > 0).map(|n| (n, short))))
 }
 
 /// The operation waiting in the git dir, the commit it's applying ("abc1234 subject"), and whether it's an edit stop.
@@ -710,6 +716,10 @@ mod tests {
         assert!(git::is_merged("fastForwarded", &target, dir));
         assert!(!git::is_merged("fresh", &target, dir));
         assert!(!git::is_merged("open", &target, dir));
+        // The count the "Create Pull Request" offer reads (WorktreeState::ahead_of_default).
+        assert_eq!(git::merge_state("open", &target, dir), (Some(1), false));
+        assert_eq!(git::merge_state("squashed", &target, dir), (Some(2), true));
+        assert_eq!(git::merge_state("gone", &target, dir), (None, false));
     }
 
     #[test]

@@ -368,18 +368,22 @@ pub fn integration_target(remote: &str, dir: &Path) -> Option<(String, String)> 
 }
 
 /// Whether the branch's work is already on `target`, however it got there.
-pub fn is_merged(branch: &str, target: &str, dir: &Path) -> bool {
+pub fn is_merged(branch: &str, target: &str, dir: &Path) -> bool { merge_state(branch, target, dir).1 }
+
+/// The branch's commits that aren't on `target` (None when git couldn't count them), and whether its work is already
+/// on `target`, however it got there. The count is what the "Create Pull Request" offer needs, so it's kept.
+pub fn merge_state(branch: &str, target: &str, dir: &Path) -> (Option<usize>, bool) {
     let out = |args: &[&str]| trimmed(dir, args).ok();
-    let Some(ahead) = out(&["rev-list", "--count", &format!("{target}..{branch}")]) else { return false };
-    if ahead != "0" {
+    let Some(ahead) = out(&["rev-list", "--count", &format!("{target}..{branch}")]).and_then(|n| n.parse::<usize>().ok()) else { return (None, false) };
+    if ahead != 0 {
         // Squashed or rebased: its commits aren't on target, but merging them would change nothing.
-        let Some(merged) = out(&["merge-tree", "--write-tree", "--no-messages", target, branch]) else { return false }; // conflicts fail
-        return Some(merged) == out(&["rev-parse", &format!("{target}^{{tree}}")]);
+        let Some(merged) = out(&["merge-tree", "--write-tree", "--no-messages", target, branch]) else { return (Some(ahead), false) }; // conflicts fail
+        return (Some(ahead), Some(merged) == out(&["rev-parse", &format!("{target}^{{tree}}")]));
     }
     // No commits of its own: a branch just cut from target looks the same as one merged, unless it was ever committed on.
     // ponytail: a PR checked out and merged with a merge commit, never committed on locally, reads as not merged; reflog is the only local signal.
-    out(&["reflog", "show", "--format=%gs", &format!("refs/heads/{branch}")])
-        .is_some_and(|s| s.lines().any(|l| l.starts_with("commit")))
+    (Some(0), out(&["reflog", "show", "--format=%gs", &format!("refs/heads/{branch}")])
+        .is_some_and(|s| s.lines().any(|l| l.starts_with("commit"))))
 }
 
 // MARK: - Status

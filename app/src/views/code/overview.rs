@@ -462,9 +462,10 @@ impl ChangeOverview {
                     .child(div().flex_1().truncate().text_size(px(12.5)).text_color(theme::text_muted()).child(r.title.clone()))
                     .child(ui::icon("chevron-right").size(px(10.)).text_color(theme::text_faint()).opacity(if hover && !files { 1. } else { 0. })))
                 .map(|d| if files {
-                    // Beside the number while there's room, under it in a narrow tile: a wrap does both.
-                    d.child(div().flex().flex_wrap().items_end().gap(px(16.)).child(number)
-                        .child(div().flex_1().min_w(px(240.)).child(self.file_kinds(r, cx))))
+                    // Beside the number while the breakdown gets 300 pt (Swift's ViewThatFits), under it in a narrow
+                    // tile: a wrap does both. The 300 is a basis, not a minimum, so on its own line it shrinks to fit.
+                    d.child(div().w_full().flex().flex_wrap().items_end().gap_x(px(16.)).gap_y(px(10.)).child(number)
+                        .child(div().flex_1().flex_basis(px(300.)).min_w_0().child(self.file_kinds(r, cx))))
                 } else { d.child(number) })
                 .into_any_element()
         }))

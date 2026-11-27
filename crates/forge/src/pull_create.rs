@@ -224,17 +224,6 @@ impl PullCreate {
     }
 }
 
-/// Commits on the branch that aren't on the default branch, and that branch's name; None when there are none or
-/// the branch is the default one. The banner also hides when the branch is merged or already has an open PR
-/// ([`Client::open_pull`]; offline or no access: say nothing).
-pub fn ahead_of_default(dir: &str, remote_name: &str, branch: &str) -> Option<(usize, String)> {
-    let (t, _) = git::integration_target(remote_name, dir)?;
-    if t == branch || t == format!("{remote_name}/{branch}") { return None; }
-    let n: usize = git::string(&["rev-list", "--count", &format!("{t}..HEAD")], dir, None).ok()?.trim().parse().unwrap_or(0);
-    let name = t.strip_prefix(&format!("{remote_name}/")).map_or(t.clone(), str::to_string);
-    (n > 0).then_some((n, name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

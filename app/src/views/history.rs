@@ -1246,6 +1246,11 @@ fn drop_indicator(zone: Zone, fixup: bool) -> AnyElement {
     }
 }
 
+/// What the shell focuses when History is shown (DV-32), so ⌘F, ↑/↓ and the tab keys work without a click.
+impl gpui_kit::Focusable for HistoryView {
+    fn focus_handle(&self, _: &App) -> FocusHandle { self.focus.clone() }
+}
+
 impl Render for HistoryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.selected_model().is_none() { return div().size_full().into_any_element() }

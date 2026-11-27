@@ -933,8 +933,9 @@ impl DiffView {
             .child(div().flex().min_w_0().overflow_hidden().whitespace_nowrap()
                 .child(div().text_color(theme::text_muted()).child(dir))
                 .child(div().text_color(theme::text()).font_weight(FontWeight::MEDIUM).child(name)))
-            // CB-03: an unchanged file (the code browser's plain files) has no counts to show.
-            .when(f.additions + f.deletions > 0, |d| d.child(div().font_family(theme::CODE_FONT).text_size(px(11.)).flex().gap(px(6.))
+            // CB-03: an unchanged file (the code browser's plain files) has no counts to show. A binary file does
+            // ("+0 −0"), as Swift's DiffHeader shows them for every changed file.
+            .when(f.additions + f.deletions > 0 || f.is_binary, |d| d.child(div().font_family(theme::CODE_FONT).text_size(px(11.)).flex().gap(px(6.))
                 .child(div().text_color(theme::green()).child(format!("+{}", f.additions)))
                 .child(div().text_color(theme::red()).child(format!("−{}", f.deletions)))))
             .child(div().flex_1())
@@ -1001,7 +1002,10 @@ impl DiffView {
         let image = |p: &Option<PathBuf>| p.clone().map(|p| img(p).w(px(360.)).max_h(px(360.)).rounded(px(6.)));
         match p {
             Placeholder::NoContent => center("No Content Changes", Some("Mode change or rename only.")).into_any_element(),
-            Placeholder::Binary if self.images.0.is_none() && self.images.1.is_none() => center("Binary File", None).into_any_element(),
+            // Swift's ContentUnavailableView("Binary File", systemImage: "doc.zipper"): a large symbol over a title.
+            Placeholder::Binary if self.images.0.is_none() && self.images.1.is_none() => div().flex_1().flex().flex_col().items_center().justify_center().gap(px(10.))
+                .child(crate::ui::icon("file-archive").size(px(40.)).text_color(theme::text_faint()))
+                .child(div().text_color(theme::text()).text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Binary File")).into_any_element(),
             Placeholder::Binary => div().p(px(20.)).flex().gap(px(24.))
                 .children([("Before", &self.images.0), ("After", &self.images.1)].into_iter().filter(|(_, p)| p.is_some()).map(|(t, p)| {
                     div().flex().flex_col().gap(px(6.)).child(div().text_color(theme::text_muted()).text_size(px(11.)).child(t)).children(image(p))
