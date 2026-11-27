@@ -209,6 +209,9 @@ pub fn segmented(id: impl Into<SharedString>, labels: &[&str], selected: usize,
                 .text_size(px(12.5)).cursor_pointer()
                 .map(|d| if i == selected { d.bg(theme::selected()).text_color(theme::text()) }
                          else { d.text_color(theme::text_muted()).hover(|s| s.text_color(theme::text())) })
+                // In the title bar a press that isn't prevented becomes a window move on the slightest drift,
+                // which swallows the click (gpui-component's TitleBar).
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, w, _| w.prevent_default())
                 .on_click(move |_, w, cx| f(i, w, cx))
                 .child(l.to_string())
         }))
