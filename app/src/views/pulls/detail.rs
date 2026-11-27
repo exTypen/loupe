@@ -308,6 +308,8 @@ impl PullDetail {
                 .or(self.diffs.first().map(|f| f.path())).map(str::to_string);
         }
         self.apply_default_collapse();
+        // CB-05: a PR opened in Full mode shows its first file as a tab, as entering Full does.
+        if self.full_mode(cx) && self.nav.tabs.is_empty() && let Some(p) = self.selected() { self.nav.tabs.push(p.clone()); self.nav.selected = Some(p) }
         self.load_error = None;
         self.last_loaded = Some(Instant::now());
         if head_moved { self.full.clear(); self.outlines.clear() }
