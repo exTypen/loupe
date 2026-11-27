@@ -1,57 +1,69 @@
 # GPUI vs Swift: performance
 
 Measured 2026-11-27 on one MacBook Pro (built-in Retina display, 120 Hz, 1800×1169 pt), the same data for both apps.
-GPUI is the release build of branch `gpui` at 5dde615 (`cargo build --release -p loupe`). Swift is the prebuilt
-`LoupeFlows.app` from `~/loupe-flows-cache` (Swift Loupe at fde8251). Every row was run at least 3 times and the
-table gives the median. The individual runs are listed under each method. Other agents' apps were running on the
-machine at the same time, so the CPU numbers are what each process used itself (`ps` time), not a share of the
-machine.
+GPUI is the release build of branch `gpui` at 8bf456f (`cargo build --release -p loupe`), the commit that ships.
+Swift is the prebuilt `LoupeFlows.app` from `~/loupe-flows-cache` (Swift Loupe at fde8251). Every row was run at
+least 3 times and the table gives the median. The individual runs are listed under each method. Other agents' apps
+were running on the machine at the same time, so the CPU numbers are what each process used itself (`ps` time), not
+a share of the machine.
 
 ## Results
 
 | Measurement | Target | Swift | GPUI | GPUI meets it |
 | --- | --- | --- | --- | --- |
-| (a) Click a 150k-line diff → first full frame | < 1 s | 0.279 s | **0.160 s** | yes |
-| (b) Scrolling it: frames shown per second (display is 120 Hz) | display rate | 90.7 fps (p50 8.5 ms, p95 16.7 ms) | **116.7 fps** (p50 8.3 ms, p95 9.0 ms) | yes |
-| (b′) Scroll start: first scrolled frame after the first wheel event | — | 34–42 ms | 57–67 ms | (not a target) |
+| (a) Click a 150k-line diff → first full frame | < 1 s | 0.204 s | **0.164 s** | yes |
+| (b) Scrolling it: frames shown per second (display is 120 Hz) | display rate | 106.7 fps (p50 8.4 ms, p95 16.8 ms) | **116.7 fps** (p50 8.3 ms, p95 8.9 ms) | yes |
+| (b′) Scroll start: first scrolled frame after the first wheel event | — | 52 ms (29–58) | 63 ms (45–80) | (not a target) |
 | (c) Idle CPU over 60 s, Changes | ~0 | 0.00 s (0 %) | 0.01 s (0.01 %) | yes |
-| (c) Idle CPU over 60 s, History | ~0 | 0.00 s (0 %) | 0.02 s (0.03 %) | yes |
-| (c) Idle CPU over 60 s, open PR #22 | ~0 | 0.22 s (0.36 %) | 0.04 s (0.06 %) | yes |
+| (c) Idle CPU over 60 s, History | ~0 | 0.01 s (0.01 %) | 0.00 s (0 %) | yes |
+| (c) Idle CPU over 60 s, open PR #22 | ~0 | 0.05 s (0.08 %) | 0.02 s (0.03 %) | yes |
 | (c) git processes during those idle minutes (9 per app) | 0 | 0 | 0 | yes |
 | (d) git processes during 10 tab switches | 0 | 0 | 0 | yes |
-| (d) CPU used by those 10 switches | — | 1.32 s | **0.14 s** | — |
-| (d′) git processes per round of switching all 15 worktrees, after the first round | nothing unasked | 13 | 13 | yes |
-| (d′) …the first round (each worktree's first visit) | — | 6 | 27 | see note |
-| (e) RSS after opening the 150k-line diff | — | 230 MB | 193 MB | — |
-| (e) phys_footprint at the same moment | — | 155 MB | 218 MB | — |
+| (d) CPU used by those 10 switches | — | 1.29 s | **0.15 s** | — |
+| (d′) git processes per round of switching all 15 worktrees, after the first round | nothing unasked | 13 | 14 | yes |
+| (d′) …the first round (each worktree's first visit) | — | 6 | 14 | see note |
+| (e) RSS after opening the 150k-line diff | — | 228 MB | 193 MB | — |
+| (e) phys_footprint at the same moment | — | 156 MB | 231 MB | see note |
 
-GPUI meets every target, so this pass changed no app code. What it adds is the harness (`scripts/perf/`) and this
-file.
+Previous run (5dde615, same method): (a) Swift 0.279 / GPUI 0.160 s; (b) 90.7 / 116.7 fps; (b′) 34–42 / 57–67 ms;
+(c) Changes 0.00 / 0.01, History 0.00 / 0.02, open PR 0.22 / 0.04 s; (d) 1.32 / 0.14 s; (d′) first round 6 / 27,
+later 13 / 13; (e) RSS 230 / 193 MB, footprint 155 / 218 MB.
+
+GPUI meets every target. Since the previous run the first worktree round fell from 27 to 14 git processes (the
+Create-PR offer reads the merged check's count, see the last section), and keyboard tab switching works: ⌘2, ⌘1,
+⌘2, ⌘3, ⌘1 with no click showed History, Changes, History, Pull Requests, Changes (screenshots checked). This pass
+changed no app code.
 
 Notes:
-- (b) Swift's rate varied between sessions: 71–77 fps in the first runs and 87–115 fps later. GPUI stayed at 116–118
-  fps in every run. At 120 Hz wheel input (one event per refresh, which beats against vsync) the rates were GPUI 98
-  fps and Swift 74 fps (medians of 3 and 4 runs).
-- (b′) Both apps take one long frame when a scroll starts. With the pointer moved 300 ms before the first wheel event
-  (`SETTLE_MS=300`), so that the hover frame is out of the way, the gap from the first event to the first scrolled
-  frame was 57/67/63 ms for GPUI and 42/34/34 ms for Swift. The sustained rate is not affected. A sample(1) over 8
-  scroll starts showed the main thread mostly idle and no hot Loupe frame, so nothing was changed. It's worth a look
-  with Instruments if it can be felt.
-- (d′) The steady rounds are the same in both apps: 7 × `diff` (the selected file of each dirty worktree), the
-  conflict view's `ls-files -u` and 3 × `show :N:`, and 2 × `config --get`. All of them are asked for by what's
-  shown. GPUI's first round adds 7 × `rev-parse origin/HEAD` and 6 × `rev-list --count origin/main..HEAD`. That is
-  the "Create Pull Request" offer (`views/pr_create/offer.rs`), checked once per HEAD on a worktree's first visit, and
-  the Swift app ran it during launch instead. Over the whole run (launch plus 3 rounds) the totals are Swift 300 and
-  GPUI 314. The only difference is those 14 offer checks, which GPUI makes once per worktree for the banner, the
-  toolbar button and the sidebar item together.
-- (e) RSS is lower in GPUI, but phys_footprint is higher and varied from 191 to 323 MB across runs. The GPUI
-  footprint includes Metal/IOSurface memory for the window's drawables and the glyph atlas. Neither is a target.
-- (c) Swift's open-PR idle wasn't profiled. GPUI's only timers there are the PR poll (`pull::POLL`) and the
-  once-a-minute relative-time refresh (`views/pulls.rs`).
+- (b) Swift's rate varies between sessions: 71–77 fps and 87–115 fps in the previous run, 106–107 fps in this one,
+  and it rendered at 60 Hz (p50 16.4 ms) in the 1 s scroll-start runs. GPUI stayed at 116–117 fps in every run.
+- (b′) Both apps take one long frame when a scroll starts, and both vary a lot run to run. Medians of 6 GPUI runs
+  (53 / 48 / 45 / 73 / 80 / 73 ms) and 8 Swift runs (29 / 34 / 58 / 50 / 56 / 56 / 43 / 54 ms), two sessions each. A
+  sample(1) (1 ms) over 6 scroll starts showed the main thread busy ~550 ms of 9 s, all ordinary frame work
+  (prepaint, taffy layout, glyph painting), nothing hot and no Loupe frame. The extra time is in GPUI's frame
+  pipeline: an idle window pauses its `CAMetalDisplayLink` (`gpui-pre-macos` `display_link.rs`, `MetalFrames`), so
+  the first wheel event first resumes the link and then waits for its next update and the drawable's presentation.
+  That is framework code with no cheap, safe app-side lever, so nothing was changed. The sustained rate is not
+  affected.
+- (d′) The steady rounds: 7–8 × `diff` (the selected file of each dirty worktree), the conflict view's `ls-files -u`
+  and 3 × `show :N:`, and 2 × `config --get`, all asked for by what's shown, the same set in both apps (GPUI's 8th
+  `diff` is the `big` repo's selected file). GPUI's first round is now the same as its steady rounds. Swift's first
+  round has no `diff` because it loads the selected-file diffs during launch.
+- (e) The footprint gap is the window's drawables. `vmmap --summary` right after the click: GPUI IOSurface 120 MB
+  resident (13 regions) against Swift's CoreAnimation 38.6 MB; malloc is about the same (GPUI MALLOC_LARGE+SMALL
+  ~90 MB, Swift ~77 MB + 22 MB empty). GPUI's `CAMetalLayer` keeps up to 3 full-window drawables
+  (`setMaximumDrawableCount(3)` in `gpui-pre-apple` `metal_renderer.rs`), each 3600×2338×4 B ≈ 34 MB at this size.
+  Going to 2 would save ~34 MB, but the layer has `allowsNextDrawableTimeout(false)`, so with 2 drawables a frame
+  can block the main thread waiting for one. That is a framework change with a frame-pacing risk, so it was not made.
+- (c) In the first idle run another agent's keyboard input reached the windows (GPUI's History window got commit
+  selections and a tab switch: 2.57 s and 20 git processes; the Swift copy quit). Both apps' idle runs were redone
+  and only the clean runs are counted.
 
 ## How each number was taken
 
-Everything runs in `/private/tmp/flows-z-perf` (mock forge on port 8837) through the scripts in `scripts/perf/`. Run
+Everything runs in one folder through the scripts in `scripts/perf/`: this run used `/private/tmp/flows-z-perf2`
+(mock forge on port 8852), the previous one `/private/tmp/flows-z-perf` (8837). The scripts hardcode the latter;
+`sed` them for another folder and set `FLOWS_PORT`. Run
 `scripts/perf/setup.sh` once. It starts the flows fixture and mock forge, builds the `big` repo and the scenarios,
 copies the Swift app and compiles the probe. Every script launches the apps only through `run-gpui.sh` /
 `run-swift.sh`. Those set and check `LOUPE_STRESS=<scenario under the folder>` and `HOME=<folder>/home`, so neither
@@ -60,7 +72,7 @@ app touches the real settings or Keychain. Real input goes through `cliclick` or
 
 ### Data
 
-- `big` (`/private/tmp/flows-z-perf/big`) is a throwaway repo. `huge.txt` is a new 150,000-line file added with
+- `big` (`<folder>/big`) is a throwaway repo. `huge.txt` is a new 150,000-line file added with
   intent-to-add (`git add -N`), so it shows as an unstaged change with +150000 −0 and goes through the normal
   `git diff` path. `large.txt` is the memtest shape: a 150k-line file with every 1000th line edited. `README.md` has a
   one-line edit and is the file selected at launch.
@@ -95,12 +107,16 @@ Then, under the lock:
    refresh (`cap scroll`).
 
 Runs:
-- (a) GPUI 0.160 / 0.164 / 0.158 s. Swift 0.278 / 0.284 / 0.279 s. Swift's first change came at about 0.1 s, a
-  partly drawn diff. GPUI's first change was the full diff. Earlier runs in the same session gave GPUI 0.136 / 0.154 /
-  0.168 and Swift 0.275 / 0.289 / 0.270.
-- (b) GPUI 116.7 / 116.7 / 117.0 fps, p95 9.0 / 9.0 / 8.9 ms. Swift 97.0 / 90.7 / 87.3 fps, p95 16.5 / 16.7 /
-  16.7 ms.
-- (e) RSS: GPUI 192 / 193 / 194 MB, Swift 230 / 230 / 230 MB. Footprint: GPUI 202 / 232 / 218 MB, Swift 155 ×3 MB.
+- (a) GPUI 0.144 / 0.164 / 0.167 s (one more run missed the click and was redone). Swift 0.204 / 0.269 / 0.190 s.
+  Swift's first change came at about 0.1 s, a partly drawn diff. GPUI's first change was the full diff.
+- (b) GPUI 116.0 / 116.7 / 116.7 fps, p95 8.9 / 8.9 / 10.1 ms. Swift 107.3 / 106.7 / 106.0 fps, p95 16.8 / 16.9 /
+  16.8 ms.
+- (e) RSS: GPUI 193 / 193 / 194 MB, Swift 227 / 228 / 230 MB. Footprint: GPUI 231 / 232 / 231 MB, Swift 156 / 154 /
+  156 MB.
+
+(b′) is `start.sh gpui|swift`: a fresh launch on `big.json`, `cap click` on `huge.txt`, then `SETTLE_MS=300 EVERY_US=4166
+cap scroll … 1 15` over the diff. The first scrolled frame is at `first-frame + max` (the hover frame, then the long
+gap), and the latency is that minus the 300 ms settle.
 
 A sample(1) of GPUI while it opened the diff showed `load_diff` (git diff plus parsing) at about 37 ms on a
 background thread and nothing else of note.
@@ -117,9 +133,9 @@ and after each window. The open PR is #22: click Pull Requests, then the #22 row
 in Swift.
 
 Runs, CPU seconds per 60 s:
-- Changes: GPUI 0.01 / 0 / 0.01. Swift 0 / 0 / 0.
-- History: GPUI 0 / 0.04 / 0.02. Swift 0 / 0.01 / 0.
-- Open PR: GPUI 0.04 / 0.05 / 0.03. Swift 0.12 / 0.22 / 0.26.
+- Changes: GPUI 0 / 0.12 / 0.01. Swift 0 / 0 / 0.
+- History: GPUI 0.02 / 0 / 0. Swift 0.05 / 0.01 / 0.
+- Open PR (`measure-pr.sh` for GPUI, `measure-switch.sh` for Swift): GPUI 0.02 / 0.02 / 0.03. Swift 0.05 / 0.04 / 0.05.
 
 Every window had 0 git processes.
 
@@ -132,7 +148,7 @@ checks that History is shown.
 
 Runs:
 - git processes: GPUI 0 / 0 / 0. Swift 0 / 0 / 0.
-- CPU: GPUI 0.14 / 0.14 / 0.14 s. Swift 1.31 / 1.33 / 1.32 s.
+- CPU: GPUI 0.12 / 0.15 / 0.15 s. Swift 1.29 / 1.29 / 1.29 s.
 
 ### (d′) worktree switches: `wt.py gpui|swift`
 
@@ -140,15 +156,14 @@ The app runs on `wt.json`, so the StressDriver `worktrees` step runs 3 times in 
 worktree of every repo, 0.25 s apart, and then opens and closes the ⌘K switcher. `wt.py` follows the app's
 `LOUPE_STRESS step-begin/step-end` lines and counts the new trace files per round, grouped by git command.
 
-Runs:
-- GPUI 27 / 13 / 13.
-- Swift 6 / 13 / 13.
+Runs (rounds 1 / 2 / 3, three launches each):
+- GPUI 13 / 14 / 13, 14 / 14 / 14, 14 / 14 / 14.
+- Swift 6 / 13 / 13, 6 / 13 / 13, 6 / 13 / 13.
 
 ## Found on the way (not performance)
 
-- GPUI: after ⌘2 (History), ⌘1/⌘3 do nothing until something in the window is clicked. It looks like keyboard focus
-  is lost when the Changes view is replaced, so the shell's tab actions don't reach a focused element. Changes → ⌘3
-  works. The measurements here click the toolbar segments instead. This is for the shell's owner (`shell/keys`).
+- GPUI (5dde615): after ⌘2 (History), ⌘1/⌘3 did nothing until something in the window was clicked. Fixed at 6835e7e
+  (a tab switch moves focus into the shown view); verified at 8bf456f with keyboard-only ⌘2/⌘1/⌘2/⌘3/⌘1.
 - `measure-switch.sh`'s final "open PR" click missed once in GPUI: the Pull Requests segment click after a Changes
   click 5 s earlier didn't switch. It didn't reproduce on its own, and `measure-pr.sh` checks the state with a
   screenshot.
@@ -164,12 +179,3 @@ the status refresh's merged check already counts the branch's commits not on the
 - Swift on the same fixture: 6 / 12 / 11, 285 in all (it loads the 6–7 selected-file diffs at launch, so its first
   round has none; GPUI loads them on the first visit).
 
-## Re-run at 8bf456f (in progress, raw)
-
-Folder `/private/tmp/flows-z-perf2`, mock forge on 8852, release build of 8bf456f.
-- (a) GPUI 0.144 / 0.164 s (run 1 missed the click). Swift 0.204 / 0.269 / 0.190 s.
-- (b) GPUI 116.0 / 116.7 fps, p95 8.9 / 8.9 ms. Swift 107.3 / 106.7 / 106.0 fps, p95 16.8 / 16.9 / 16.8 ms.
-- (e) RSS GPUI 193 / 193 MB, Swift 227 / 228 / 230 MB. Footprint GPUI 231 / 232 MB, Swift 156 / 154 / 156 MB.
-- (d) 10 switches: git 0 in all. CPU GPUI 0.12 / 0.15 / 0.15 s, Swift 1.29 ×3 s.
-- (c) open PR: GPUI 0.02 / 0.02 / 0.03 s, Swift 0.05 / 0.04 / 0.05 s, git 0.
-- (d′) GPUI 13/14/13, 14/14/14, 14/14/14. Swift 6/13/13 ×3.
