@@ -152,16 +152,18 @@ fn card_row(user: &User, mark: Option<(&'static str, Hsla)>, content: AnyElement
 }
 
 /// The last lines of a review comment's hunk: the code it points at.
-fn hunk_tail(hunk: &str) -> AnyElement {
+/// Highlighted in the language of `path`, as Swift's InlineCommentBlock does.
+fn hunk_tail(path: &str, hunk: &str) -> AnyElement {
     let lines: Vec<&str> = hunk.split('\n').filter(|l| !l.starts_with("@@")).collect();
     let tail = &lines[lines.len().saturating_sub(4)..];
+    let code: Vec<&str> = tail.iter().map(|l| l.get(1..).unwrap_or("")).collect();
     div().flex().flex_col().py_1().bg(theme::canvas()).font_family(theme::CODE_FONT).text_size(px(11.))
-        .children(tail.iter().map(|l| {
+        .children(tail.iter().zip(super::markdown::highlighted(path, &code)).map(|(l, text)| {
             let mark = l.chars().next().unwrap_or(' ');
             let (bg, c, m) = match mark { '+' => (Some(theme::added_bg()), theme::green(), "+"), '-' => (Some(theme::removed_bg()), theme::red(), "−"), _ => (None, theme::text_faint(), " ") };
             div().flex().gap_1p5().px_2p5().when_some(bg, |d, b| d.bg(b))
                 .child(div().w(px(8.)).flex_none().text_color(c).child(m))
-                .child(div().whitespace_nowrap().overflow_hidden().text_color(theme::text()).child(l.get(1..).unwrap_or("").to_string()))
+                .child(div().whitespace_nowrap().overflow_hidden().text_color(theme::text()).child(text))
         }))
         .into_any_element()
 }
@@ -183,7 +185,7 @@ fn inline_comment(c: &ReviewComment, head: &str, d: &PullDetail, cx: &mut Contex
             .when(c.commit_id.as_deref().is_some_and(|s| s != head), |d| d.child(tag("outdated")))
             .child(div().flex_1())
             .child(ui::icon("arrow-up-right").size(px(11.)).text_color(theme::text_faint())))
-        .when_some(c.diff_hunk.as_deref().filter(|h| !h.is_empty()), |d, h| d.child(div().border_t_1().border_color(theme::border()).child(hunk_tail(h))))
+        .when_some(c.diff_hunk.as_deref().filter(|h| !h.is_empty()), |d, h| d.child(div().border_t_1().border_color(theme::border()).child(hunk_tail(&c.path, h))))
         .child(div().flex().items_start().gap_2().p_2p5().border_t_1().border_color(theme::border())
             .child(avatar(&user, 18., me, cx))
             .child(div().flex().flex_col().gap_0p5().flex_1().min_w_0()
