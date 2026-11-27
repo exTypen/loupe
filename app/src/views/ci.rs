@@ -796,6 +796,8 @@ fn updated_label(d: Duration) -> String {
 fn ago_named(secs: i64) -> String {
     let unit = |n: i64, u: &str| format!("{n} {u}{} ago", if n == 1 { "" } else { "s" });
     match secs.max(0) {
+        // RelativeDateTimeFormatter's .named style says "now" for zero ("şimdi" in Swift's shots).
+        0 => "now".into(),
         s if s < 60 => unit(s, "second"),
         s if s < 3600 => unit(s / 60, "minute"),
         s if s < 86_400 => unit(s / 3600, "hour"),
@@ -852,6 +854,7 @@ mod tests {
 
     #[test]
     fn relative_times() {
+        assert_eq!(ago_named(0), "now");
         assert_eq!(ago_named(1), "1 second ago");
         assert_eq!(ago_named(150), "2 minutes ago");
         assert_eq!(ago_named(90_000), "yesterday");
