@@ -126,6 +126,3 @@ final-pass result (this table plus the one above).
 | UN-06 | same: Continue after the RB-13 conflict, ⌘Z → "Undone: Rebase" in both (`s-un06-c.png`) |
 | UN-07 | same: Pop of the spike stash → toast "Pop Stash  Undo", ⌘Z → "Undone: Pop Stash", 3 stashes and the same two changed files again (`g-un07-pop-c.png`, `g-un07-undo-c.png` / `s-un07-pop-c.png`). Popping the changelog stash fails in both with git's "would be overwritten" alert (config/app.yaml) |
 | UN-08 | same: a commit made in a terminal on fresh, then ⌘Z: the entry was pruned in both, nothing happens, HEAD stays (`g-un08.png` / `s-un08.png`) |
-
-Swift-only reload detail seen on the way: Swift's History selection at the GPUI-equivalent spot can end on another
-row after a rewrite; not a parity item.
