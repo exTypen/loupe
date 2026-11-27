@@ -157,6 +157,8 @@ impl PullsView {
 
     fn show(&mut self, c: &Ctx, window: &mut Window, cx: &mut Context<Self>) {
         self.details_of = Some(c.path.clone());
+        // Swift's filter is the list view's own @State: another worktree or tab builds a new view with an empty one.
+        if !self.filter.read(cx).value().is_empty() { self.filter.update(cx, |s, cx| s.set_value("", window, cx)) }
         let list = self.list(&c.path);
         list.restore_cache(&c.remote); // instant list from the last session; the fetch replaces it
         let load = list.should_load_on_show();
