@@ -33,6 +33,9 @@ pub struct Shell {
     /// The Changes / History / Pull Requests views (views::changes, views::history, views::pulls).
     pub views: [AnyView; 3],
     sidebar_open: bool,
+    /// The sidebar sliding open (true) or shut (false), keyed so a toggle mid-slide restarts it; cleared once it ends.
+    sidebar_slide: Option<(u64, bool)>,
+    sidebar_timer: Option<Task<()>>,
     focus: FocusHandle,
     filter: Entity<InputState>,
     switcher: Option<Entity<switcher::Switcher>>,
@@ -88,7 +91,7 @@ impl Shell {
         subs.extend(views::install(&app, window, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let mut s = Self { workspace: app, views, sidebar_open: true, focus, filter, switcher: None, branches: None,
+        let mut s = Self { workspace: app, views, sidebar_open: true, sidebar_slide: None, sidebar_timer: None, focus, filter, switcher: None, branches: None,
                            toast: None, toast_timer: None, next_toast: 0, watched: None, modal: None, swipe: None, slide: None,
                            slide_timer: None, next_slide: 0, page_width: Default::default(), last_space: 0, settling: false,
                            shown_tab: Tab::Changes, had_overlay: false, _subs: subs };
@@ -241,7 +244,7 @@ impl Shell {
             .child(div().flex().items_center().size_full().pr_2()
                 // Left: the sidebar toggle, then fetch / pull / push beside the branch they act on.
                 .child(div().flex().flex_1().items_center().gap_1().min_w_0()
-                    .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| { s.sidebar_open = !s.sidebar_open; cx.notify() })))
+                    .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| s.toggle_sidebar(cx))))
                     // Nothing selected: the window's own title, as Swift shows it (SH-04).
                     .when(wt.is_none(), |d| d.child(div().pl_2().font_weight(FontWeight::SEMIBOLD).child("Loupe")))
                     .when_some(wt.clone(), |d, wt| d
@@ -359,14 +362,42 @@ pub(crate) fn open_in(bundle: &str, path: &str) {
     let _ = std::process::Command::new("/usr/bin/open").args(["-b", bundle, path]).spawn();
 }
 
+const SIDEBAR_WIDTH: f32 = 260.;
+const SIDEBAR_SLIDE: Duration = Duration::from_millis(260);
+
+impl Shell {
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_open = !self.sidebar_open;
+        self.next_slide += 1;
+        let id = self.next_slide;
+        self.sidebar_slide = Some((id, self.sidebar_open));
+        // Drop the slide once it has played, so nothing stays animated (and the split is resizable again).
+        self.sidebar_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SIDEBAR_SLIDE + Duration::from_millis(20)).await;
+            this.update(cx, |s, cx| if s.sidebar_slide.is_some_and(|(x, _)| x == id) { s.sidebar_slide = None; cx.notify() }).ok();
+        }));
+        cx.notify();
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title_bar = self.title_bar(cx);
         let content = self.content(cx);
-        let body = if self.sidebar_open {
+        let body = if let Some((id, opening)) = self.sidebar_slide {
+            // While it slides, the sidebar keeps its width inside a clip that grows or shrinks, so its rows don't
+            // reflow; the resizable split comes back once it is open.
+            let w = match self.page_width.get() { w if w > 1. => w, _ => SIDEBAR_WIDTH };
+            use gpui_kit::AnimationExt as _;
+            let clip = div().flex_none().h_full().overflow_hidden()
+                .child(div().w(px(w)).h_full().child(self.sidebar(cx)))
+                .with_animation(("sidebar-slide", id), gpui_kit::Animation::new(SIDEBAR_SLIDE).with_easing(gpui_kit::ease_out_quint()),
+                    move |d, t| d.w(px(w * if opening { t } else { 1. - t })));
+            div().flex().size_full().child(clip).child(div().flex_1().min_w_0().h_full().child(content)).into_any_element()
+        } else if self.sidebar_open {
             let sidebar = self.sidebar(cx);
             ui::h_resizable("shell-split")
-                .child(ui::resizable_panel().size(px(260.)).size_range(px(200.)..px(360.)).child(sidebar))
+                .child(ui::resizable_panel().size(px(SIDEBAR_WIDTH)).size_range(px(200.)..px(360.)).child(sidebar))
                 .child(ui::resizable_panel().child(content))
                 .into_any_element()
         } else {
@@ -380,7 +411,7 @@ impl Render for Shell {
             .capture_key_down(cx.listener(|s, e, _, cx| s.alert_keys(e, cx)))
             .on_action(cx.listener(|s, _: &OpenRepository, _, cx| s.open_repository(cx)))
             .on_action(cx.listener(|s, _: &GoToWorktree, w, cx| s.open_switcher(w, cx)))
-            .on_action(cx.listener(|s, _: &ToggleSidebar, _, cx| { s.sidebar_open = !s.sidebar_open; cx.notify() }))
+            .on_action(cx.listener(|s, _: &ToggleSidebar, _, cx| s.toggle_sidebar(cx)))
             .on_action(cx.listener(|s, _: &ChangesTab, _, cx| s.set_tab(Tab::Changes, cx)))
             .on_action(cx.listener(|s, _: &HistoryTab, _, cx| s.set_tab(Tab::History, cx)))
             .on_action(cx.listener(|s, _: &PullsTab, _, cx| s.set_tab(Tab::Pulls, cx)))
