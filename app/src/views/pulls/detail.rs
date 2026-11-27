@@ -1000,14 +1000,13 @@ impl PullDetail {
             d.set_highlighter(Some(adapt::highlighter()), cx);
             d.set_side(side, cx);
             d.set_layout(layout, cx);
-            let (w1, w2, w3, w4, w5, w6) = (w.clone(), w.clone(), w.clone(), w.clone(), w.clone(), w);
+            let (w1, w2, w3, w4, w6) = (w.clone(), w.clone(), w.clone(), w.clone(), w);
             d.on_add_comment(move |new, old, body, _, cx| { w1.update(cx, |p, cx| if let Some(path) = p.selected() { p.add_draft(path, new, old, body, cx) }).ok(); });
             d.on_delete_draft(move |id, _, cx| { w2.update(cx, |p, cx| p.delete_draft(id, cx)).ok(); });
             d.can_comment(move |l| w3.upgrade().is_some_and(|_| l.kind != rdiff::LineKind::Meta) && COMMENTABLE.with(|c| c.borrow().as_ref().is_none_or(|(new, old)| {
                 if l.kind == rdiff::LineKind::Removed { l.old_line.is_some_and(|n| old.contains(&n)) } else { l.new_line.is_some_and(|n| new.contains(&n)) }
             })));
             d.on_mark_viewed(move |_, _, cx| { w4.update(cx, |p, cx| p.mark_viewed_and_advance(cx)).ok(); });
-            d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if p.whole(cx) && let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); });
             d.on_side_change(move |side, layout, _, cx| app.update(cx, |a, cx| a.set_diff_side(side, layout, cx)));
             d.header_actions(move |window, cx| w6.upgrade().map(|p| p.update(cx, |p, cx| p.file_header_actions(window, cx))).unwrap_or_else(|| div().into_any_element()));
             d
@@ -1134,7 +1133,11 @@ impl PullDetail {
                     Some(d) => d.clone(),
                     None => { let d = self.make_diff_view(file.clone(), cx); self.diff_view = Some(d.clone()); d }
                 };
+                let w5 = cx.weak_entity();
                 d.update(cx, |d, cx| {
+                    // Swift wires navigation only into whole files (Full, Before / After), not the Compact diff.
+                    if whole { d.on_navigate(move |word, action, _, cx| { w5.update(cx, |p, cx| if let Some(from) = p.selected() { p.navigate(word, action, from, cx) }).ok(); }) }
+                    else { d.clear_navigate() }
                     d.set_file(file, cx);
                     d.set_comments(comments, cx);
                     d.set_side(side, cx);
