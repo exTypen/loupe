@@ -63,3 +63,34 @@ Performance: idle CPU with History open is 0.0 % (`ps` twice, 10 s apart: 0:00.3
 app-router 0:00.98 → 0:01.02). Nothing polls. Leaving the tab or the worktree cancels the list, detail, whole-file
 and Blame/File History/Markdown loads. Whole files are cached per "sha path" for the commit showing only, and the
 list per worktree keyed by "HEAD refsVersion".
+
+## Final pass (merged app, branch gpui-z-history)
+
+Both apps on one mock (port 8834, `/tmp/flows-z-history`), real clicks and keys (CGEvent clicks; a cliclick
+down/up pair does not reach gpui buttons), screenshots in `/tmp/flows-z-history/shots/` (`g-*` GPUI, `s-*` Swift).
+
+| ID | Final pass (merged app) |
+|---|---|
+| HI-01 | same: list, scope menu, top commit selected (`g-hist.png` / `s-hist2.png`) |
+| HI-02, HI-06, HI-08, HI-12, HI-13, HI-20, HI-22 | same as the table above; no regression seen where views meet |
+| HI-03..05 | same rows, graph, badges, "+N" (`g-hi01.png`, `g-hi09-all.png`, `s-hi09-all-later.png`) |
+| HI-07 | same |
+| HI-09 | same items and order (`c-g-hi09-menu.png` vs `c-s-hi09-menu.png`, `g-menu2.png` vs `s-menu.png`) |
+| HI-10 | same; Changes' "3 stashes →" opens History on Stashes in both (`g-hi10.png` / `s-hi10.png`) |
+| HI-11 | same: "readme" + Return → No Matches in both (git ANDs --grep/--author); clearing reloads (`g-hi11-search.png`, `s-hi11-search.png`, `g-hi11-cleared.png`) |
+| HI-14 | same; Overview of a commit (`g-hi14-overview.png`) |
+| HI-15, HI-17 | same: All Branches → "Cherry-pick onto main" → conflict → Changes with the "Cherry-picking …" banner in both (`g-hi17-abort.png`, `s-hi17b.png`) |
+| HI-16 | **fixed**: the row's hover tooltip covered the menu's first items (Revert, Reword…, Edit) (`g-rb02.png` before, `g-rb02-notip.png` after) |
+| HI-18 | same: Revert Commit makes `Revert "…"`, ⌘Z → "Undone: Revert of fd12ba38" (`g-hi18-after.png`, `g-un01.png`) |
+| HI-19 | **fixed**: after Drop Stash the first ⌘Z did nothing (the dialog left nothing focused, so no key binding fired); dialogs now hand focus back to History. Drop → ⌘Z → 3 stashes again (`g-hi19-drop.png`, `g-un07b.png`) |
+| HI-21 | same: merge of #33 (stress `mergepr`): `ok=yes tab=history scope=origin/main`, merge on top and selected (`g-hi21-history.png`) |
+| RB-01, RB-02 | same items and enablement (`g-rb02-notip.png` vs `s-rb02.png`; Swift's menu shot caught after it closed) |
+| RB-07, UN-05 | same: Move Up on WIP reordered (git log), ⌘Z → "Undone: Move Commit Up" (`g-un05.png`) |
+| RB-08 | same: "Rewrite 2 pushed commits?" … Rewrite Anyway / Cancel; Cancel leaves HEAD (`g-rb08.png`) |
+| RB-03..06, RB-09..13 | not re-driven in the merged app; the code paths are unchanged since the per-view pass |
+| UN-01, UN-03 | same toasts: "Undone: …", "Drop Stash  Undo" (`g-un07.png`) |
+| UN-06 | same: Continue after resolving records "Cherry-pick"; ⌘Z → "Undone: Cherry-pick" (`g-un06.png`) |
+| UN-07 | fixed with HI-19 (focus) |
+| UN-02, UN-04, UN-08 | unchanged since the per-view pass |
+
+Idle CPU with History open (app, origin/main after the merge): `0.0 0:00.93` twice, 10 s apart.

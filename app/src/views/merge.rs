@@ -17,7 +17,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px, size,
-    component::input::{self, Editor, EditorState, InputEditsEvent},
+    component::input::{self, Editor, EditorState, InputEditsEvent, TextDecoration, TextDecorationCollection},
 };
 use loupe_core::conflicts::{self, MergeLabels};
 use loupe_core::git::Kind;
@@ -189,6 +189,8 @@ pub struct MergeEditor {
     confirm_reset: bool,
     ai: Option<ai::Selected>,
     stepped: bool,
+    /// MG-04: each pane's syntax colours, set again when its text is replaced.
+    syntax: HashMap<Role, TextDecorationCollection>,
     _subs: Vec<Subscription>,
 }
 
@@ -210,7 +212,7 @@ impl MergeEditor {
         let mut v = MergeEditor {
             app, worktree, path, model, focus: cx.focus_handle(), loaded: None, s: None, panes: None, survivor: None,
             starts: HashMap::new(), show_base: false, known: None, status_version, write: None, write_now: false, loading: None,
-            reveal: false, suggesting: None, proposal: None, confirm_reset: false, ai: None, stepped: false, _subs: subs,
+            reveal: false, suggesting: None, proposal: None, confirm_reset: false, ai: None, stepped: false, syntax: HashMap::new(), _subs: subs,
         };
         v.load(window, cx);
         cx.spawn(async move |this, cx| {
@@ -267,6 +269,7 @@ impl MergeEditor {
                     self.panes = Some(p);
                 }
             }
+            for role in [Role::Ours, Role::Theirs, Role::Base, Role::Result] { self.highlight(role, cx) }
             self.reveal = true;
         } else if let Some(t) = l.survivor.clone() {
             self.starts = HashMap::from([(Role::Ours, session::line_starts(&t))]);
@@ -311,6 +314,8 @@ impl MergeEditor {
         for (edit, rope) in e.edits() { s.edited(edit.start_byte, edit.old_end_byte, edit.new_end_byte, rope.to_string()) }
         self.starts.insert(Role::Result, session::line_starts(&s.text));
         if std::mem::take(&mut self.write_now) {
+            // A take brings in highlighted lines, as Swift's `replace` does; typed text stays plain until then.
+            self.highlight(Role::Result, cx);
             self.commit(cx);
         } else {
             self.write = Some(cx.spawn(async move |this, cx| {
@@ -344,6 +349,17 @@ impl MergeEditor {
 
     fn flush_app(&mut self, cx: &mut App) {
         if self.write.is_some() && let Some(e) = self.write_result() { self.model.update(cx, |m, cx| m.set_error(e, cx)) }
+    }
+
+    /// Colours the pane's text with the code theme's tokens (Swift's `MergeSession.highlight`).
+    fn highlight(&mut self, role: Role, cx: &mut Context<Self>) {
+        let Some(p) = &self.panes else { return };
+        let e = match role { Role::Ours => &p.ours, Role::Theirs => &p.theirs, Role::Base => &p.base, Role::Result => &p.result }.clone();
+        let d = syntax_decorations(&e.read(cx).value(), &self.path);
+        match self.syntax.get(&role) {
+            Some(c) => c.set(d, cx),
+            None => { let c = e.update(cx, |e, cx| e.create_decorations_collection(d, cx)); self.syntax.insert(role, c); }
+        }
     }
 
     /// Before git rewrites the file (Reset, a whole side): a write still waiting would land on top of it.
@@ -546,6 +562,23 @@ fn scroll_to_row(e: &Entity<EditorState>, row: usize, cx: &mut App) {
     });
 }
 
+/// The code theme's token colours over the text, line by line with the tokenizer's state carried along.
+fn syntax_decorations(text: &str, path: &str) -> Vec<TextDecoration> {
+    use loupe_code::{syntax, theme::{CodeTheme, EditorSettings}};
+    let Some(lang) = syntax::Language::for_path(path) else { return vec![] };
+    let id = settings::shared().string(EditorSettings::KEY_DARK_THEME).unwrap_or_default();
+    let colors = CodeTheme::named(&id, true).tokens;
+    let (mut state, mut at, mut out) = (syntax::State::default(), 0, vec![]);
+    for line in text.split_inclusive('\n') {
+        for t in syntax::tokenize(line.strip_suffix('\n').unwrap_or(line), lang, &mut state) {
+            let color: Hsla = gpui_kit::rgb(colors[t.kind as usize]).into();
+            out.push(TextDecoration::new(at + t.start as usize..at + (t.start + t.len) as usize, gpui_kit::HighlightStyle { color: Some(color), ..Default::default() }));
+        }
+        at += line.len();
+    }
+    out
+}
+
 fn tint_color(t: Tint) -> Hsla {
     match t {
         Tint::Ours => theme::blue().opacity(0.13),
@@ -592,7 +625,8 @@ impl MergeEditor {
         let p = self.panes.as_ref().expect("panes exist for a text conflict");
         let e = match role { Role::Ours => p.ours.clone(), Role::Theirs => p.theirs.clone(), _ => p.base.clone() };
         let s = self.s.as_ref().expect("a text session");
-        let tints = s.pane_tints(role).into_iter().map(|(r, t)| (r, tint_color(t), false)).collect();
+        // A side with no lines in a chunk (a conflict where one side added nothing) is a 2 pt bar, as in Swift.
+        let tints = s.pane_tints(role).into_iter().map(|(r, t)| { let bar = r.is_empty(); (r, tint_color(t), bar) }).collect();
         let starts = self.starts.get(&role).cloned().unwrap_or_default();
         let show_base = self.show_base;
         let side = match role { Role::Ours => Some(Side::Ours), Role::Theirs => Some(Side::Theirs), _ => None };

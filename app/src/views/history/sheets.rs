@@ -24,14 +24,17 @@ pub struct Dialog {
     message: String,
     buttons: Vec<(String, Role, Option<Action>)>,
     focus: FocusHandle,
+    /// Focus goes back here on dismiss: with nothing focused the window's key bindings (⌘Z, ⌘R, ⌥⌘↓ …) never reach
+    /// the shell and the view, so the first ⌘Z after "Drop Stash" did nothing.
+    back: FocusHandle,
 }
 
 impl Dialog {
     pub fn present(app: &Entity<AppModel>, title: impl Into<String>, message: impl Into<String>,
-                   buttons: Vec<(String, Role, Option<Action>)>, window: &mut Window, cx: &mut App) {
-        let (title, message) = (title.into(), message.into());
+                   buttons: Vec<(String, Role, Option<Action>)>, back: &FocusHandle, window: &mut Window, cx: &mut App) {
+        let (title, message, back) = (title.into(), message.into(), back.clone());
         let a = app.clone();
-        let v = cx.new(|cx| Dialog { app: a, title, message, buttons, focus: cx.focus_handle() });
+        let v = cx.new(|cx| Dialog { app: a, title, message, buttons, focus: cx.focus_handle(), back });
         let f = v.read(cx).focus.clone();
         f.focus(window, cx);
         app.update(cx, |a, cx| a.present(v.into(), cx));
@@ -39,16 +42,17 @@ impl Dialog {
 
     /// "Drop stash@{0}?" with a destructive confirm and Cancel.
     pub fn confirm(app: &Entity<AppModel>, title: impl Into<String>, message: impl Into<String>, confirm: &str,
-                   action: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+                   action: impl Fn(&mut Window, &mut App) + 'static, back: &FocusHandle, window: &mut Window, cx: &mut App) {
         Self::present(app, title, message, vec![
             ("Cancel".into(), Role::Cancel, None),
             (confirm.into(), Role::Destructive, Some(Rc::new(action))),
-        ], window, cx)
+        ], back, window, cx)
     }
 
     fn press(&self, i: usize, window: &mut Window, cx: &mut App) {
         let action = self.buttons.get(i).and_then(|b| b.2.clone());
         self.app.update(cx, |a, cx| a.dismiss(cx));
+        self.back.focus(window, cx);
         if let Some(f) = action { f(window, cx) }
     }
 }
@@ -66,11 +70,7 @@ impl Render for Dialog {
                 Role::Default => ui::pill_primary(SharedString::from(format!("dialog-{i}")), label.clone(), theme::blue()),
                 Role::Destructive => ui::pill_primary(SharedString::from(format!("dialog-{i}")), label.clone(), theme::red()),
             };
-            b.on_click(move |_, w, cx| {
-                let (action, app) = { let v = me.read(cx); (v.buttons[i].2.clone(), v.app.clone()) };
-                app.update(cx, |a, cx| a.dismiss(cx));
-                if let Some(f) = action { f(w, cx) }
-            })
+            b.on_click(move |_, w, cx| me.update(cx, |v, cx| v.press(i, w, cx)))
         }).collect::<Vec<_>>();
         div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
