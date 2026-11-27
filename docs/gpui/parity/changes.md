@@ -27,12 +27,12 @@ dropped when its key moves or another worktree is selected.
 | CH-10 | Compact/Full toggle, ⌥⌘F, Full opens the list's file, back selects the tab's file | same; shots `swift-discard-confirm.png` (Swift in Full), `gpui-full.png` | same |
 | CH-11 | Conflicts / Staged ("Unstage All") / Changes ("Stage All") with counts; Changes always shown | same sections and buttons; shots `swift-billing.png`, `gpui-billing.png` | same |
 | CH-12 | Folder rows, chain compaction, per-section fold "<section>/<dir>", not persisted | same (`tree::rows`), chain shown whole when it fits; Swift head-truncates | same |
-| CH-13 | Icon, name, lock badge, StatusIcon, path tooltip | same; conflicted uses Lucide `square-asterisk` (no exclamation-square in the set) | same |
-| CH-14 | "Working Tree Clean" + "No Changes", controls hidden, Stash… disabled | same text and states (code) | same |
+| CH-13 | Icon, name, lock badge, StatusIcon, path tooltip | same; conflicted uses Lucide `square-asterisk` (no exclamation-square in the set), orange as in Swift (it was amber, the modified colour, until the final pass) | same |
+| CH-14 | "Working Tree Clean" + "No Changes", controls hidden, Stash… disabled | same text and states; since the final pass "Working Tree Clean" is centred in the list column under "Changes 0" (`gpui-stashed.png` vs `swift-stashed.png`) | same |
 | CH-15 | Click / ⌘ / ⇧ / ⌘A; diff follows the newly added row | `list::shown_for` (unit test `the_diff_follows_the_row_just_added`); ⌘A over a virtual list can't hang | same |
 | CH-16 | ↑/↓ and ⌥↓/⌥↑ clamp through `listed` | same (`move_file`), list scrolls to the row | same |
 | CH-17 | Selection moves W↔S, intersected; diff kept when text unchanged | core `apply_status` + `set_diff` keep it; seen after commit/undo (`gpui-commit-done.png`) | same |
-| CH-18 | Context menu items in order | same items/order, Git LFS submenu; shots `swift-ctxmenu.png`, `gpui-ctxmenu.png`. Stage/Discard aren't offered for conflicted files | fixed-swift-bug (§14 Changes: conflicted files staged / discarded) |
+| CH-18 | Context menu items in order | same items/order, Git LFS submenu (no divider before it since the final pass, as Swift); shots `swift-ctxmenu.png`, `gpui-ctxmenu.png`. Stage/Discard aren't offered for conflicted files | fixed-swift-bug (§14 Changes: conflicted files staged / discarded) |
 | CH-19 | Reveal in Finder / Open / Copy Path(s) | `open -R`, `open_with_system`, newline-joined paths | same |
 | CH-20 | Context Blame / File History set the panel | `open_panel` sets (not toggles) | same |
 | CH-21 | Submodule pane, LFS object view, lock badges | same; shots `swift-submodule.png` / `gpui-submodule.png`, `swift-lfs.png` / `gpui-lfs.png`. Lock badges also show in a worktree that refreshed while a sibling asked the server: `WorktreeModel::load_lfs_locks` hands its answer to the repository's other worktrees (i-core: billing's hero.psd and banner.png locked, `/tmp/flows-i-core/g-billing.png`) | same |
@@ -80,9 +80,9 @@ dropped when its key moves or another worktree is selected.
 | SS-08 | Drop… confirm, undo + toast | History's Drop… asks `stash::drop_question`, then `stash_op(Drop, …)` | same |
 | SS-09 | Copy stash message | History's row menu | intentional (History view) |
 | SS-10 | Conflicted apply/pop: "Conflicts" banner, no Abort/Continue, merge editor | `stash_op` treats it as a stop, not an error; banner shows "Conflicts" without buttons when no operation | same |
-| FI-01 | Blame toggle, `blame --porcelain`, reload on diff uid; deleted file: silent nothing | same gutter ("854a291 Alice Mock · 10 mo", "Not committed"), keyed by uid; no Blame/History for an unstaged deleted file. Shot `gpui-blame.png` | fixed-swift-bug (§14 Changes: blame silently does nothing for deleted files) |
+| FI-01 | Blame toggle, `blame --porcelain`, reload on diff uid; deleted file: silent nothing | same gutter ("8bf2d76 Alice Mock · 10 mo. ago", "Not committed"; the age follows Swift's abbreviated RelativeDateTimeFormatter since the final pass), keyed by uid; no Blame/History for an unstaged deleted file. Shots `gpui-blame2.png`, `swift-blame.png` | fixed-swift-bug (§14 Changes: blame silently does nothing for deleted files) |
 | FI-02 | History panel open/close | same header (History, name, ×); shot `gpui-history.png` | same |
-| FI-03 | `log --follow`, rename caption, "No History" | core `file_log`, same caption | same |
+| FI-03 | `log --follow`, rename caption, "No History" | core `file_log`, same caption; rows are Swift's CommitRow since the final pass (avatar initials, sha + author, date right, ref badges, "2 months ago" by calendar month) | same |
 | FI-04 | Pick → bar (sha, subject, author · date, Back to the Change), commit diff | same; shot `gpui-history-pick.png` | same |
 | FI-05 | Resize 260–700, `filePanelWidth`, double-click 340 | same | same |
 | FI-06 | Compact + Full, tracked only, not for submodules/conflicts | same | same |
@@ -133,8 +133,8 @@ dropped when its key moves or another worktree is selected.
 | DV-45 | Resize clamp | renderer | same (renderer) |
 | LF-01 | Detection from .gitattributes / lfs/objects | core `LfsState::check` | same |
 | LF-02 | "git-lfs isn't installed" banner, Copy Command, Dismiss (global) | same text, `lfsMissingBannerDismissed` | same |
-| LF-03 | LFS object view Before → After, sizes, oids | same; shots `swift-lfs.png`, `gpui-lfs.png`. The headline has the drive icon (LFS.swift:242 `externaldrive`; `/tmp/flows-i-core/g-lf03.png`) | same |
-| LF-04 | Thumbnails ≤ 720 px, "Not downloaded" | same in Compact; also in Full mode: Changes resolves the objects once and hands them to the browser (`CodeBrowser::set_images`), shown while that file is its open tab (`/tmp/flows-f-cleanup/g-lf04-full.png`: banner.png before/after in Full) | same |
+| LF-03 | LFS object view Before → After, sizes, oids | same; shots `swift-lfs.png`, `gpui-lfs.png`. The headline has the drive icon (LFS.swift:242 `externaldrive`; `/tmp/flows-i-core/g-lf03.png`). Sizes read "66 KB" (ByteCountFormatter .file) since the final pass; they read "65.5 KB" | same |
+| LF-04 | Thumbnails ≤ 720 px, "Not downloaded" | final pass: an object that doesn't decode (hero.psd) says "Not downloaded" with its tooltip (it was blank), and thumbnails scale to fit 360 pt like Swift's aspect-fit Image (banner.png showed at its 200 px); same in Compact; also in Full mode: Changes resolves the objects once and hands them to the browser (`CodeBrowser::set_images`), shown while that file is its open tab (`/tmp/flows-f-cleanup/g-lf04-full.png`: banner.png before/after in Full) | same |
 | LF-05 | Locks once a minute per repository | core cache; the worktree that asked hands the answer to its siblings (`WorktreeModel::load_lfs_locks`; Changes' own copy of that hand-off is gone). Badges on hero.psd / banner.png in app-billing (`/tmp/flows-f-cleanup/g-billing.png`) | same |
 | LF-06 | Lock badge with "Locked by <owner> (Git LFS)" | same; shot `gpui-billing-locks.png` vs `swift-billing.png` | same |
 | LF-07 | Track *.ext / Track This File | same submenu | same |
@@ -158,6 +158,43 @@ dropped when its key moves or another worktree is selected.
 | FT-09 | Splitter, `changesListWidth`, double-click reset | same (Changes default 300) | same |
 | MS-15 | StatusIcon table | `tree::status_icon` (same kinds, colors, tooltips) | same |
 | MS-16 | Porcelain v2 parsing | core `git::status` | same |
+
+## Final pass (merged app, branch `gpui-z-changes` from gpui 5dde615)
+
+Both apps on one fixture (`FLOWS_PORT=8832 up.sh /tmp/flows-z-changes`): the prebuilt Swift copy (fde8251) and the merged
+GPUI build. Shots are `/tmp/flows-z-changes/shots/swift-*.png` and `gpui-*.png` (`c*.png` are crops). Every CH, CM, SS,
+FI, LF and SM ID was rechecked against the rows above; flows driven on screen in both apps are listed with their shots,
+the rest were re-read against the merged code (no view in between changed them).
+
+| Flows | Driven in both apps (shots) | Result |
+|---|---|---|
+| CH-08, CH-11, CH-12, CH-13 | billing / sessions / root lists, banners, sections, folder collapse (`*-billing.png`, `*-sessions.png`, `gpui-nav.png`) | same after the conflict mark became orange |
+| CH-09 | Overview of root (`*-ov.png`); the toolbar segment switches on a real click now | same |
+| CH-10, CH-41, CH-42 | Full mode on root (`*-full.png`) | same, except the renderer's Unified / Split control (see below) |
+| CH-14 | infra after a stash (`*-stashed.png`) | fixed: centred empty state, header count beside its title |
+| CH-15, CH-16, CH-17 | click, ⌥↓, selection after stage / commit / discard (`gpui-nav.png`, `*-space.png`, `*-disc-done.png`) | same |
+| CH-18, CH-21, LF-07 | menu on hero.psd and new.png, Git LFS submenu (`*-ctx-hero.png`, `c-*-lfsmenu.png`, `*-lockmenu.png`) | fixed: divider before Git LFS removed |
+| CH-22, CH-23, CH-31 | Space stages hero.psd, ⌘Z "Undone: Stage hero.psd" (`*-space.png`, `*-undo.png`) | same |
+| CH-28, CH-32..35, CH-38 | header Discard…, ⌫ + Return, toast Undo and ⌘Z on Session.java (`*-disc*.png`, `gpui-toast-undo.png`) | same |
+| CH-39, CH-40 | LFS, submodule, conflict, binary panes and headers (`*-lfs.png`, `*-banner.png`, `*-sub.png`, `gpui-closeme.png`) | same (conflict pane: documented intentional) |
+| CM-01..06 | ⌘↩ commit "Parity", undo puts the message back, Amend fills the last message (`*-commit*.png`, `c*-amend`) | same |
+| CM-08, CM-09 | ✨ with the stub CLI in GPUI (`gpui-ai.png`, the call in `ai-calls.log`); not run in Swift, which would call the real /opt/homebrew/bin/claude | same as code |
+| SS-01, SS-02, SS-04, SS-07 | popover, stash with a message, the "1 stash" link, Pop with toast (`*-stash.png`, `*-stashed.png`, `*-ss04.png`, `*-pop.png`) | same |
+| FI-01..04 | Blame gutter, History panel, pick a commit (`*-blame*.png`, `*-fh*.png`, `*-pick.png`) | fixed: CommitRow look, Swift's relative dates, gutter age |
+| LF-03, LF-04 | hero.psd (undecodable objects) and banner.png (`*-lfs.png`, `c1/c2` of `*-banner.png`) | fixed: "Not downloaded", 360 pt thumbnails, "66 KB" |
+| LF-05, LF-06, LF-08 | lock badges, Lock new.png, Unlock refused by git-lfs "Cannot unlock file with uncommitted changes" in the Git alert (`gpui-locked.png`, `gpui-state.png`) | same |
+| SM-01, SM-02, SM-04, SM-06 | acme-lib pane, Stage Pointer / Unstage, Initialize (`*-sub.png`, `*-stageptr.png`, `swift-init.png`) | same |
+
+Still different, not fixed here:
+- Full mode's file header (the code browser's `DiffView`) offers Unified / Split; Swift has no split mode anywhere (DV-20).
+  The control is the renderer's (`diff/view.rs`), shown in History and Pull Requests too, and `diffLayout` is persisted
+  by the app, so it reads as an app-wide GPUI addition; Compact Changes stays unified.
+- A row tooltip that was pending when a context menu opens draws over the menu's first item until the pointer moves into
+  the menu (gpui's tooltip only hides on a mouse-down outside its element). Framework behaviour, every list.
+- LF-04 thumbnails have no "W × H" tooltip (the renderer gets a path, not the decoded size).
+
+Idle CPU with the merged app on app-billing: Compact `0.0 0:01.83` twice 10 s apart; Full `0.0 0:01.94` then
+`0.0 0:01.98` (others' pointer moving over the window).
 
 ## Requests
 

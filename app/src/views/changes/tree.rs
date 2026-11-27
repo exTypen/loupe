@@ -47,7 +47,7 @@ pub fn status_icon(kind: Kind) -> (&'static str, Hsla, &'static str) {
         Kind::Deleted => ("square-minus", theme::red(), "Deleted"),
         Kind::Renamed => ("square-arrow-right", theme::blue(), "Renamed"),
         Kind::Copied => ("square-arrow-right", theme::blue(), "Copied"),
-        Kind::Conflicted => ("square-asterisk", theme::accent(), "Conflicted"),
+        Kind::Conflicted => ("square-asterisk", theme::orange(), "Conflicted"), // orange as in Swift; amber reads "modified"
         Kind::TypeChanged => ("square-dot", theme::accent(), "Type changed"),
         Kind::Modified => ("square-dot", theme::accent(), "Modified"),
     }
