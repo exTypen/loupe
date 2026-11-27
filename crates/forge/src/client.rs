@@ -341,15 +341,17 @@ impl Client {
         if self.github { return self.github_checks(r, sha); }
         #[derive(Deserialize)]
         struct Combined {
-            total_count: Option<usize>,
             statuses: Option<Vec<CommitStatus>>,
         }
+        // Forgejo's total_count (and state) describe the page, not the commit: a commit with 96 statuses answers
+        // total_count 50 on page 1, so stopping there showed "50 of 50 successful" while two were still pending.
+        // Read pages until a short one.
         let mut all = Vec::new();
-        for page in 1.. {
+        for page in 1..=20 {
             let c: Combined = self.get(&format!("{}/commits/{sha}/status", Self::repo(r)), &self.paged(page, 50))?;
             let n = c.statuses.as_ref().map_or(0, |s| s.len());
             all.extend(c.statuses.unwrap_or_default());
-            if n < 50 || all.len() >= c.total_count.unwrap_or(0) { break; }
+            if n < 50 { break; }
         }
         Ok(all)
     }
@@ -742,6 +744,27 @@ mod tests {
             let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         });
         url
+    }
+
+    #[test]
+    fn combined_status_reads_past_a_page_whose_total_count_says_done() {
+        use std::io::{Read, Write};
+        // As git.fd.dev answers: total_count is the page's own count, so page 1 claims the commit has 50.
+        let st = |i: usize, s: &str| format!(r#"{{"id":{i},"status":"{s}","context":"c{i}","description":"","target_url":"","created_at":"","updated_at":""}}"#);
+        let page1 = format!(r#"{{"state":"success","total_count":50,"statuses":[{}]}}"#, (0..50).map(|i| st(i, "success")).collect::<Vec<_>>().join(","));
+        let page2 = format!(r#"{{"state":"pending","total_count":2,"statuses":[{},{}]}}"#, st(50, "pending"), st(51, "skipped"));
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || for mut c in l.incoming().flatten() {
+            let mut b = [0u8; 4096];
+            let n = c.read(&mut b).unwrap_or(0);
+            let body = if String::from_utf8_lossy(&b[..n]).contains("page=2") { &page2 } else { &page1 };
+            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        let r = RemoteRepo { host: "x".into(), owner: "o".into(), name: "n".into() };
+        let all = Client::new(&url, "t", false).combined_status(&r, "abc").unwrap();
+        assert_eq!(all.len(), 52);
+        assert!(all.iter().any(|s| s.status == "pending"));
     }
 
     #[test]
