@@ -428,10 +428,16 @@ impl Shell {
 /// The main window, 1440×900 by default, at least 860×560, with Loupe's own title bar.
 pub fn open_main_window(app: Entity<AppModel>, cx: &mut App) {
     use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, size};
+    // A LOUPE_STRESS run fills the visible frame (Swift's StressDriver: setFrame(visibleFrame)). It has to start
+    // there: gpui can't move a window later, and a centered window resized to the screen ran under the Dock.
+    let bounds = match app.read(cx).scenario.is_some().then(|| cx.primary_display()).flatten() {
+        Some(d) => d.visible_bounds(),
+        None => Bounds::centered(None, size(px(1440.), px(900.)), cx),
+    };
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions { title: Some("Loupe".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(15.))) }),
         app_owns_titlebar_drag: true,
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1440.), px(900.)), cx))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(860.), px(560.))),
         ..Default::default()
     };
