@@ -65,7 +65,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-25 | ⌘-click / Go to Definition / Find References at head; results panel | Same via `loupe_code::index` at the head sha (menu in g-rv12a.png) | same |
 | PD-26 | Back/Forward and outline in Full headers | `tabs::nav_controls` with the outline from `loupe_code::index::outline_of` | same |
 | PD-27 | Before/After in Compact shows whole files with no tab bar | Same (`whole()` without tabs unless Full) | same |
-| PD-28 | Check Out: select an existing `pr/N`, else fetch + `worktree add -B pr/N <repo>-pr-N` (any repo) | Same commands; only this repository's worktrees count (g-pd28.png: app-pr-27 created and selected) | fixed-swift-bug (§14 PR: Model.swift:559 searched every repo) |
+| PD-28 | Check Out: select an existing `pr/N`, else fetch + `worktree add -B pr/N <repo>-pr-N` (any repo) | Same commands; only this repository's worktrees count (g-pd28.png: app-pr-27 created and selected). The button calls `AppModel::checkout_pull` (repo-scoped in state/ now; the pulls copy is gone) | fixed-swift-bug (§14 PR: Model.swift:559 searched every repo) |
 | PD-29 | Merge menu Merge/Rebase/Squash, disabled when not mergeable, "<Style> #N into base?" | Same menu, tooltip and confirmation (g-pd29a.png, g-pd29.png); body `{"Do":"merge"}` in forge.log | same |
 | PD-30 | After a merge: back, fetch base, History on `<remote>/<base>` with the merge selected | Leaves the PR, fetches `main`, emits `ShowBranch`; History shows origin/main with the merge selected (`g-merged.png`) | same |
 | PD-31 | Merge rejected: "Forgejo 405: …" alert, stays on the PR | Same (g-pd31.png) | same |

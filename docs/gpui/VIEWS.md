@@ -20,7 +20,7 @@ sh ~/loupe-gpui-mock/scripts/flows/down.sh /tmp/<you>-flows                     
 ```
 
 Pick your own port and output folder, so you don't share a forge or fixture with another agent. In scenario mode
-(`state/scenario.rs`) the app uses its own settings domain `dev.extypen.loupe.flows-gpui`, wiped at launch. It never
+(`state/scenario.rs`) the app uses its own settings domain `dev.extypen.loupe.flows-gpui.<fixture folder>` (the scenario file's folder, so parallel fixtures don't share one), wiped at launch. It never
 touches the real domain or the Keychain. It opens the scenario's repos with an in-memory account
 (`forge`/`user`/`token`) and talks plain http to the mock. Idle CPU must stay at 0: check with
 `ps -o %cpu=,time= -p <pid>` twice, 10 s apart.
@@ -44,9 +44,12 @@ touches the real domain or the Keychain. It opens the scenario's repos with an i
     except in scenario mode. Tokens are loaded once, off the main thread. `client_for` is None until they arrive, so
     observe the app and retry.
   - Repos and worktrees: `select(Some(path))`, `switch_space_to`, `add_space`, `delete_space`, `move_repos`,
-    `move_repo`, `add_repo(path)`, `remove_repo`, `refresh_worktrees(repo) -> Task`,
+    `move_repo`, `add_repo(path)`, `remove_repo`, `refresh_worktrees(repo) -> Task`, core `add_space_without_switch()` (Settings' "+"),
     `add_worktree(repo, path, branch, base, new_branch) -> Task<Result<(), String>>`, `remove_worktree(..)`,
-    `checkout_pull(worktree, number)`, `state::suggest_worktree_path`.
+    `checkout_pull(worktree, number)` (this repository's `pr/N` worktree, else a new one), `state::suggest_worktree_path`.
+    Core (`loupe_core::model`) does the git side: `add_worktree_for_branch` (an existing "origin/x" checks out x or
+    makes it), `remove_worktree` (`-f -f` when forced), `remote_branch_local_name(remotes, ref)`,
+    `suggest_worktree_path` (drops a leading "origin/" only: pass the local name for other remotes).
   - Overlays and sheets: `present(AnyView)` shows a full-window view over everything; your view draws its own
     backdrop, and Esc or Close calls `dismiss()`. Only one shows at a time.
   - Event bus: `app.update(cx, |a, cx| a.emit(AppEvent::…, cx))`. `emit` first selects the worktree and switches to
@@ -86,6 +89,15 @@ touches the real domain or the Keychain. It opens the scenario's repos with an i
   .await; this.update(cx, |v, cx| …) })`. Core and forge calls block, so never run them on the main thread. Never
   `read`/`update` the AppModel synchronously from inside a WorktreeModel method the app may be calling: defer it
   (`cx.defer`), or do it after an `.await`.
+- **Shared helpers in the crates**: `loupe_forge::pull::fetch_head(pr, local, cancel)` serializes and retries per
+  repository (call it directly); `loupe_code::index::references(name, rev, dir, limit)` is NUL-separated (ask for
+  `REFERENCE_LIMIT + 1` so ui/tabs can tell "2000+"); `loupe_forge::ai::installed().unwrap_or_else(ai::scan)` finds the
+  AI CLIs and honours LOUPE_FLOWS_AI in scenario runs; `WorktreeModel::load_lfs_locks` hands a repository's lock answer
+  to its sibling worktrees.
+- **Stress-driver hooks** (state/scenario.rs reaches the views through the window's `Shell::views`):
+  `HistoryView::{set_scope, commit_shas, file_paths, select_file, open_planner_at}`, `PullsView::list_count`,
+  `ChecksOverlay::{open_check_containing, showing_list, check_count}`; `CodeBrowser::set_images(path, old, new)`
+  shows an LFS image's thumbnails while that file is open (LF-04 in Full mode).
 - **`state::adapt`**: `file_diff(&core FileDiff) -> diff::FileDiff` keeps the same row indices, so a renderer line
   index is a core line index. `highlighter()` is the loupe_code tokenizer with separate old and new state.
   `apply_code_theme()` applies the `editorDarkTheme` setting to every diff. After changing the theme, call it and then
@@ -107,7 +119,9 @@ for a full wiring. `diff::set_token_colors` sets the syntax palette.
 - `ui::file_icon(path)`: a multicolour file-type image.
 - Also in `ui`: `h_resizable` / `v_resizable`, `ui::palette::palette` (a picker frame), and `ui::tabs` (code tabs,
   nav controls, results panel).
-- Colors come only from `theme.rs`. gpui-component is set to dark and restyled to it.
+- Colors come only from `theme.rs`. gpui-component is set to dark and restyled to it. Besides the palette it has
+  the system hues Swift used: `teal()` (the merge editor's "both"), `orange()` (conflicts: tints, the operation banner,
+  their icons), `brown()`, `indigo()`, `gray()` (lens tiles and kind bars).
 - Keys: the `shell::keys` actions (`Commit`, `NextFile`, `PreviousFile`, `MarkViewed`, `BackToList`,
   `NavigateBack`/`NavigateForward`, `NextConflict`, `UseOurs`, …). Handle them with
   `.on_action(cx.listener(..))` on your view's root. The shell already handles OpenRepository, GoToWorktree,
@@ -141,3 +155,5 @@ Shared hooks a view must not re-implement: the toast (`AppEvent::Toast`), the er
 - The worktree context menu's "Remove Worktree…" and "Prune": `remove_worktree` exists, but nothing calls it yet.
 - The "Undo <label>" Edit menu title (`WorktreeModel::undo_title`) and Redo.
 - Space swipe, and drag and drop of repo headers.
+- Bug (seen on gpui c274848 too): a real click on the toolbar's Overview segment doesn't switch (Changes and History);
+  the same `DiffControls` callback called directly (the stress driver's view switch) does.

@@ -294,11 +294,9 @@ impl Settings {
     /// `addSpace()` switched it), named "Space N" with an N no other space uses (§14: it could duplicate).
     fn new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.workspace.update(cx, |ws, cx| {
-            let back = ws.current_space.clone();
-            let id = ws.add_space(cx);
+            let id = ws.add_space_without_switch();
             let name = unique_space_name(ws.spaces.iter().filter(|s| s.id != id).map(|s| s.name.as_str()), ws.spaces.len());
             if let Some(sp) = ws.spaces.iter_mut().find(|s| s.id == id) { sp.name = name }
-            ws.switch_space_to(&back, cx);
             cx.notify();
             id
         });

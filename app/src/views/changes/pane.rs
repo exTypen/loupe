@@ -107,7 +107,7 @@ impl ChangesView {
             if self.pane.images.0 != key {
                 self.pane.images = (key.clone(), None, None);
                 let disk = (!f.staged).then(|| dir.join(&f.path));
-                let dir = dir.clone();
+                let (dir, path) = (dir.clone(), f.path.clone());
                 self.pane._img_task = Some(cx.spawn(async move |this, cx| {
                     let (a, b) = cx.background_executor().spawn(async move {
                         let common = loupe_core::git::common_dir(&dir);
@@ -115,6 +115,8 @@ impl ChangesView {
                         (find(&l.old, None), find(&l.new, disk.as_deref()))
                     }).await;
                     this.update(cx, |v, cx| if v.pane.images.0 == key {
+                        // Full mode's browser shows them too, while it has this file open.
+                        if let Some(br) = v.browser() { let (a, b) = (a.clone(), b.clone()); br.update(cx, |br, cx| br.set_images(path, a, b, cx)) }
                         v.pane.images = (key, a, b);
                         v.push_images(cx);
                         cx.notify()
@@ -124,6 +126,7 @@ impl ChangesView {
         } else if !self.pane.images.0.is_empty() {
             self.pane.images = Default::default();
             if let Some(d) = &self.diff { d.update(cx, |d, cx| d.set_images(None, None, cx)) }
+            if let Some(br) = self.browser() { br.update(cx, |br, cx| br.set_images(String::new(), None, None, cx)) }
         }
         // DV-44: Changes renders the file on disk.
         if is_markdown(&f.path) && preview_on() && f.kind != Kind::Deleted {

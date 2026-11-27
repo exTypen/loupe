@@ -409,7 +409,7 @@ impl HistoryView {
         self.reload(window, cx);
     }
 
-    fn set_scope(&mut self, s: Scope, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_scope(&mut self, s: Scope, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.path(cx) else { return };
         let l = self.logs.entry(path).or_insert_with(Log::new);
         if l.scope == s { return }
@@ -486,7 +486,20 @@ impl HistoryView {
         self.select(Some(sha), window, cx);
     }
 
-    fn select_file(&mut self, p: String, window: &mut Window, cx: &mut Context<Self>) {
+    // MARK: For the stress driver (state/scenario.rs)
+
+    /// The shown worktree's loaded commits.
+    pub fn commit_shas(&self, cx: &App) -> Vec<String> { self.log(cx).map(|l| l.commits.iter().map(|c| c.sha.clone()).collect()).unwrap_or_default() }
+
+    /// The selected commit's files, as listed.
+    pub fn file_paths(&self, cx: &App) -> Vec<String> { self.log(cx).map(|l| l.files.iter().map(|f| f.path().to_string()).collect()).unwrap_or_default() }
+
+    /// "Interactive Rebase from Here…" on the loaded commit `index`.
+    pub fn open_planner_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(c) = self.log(cx).and_then(|l| l.commits.get(index)).cloned() { self.open_planner(&c, window, cx) }
+    }
+
+    pub fn select_file(&mut self, p: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(l) = self.log_mut(cx) { l.selected_path = Some(p) }
         self.sync_diff(window, cx);
         cx.notify();

@@ -32,7 +32,7 @@ fn start(d: &mut PullDetail, cx: &mut Context<PullDetail>) {
     let changes: Vec<ChangedPath> = d.files().iter().map(|f| ChangedPath { old: f.old_path.clone(), new: f.new_path.clone() }).collect();
     d.overview.task = Some(cx.spawn(async move |this, cx| {
         let r = cx.background_executor().spawn(async move {
-            super::detail::fetch_head(&pr, &local)?;
+            loupe_forge::pull::fetch_head(&pr, &local, None)?;
             let dir = &local.dir;
             // The base branch as last fetched, which may be further on than the PR's own record of it.
             let tracking = format!("refs/remotes/{}/{}", local.remote, pr.base.ref_);

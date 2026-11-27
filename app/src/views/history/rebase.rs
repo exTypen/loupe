@@ -101,7 +101,7 @@ impl HistoryView {
         }).detach();
     }
 
-    fn open_planner(&mut self, c: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_planner(&mut self, c: &Commit, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.selected_model() else { return };
         let (dir, sha) = (m.read(cx).path().to_path_buf(), c.sha.clone());
         let (app, me) = (self.app.clone(), cx.entity().downgrade());

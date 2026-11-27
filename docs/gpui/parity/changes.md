@@ -134,8 +134,8 @@ dropped when its key moves or another worktree is selected.
 | LF-01 | Detection from .gitattributes / lfs/objects | core `LfsState::check` | same |
 | LF-02 | "git-lfs isn't installed" banner, Copy Command, Dismiss (global) | same text, `lfsMissingBannerDismissed` | same |
 | LF-03 | LFS object view Before → After, sizes, oids | same; shots `swift-lfs.png`, `gpui-lfs.png`. The headline has the drive icon (LFS.swift:242 `externaldrive`; `/tmp/flows-i-core/g-lf03.png`) | same |
-| LF-04 | Thumbnails ≤ 720 px, "Not downloaded" | same in Compact; also in the Full tab (was "Not downloaded" before this branch's fix) | same |
-| LF-05 | Locks once a minute per repository | core cache; the worktree that asked hands the answer to its siblings (`load_lfs_locks`) | same |
+| LF-04 | Thumbnails ≤ 720 px, "Not downloaded" | same in Compact; also in Full mode: Changes resolves the objects once and hands them to the browser (`CodeBrowser::set_images`), shown while that file is its open tab (`/tmp/flows-f-cleanup/g-lf04-full.png`: banner.png before/after in Full) | same |
+| LF-05 | Locks once a minute per repository | core cache; the worktree that asked hands the answer to its siblings (`WorktreeModel::load_lfs_locks`; Changes' own copy of that hand-off is gone). Badges on hero.psd / banner.png in app-billing (`/tmp/flows-f-cleanup/g-billing.png`) | same |
 | LF-06 | Lock badge with "Locked by <owner> (Git LFS)" | same; shot `gpui-billing-locks.png` vs `swift-billing.png` | same |
 | LF-07 | Track *.ext / Track This File | same submenu | same |
 | LF-08 | Lock/Unlock N Files, reload at once | same (`lfs_lock` then `load_locks`) | same |

@@ -127,18 +127,6 @@ fn git(dir: &str, args: &[&str], env: &[(String, String)], cancel: Option<&Cance
     loupe_forge::git::run(args, dir, env, cancel)
 }
 
-/// `pull::fetch_head`, one at a time in this app and tried twice: Full mode's tree and file, the Overview and
-/// navigation all ask at once, and two `git fetch`es into the same remote ref fail with "cannot lock ref" (so does
-/// one racing another app's fetch of the repo).
-/// ponytail: gpui-i-core (e6412aa) serializes and retries `pull::fetch_head` per repository in the crate; once that
-/// merges, this wrapper and its process-wide lock go and callers use `pull::fetch_head` directly.
-pub(super) fn fetch_head(pr: &PullRequest, local: &LocalCheckout) -> loupe_forge::Result<()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    pull::fetch_head(pr, local, None).or_else(|_| pull::fetch_head(pr, local, None))
-}
-
-/// Status letter and colour of a changed file (A/D/R/M from its paths).
 pub fn badge(f: &core::FileDiff) -> (&'static str, gpui_kit::Hsla) {
     match (&f.old_path, &f.new_path) {
         (None, _) => ("A", theme::green()),
@@ -443,7 +431,7 @@ impl PullDetail {
         self._tree = Some(cx.spawn(async move |this, cx| {
             let sha = pr.head.sha.clone();
             let r = cx.background_executor().spawn(async move {
-                fetch_head(&pr, &local)?;
+                pull::fetch_head(&pr, &local, None)?;
                 let out = git(&local.dir, &["ls-tree", "-r", "-z", "--name-only", &pr.head.sha], &[], None)?;
                 let mut set: HashSet<String> = out.split(|&b| b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
                 set.extend(changed); // deleted files stay reachable
@@ -485,7 +473,7 @@ impl PullDetail {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let r = cx.background_executor().spawn(async move {
-                fetch_head(&pr, &local)?;
+                pull::fetch_head(&pr, &local, None)?;
                 let f = match changed {
                     // Binary, or deleted: the PR's diff already shows everything.
                     Some(c) if c.is_binary || c.new_path.is_none() => (*c).clone(),
@@ -543,11 +531,11 @@ impl PullDetail {
         let task = cx.spawn(async move |this, cx| {
             let w = word.clone();
             let r = cx.background_executor().spawn(async move {
-                fetch_head(&pr, &local)?;
+                pull::fetch_head(&pr, &local, None)?;
                 let head = Some(pr.head.sha.as_str());
                 let defs = if action == CodeAction::Definition { loupe_code::index::definitions(&w, head, &local.dir, &from, &c2) } else { vec![] };
                 if !defs.is_empty() { return Ok(Err(defs)) }
-                Ok::<_, loupe_forge::Error>(Ok(loupe_code::index::references(&w, head, &local.dir, 2000)))
+                Ok::<_, loupe_forge::Error>(Ok(loupe_code::index::references(&w, head, &local.dir, loupe_code::index::REFERENCE_LIMIT + 1)))
             }).await;
             this.update(cx, |d, cx| {
                 d.nav_task = None;
@@ -761,7 +749,7 @@ impl PullDetail {
                         .tooltip(move |w, cx| Tooltip::new(format!("Couldn't refresh: {e}")).build(w, cx))))
                     .child(Button::new("pr-checkout").small().label("Check Out").icon(gpui_kit::component::Icon::empty().path("icons/git-branch.svg"))
                         .tooltip("Check Out in New Worktree")
-                        .on_click(move |_, _, cx| app.update(cx, |a, cx| a.checkout_pull_in_repo(&wt, n, cx))))
+                        .on_click(move |_, _, cx| app.update(cx, |a, cx| a.checkout_pull(&wt, n, cx))))
                     .when(open, |d| d.child(merge))
                     .child(Button::new("pr-review").small().primary().label(review_label)
                         .on_click(cx.listener(|d, _, w, cx| d.open_review(w, cx))))))

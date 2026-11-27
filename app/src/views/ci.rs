@@ -193,6 +193,19 @@ impl ChecksOverlay {
         app.update(cx, |a, cx| a.dismiss(cx));
     }
 
+    /// Opens the first check whose id contains `text` (the stress driver's "job-01" row); false when none does.
+    pub fn open_check_containing(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        let key = check_keys(&self.model.read(cx).checks.checks).into_iter().find(|k| k.contains(text));
+        let found = key.is_some();
+        if found { self.open_check(key, cx) }
+        found
+    }
+
+    /// The overlay shows the list, not a check's page.
+    pub fn showing_list(&self) -> bool { self.detail.is_none() }
+
+    pub fn check_count(&self, cx: &App) -> usize { self.model.read(cx).checks.checks.len() }
+
     fn open_check(&mut self, key: Option<String>, cx: &mut Context<Self>) {
         self.open = key;
         self.focused = false; // the filter field may have had focus; keys go to the overlay again

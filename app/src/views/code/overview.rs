@@ -263,14 +263,13 @@ fn status_symbol(k: FactKind, size: f32) -> AnyElement {
 }
 
 fn report_tint(k: ReportKind) -> Hsla {
-    // ponytail: theme.rs has no brown/indigo/gray tile tints; derived from the nearest tokens (requested).
     match k {
         ReportKind::Files => theme::blue(),
-        ReportKind::Database => theme::accent(),
-        ReportKind::Dependencies => theme::accent().opacity(0.65),
-        ReportKind::Configuration => theme::text_faint(),
+        ReportKind::Database => theme::orange(),
+        ReportKind::Dependencies => theme::brown(),
+        ReportKind::Configuration => theme::gray(),
         ReportKind::FollowUps => theme::purple(),
-        ReportKind::Code => theme::blue().opacity(0.7),
+        ReportKind::Code => theme::indigo(),
     }
 }
 
@@ -288,14 +287,14 @@ fn report_icon(k: ReportKind) -> &'static str {
 fn kind_bar_color(kind: &str) -> Hsla {
     match kind {
         "Code" => theme::blue(),
-        "Tests" => theme::green().opacity(0.75),
-        "SQL" => theme::accent(),
-        "Dependencies" => theme::accent().opacity(0.6),
-        "Config" => theme::text_muted(),
-        "Build & CI" => theme::purple().opacity(0.75),
+        "Tests" => theme::teal(),
+        "SQL" => theme::orange(),
+        "Dependencies" => theme::brown(),
+        "Config" => theme::gray(),
+        "Build & CI" => theme::indigo(),
         "Docs" => theme::green(),
         "Assets" => theme::red().opacity(0.7),
-        _ => theme::text_faint().opacity(0.6),
+        _ => theme::gray().opacity(0.45),
     }
 }
 
