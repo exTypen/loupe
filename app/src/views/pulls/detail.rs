@@ -313,6 +313,8 @@ impl PullDetail {
             self.nav.selected = Some(p);
         }
         self.apply_default_collapse();
+        // CB-05: a PR opened in Full mode shows its first file as a tab, as entering Full does.
+        if self.full_mode(cx) && self.nav.tabs.is_empty() && let Some(p) = self.selected() { self.nav.tabs.push(p.clone()); self.nav.selected = Some(p) }
         self.load_error = None;
         self.last_loaded = Some(Instant::now());
         if head_moved { self.full.clear(); self.outlines.clear() }
@@ -1150,6 +1152,14 @@ impl Render for PullDetail {
         let merge = self.merge_dialog(cx);
         let alert = self.error_alert(cx);
         div().id("pr-detail").track_focus(&self.focus).key_context("PullDetail").relative().flex().flex_col().size_full().bg(theme::canvas())
+            // DV-32: ⌘F finds in the shown diff wherever focus is in the PR (Swift's window-wide key monitor).
+            .capture_key_down(cx.listener(|d, e: &gpui_kit::KeyDownEvent, w, cx| {
+                let k = &e.keystroke;
+                if k.key == "f" && k.modifiers.platform && !k.modifiers.shift && d.tab == ViewMode::Files && let Some(v) = d.diff_view.clone() {
+                    v.update(cx, |v, cx| v.open_find(w, cx));
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|d, _: &MarkViewed, _, cx| d.mark_viewed_and_advance(cx)))
             .on_action(cx.listener(|d, _: &NextFile, _, cx| d.move_by(1, cx)))
             .on_action(cx.listener(|d, _: &PreviousFile, _, cx| d.move_by(-1, cx)))

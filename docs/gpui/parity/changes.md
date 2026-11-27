@@ -216,3 +216,24 @@ Driven in both apps on the flows mock (`/tmp/flows-z-shell/shots/`, see shell.md
 - FT-05, FT-06: same (PR #26/#32 Files tree with done/total per folder and "N of M files viewed", `g-pr26.png`, `s-pr26.png`).
 - FT-07: "sql" filtered PR #26's tree to db/ and dev/test_data with folders open (`g-ft07.png`; Swift `s-ft07.png` on #32).
 - FT-09, MS-16: same (code; not re-dragged).
+
+## Final pass (merged app): DV
+
+Merged `gpui` + branch `gpui-z-diff`, flows fixture on port 8833, Swift prebuilt copy side by side, real input.
+Screenshots in `/tmp/flows-z-diff/shots/` (`g-*` GPUI, `s-*` Swift).
+
+| ID | Final pass result | Shots |
+|---|---|---|
+| DV-01..DV-06 | same (Changes app.yaml, billing) | g-start, s-start |
+| DV-03 | **fixed** outside Changes: the renderer's header (History, PR, browser) now starts with the file-type icon, as Swift's | g-hfull, s-hfull2, g-rrs |
+| DV-07..DV-15, DV-17, DV-24..DV-28, DV-43, DV-45 | same (renderer unchanged except fonts since the per-view pass) | — |
+| DV-16 / DV-18 / DV-19 | same: History Full on a5fe4f99 store.ts opens at the change, ruler mark, Diff/Before/After | g-hfull, s-hfull2 |
+| DV-20 | **still different**: History, PR and the Full browser offer Unified / Split (diff renderer d3e140c, persisted as `diffLayout`); Swift has none. Changes forces Unified. Now hidden for files without changes | g-hist, s-hist |
+| DV-21..DV-23 | same (unchanged) | — |
+| DV-29 / DV-30 | same: ⌘-click and the word menu in Full | g-cmdclick, g-ctx-crop |
+| DV-31 | same (a third down per spec; the Swift copy put a freshly opened tab's line at the top) | g-cmdclick, s-cmdclick |
+| DV-32 / DV-33 | **fixed**: ⌘F did nothing in a PR (and History) until the diff had focus; History and the PR now open find wherever focus is in them, like Changes. ⌘G steps ("2 of 2"). History still needs focus inside it after a tab switch (nothing is focused then) | g-find, s-find, g-findg, g-hfind-crop |
+| DV-34..DV-36 | same as recorded in pulls.md RV-12/13: inline editor "services/billing/invoice.go · Line 112", ⌘↩ adds "You · Pending", Delete removes it | g-cm3, g-cm4, g-cm5-crop |
+| DV-37 / DV-38 | same: blame gutter "ee032e0 Alice Mock · 10 mo", "Not committed" (relative age is English where Swift follows the locale, as CI-13) | g-blame, s-blame |
+| DV-39..DV-42 | settings owner (fonts now wired into every DiffView by the merge) | — |
+| DV-44 | same (Preview checkbox on .md in History) | g-hist, s-hist |

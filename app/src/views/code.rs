@@ -385,29 +385,31 @@ impl CodeBrowser {
     /// opens here in place (`peeking`) without switching every view to Full mode.
     pub fn open(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
         self.nav.open(path, line);
-        self.go(path, line, cx);
+        self.go(path, Some(line), cx);
     }
 
-    fn go(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
+    /// `line` None opens the file without landing on a line (an Overview row that has none, CO-20).
+    fn go(&mut self, path: &str, line: Option<usize>, cx: &mut Context<Self>) {
         if !self.full(cx) && matches!(self.source, Source::Worktree) {
             if let Some(c) = self.change(path, cx) {
                 self.peek = false;
                 let id = c.id();
                 self.model.update(cx, |m, cx| if m.state.selected_file().map(|f| f.path.as_str()) != Some(path) { m.select_file(Some(id), cx) });
-                cx.emit(CodeBrowserEvent::Reveal { path: path.into(), line });
+                if let Some(line) = line { cx.emit(CodeBrowserEvent::Reveal { path: path.into(), line }) }
                 cx.notify();
                 return;
             }
             self.peek = true;
         }
-        self.reveal = Some(line);
+        self.reveal = line;
         if self.files.contains_key(path) { self.apply_shown(cx) } else { self.load(path.into(), false, cx) }
     }
 
     /// The Overview's onOpen in Changes: the file, at its line (Swift dropped the line, §14 #4). A file the change
     /// doesn't touch opens too, instead of only closing the Overview.
     pub fn open_from_overview(&mut self, path: &str, line: Option<usize>, cx: &mut Context<Self>) {
-        self.open(path, line.unwrap_or(1), cx)
+        self.nav.open(path, line.unwrap_or(1));
+        self.go(path, line, cx)
     }
 
     /// Compact: keep up with the list's file without opening tabs.
@@ -419,13 +421,13 @@ impl CodeBrowser {
     pub fn go_back(&mut self, cx: &mut Context<Self>) {
         if self.nav.back.is_empty() { return }
         self.nav.go_back();
-        if let (Some(p), Some(l)) = (self.nav.selected.clone(), self.nav.line) { self.go(&p, l, cx) }
+        if let (Some(p), Some(l)) = (self.nav.selected.clone(), self.nav.line) { self.go(&p, Some(l), cx) }
     }
 
     pub fn go_forward(&mut self, cx: &mut Context<Self>) {
         if self.nav.forward.is_empty() { return }
         self.nav.go_forward();
-        if let (Some(p), Some(l)) = (self.nav.selected.clone(), self.nav.line) { self.go(&p, l, cx) }
+        if let (Some(p), Some(l)) = (self.nav.selected.clone(), self.nav.line) { self.go(&p, Some(l), cx) }
     }
 
     /// ⌘-click / Go to Definition / Find References on `word`. A new lookup cancels the running one.

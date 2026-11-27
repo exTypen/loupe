@@ -928,6 +928,7 @@ impl DiffView {
         };
         div().h(px(38.)).flex_none().flex().items_center().gap(px(8.)).px(px(12.)).bg(theme::card_header())
             .border_b_1().border_color(theme::border()).font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
+            .child(crate::ui::file_icon(&path))
             .when_some(renamed, |d, o| d.child(div().text_color(theme::text_muted()).child(format!("{o}  →"))))
             .child(div().flex().min_w_0().overflow_hidden().whitespace_nowrap()
                 .child(div().text_color(theme::text_muted()).child(dir))
@@ -942,7 +943,8 @@ impl DiffView {
                 .child(seg("side-diff", "Diff", self.side == DiffSide::Diff, Some(DiffSide::Diff), None, cx))
                 .child(seg("side-old", "Before", self.side == DiffSide::Old, Some(DiffSide::Old), None, cx))
                 .child(seg("side-new", "After", self.side == DiffSide::New, Some(DiffSide::New), None, cx))))
-            .when(self.shown_side() == DiffSide::Diff, |d| d.child(div().flex().gap(px(2.))
+            // Unchanged (a code browser's plain file): nothing to lay out side by side.
+            .when(self.shown_side() == DiffSide::Diff && f.additions + f.deletions > 0, |d| d.child(div().flex().gap(px(2.))
                 .child(seg("layout-unified", "Unified", self.layout == Layout::Unified, None, Some(Layout::Unified), cx))
                 .child(seg("layout-split", "Split", self.layout == Layout::Split, None, Some(Layout::Split), cx))))
             .when_some(self.header_actions.clone(), |d, f| d.child(f(window, cx)))

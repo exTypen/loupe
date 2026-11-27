@@ -223,3 +223,27 @@ index ff5f85b..978ca0d 100644
              .on_action(cx.listener(|v, _: &Commit, _, cx| v.commit(cx)))
              .child(left)
 ```
+
+## Final pass (merged app)
+
+Both apps on the merged `gpui` (5dde615 + branch `gpui-z-diff`) and the prebuilt Swift copy, flows fixture on port 8833
+(`/tmp/flows-z-diff`), real clicks and keys. Screenshots: `/tmp/flows-z-diff/shots/{g,s}-*.png` (g = GPUI, s = Swift).
+Idle CPU: Full-mode browser open `0.0 0:01.80` → `0.0 0:01.83` 10 s later; PR Overview open `0.0 0:01.55` twice.
+
+| ID | Final pass result | Shots |
+|---|---|---|
+| CO-01 / LN-01 | same: Overview / Files in Changes, Compact/Full hidden while it shows. The "real click on Overview doesn't switch" note in VIEWS.md was the harness: the GPUI window opened partly off-screen (x 180 + 1800 on an 1800-pt display). Fixed anyway: a title-bar segment press is now `prevent_default`, so a drift can't turn it into a window move (shared commit) | g-ov, s-ov |
+| CO-02..CO-19 | same (billing worktree: tiles, kind bar, SQL chip popover, two folders of tables, Definition disclosure, config rows) | g-bill, s-bill, g-chip, s-chip, g-def |
+| CO-20 / LN-07 | **fixed**: a row with no line (config key, dependency) selected and revealed line 1 in the diff; it now opens the file with no line, as Swift (rows with a line still reveal it, §14 #4) | g-co20, s-co20 |
+| CO-21 / LN-03 / LN-10 | same: PR #23 Overview "6 commits behind main · None of them change these files · Merges cleanly" | g-prov, s-prov |
+| CO-22, LN-02 | same: History commit Overview ("Nothing structural…") | g-ln02, s-ln02 |
+| LN-04..LN-09, LN-11..LN-29 | same (crate facts unchanged since the per-view pass; tiles/sections/caps seen on billing) | g-bill, s-bill |
+| CB-01 / CB-02 | same: Full tree + tabs on router (clean worktree), ⌥⌘F toggles | g-rt, s-rt, g-fm1, s-fm1 |
+| CB-03 | **fixed**: the header of a browser file now has its file-type icon, and an unchanged file no longer offers Unified/Split | g-rrs, s-rrs |
+| CB-04 | **fixed**: a PR opened while Full is on now shows its first file as a tab (tab bar was empty until a tree click; shared commit in pulls/detail.rs) | g-pr23, s-pr23, g-pr23b |
+| CB-05 / CB-10 | **fixed**: tabs and definition/reference rows showed a generic file glyph; they show the file-type icon (shared commit, ui/tabs.rs) | g-cmdclick, s-cmdclick, g-refs, s-refs-crop |
+| CB-06 / CB-07 | same: Close Tab / Close Other Tabs / Close All Tabs / Copy Path; ⌘W closes the selected tab in Full | g-tabmenu-crop, s-tabmenu-crop, g-cmdw-crop, s-cmdw-crop |
+| CB-08 / CB-09 / CB-12 | same: ⌘-click `fetch_user` opens db.rs:24 selected (GPUI lands it a third down per DV-31, the Swift copy at the top); context menu Go to Definition / Find References | g-cmdclick, s-cmdclick, g-ctx-crop, s-ctx-crop |
+| CB-11 | same: "3 references to HashMap" panel | g-refs, s-refs-crop |
+| CB-13 / CB-14 | same: ⌃- returns to router.rs line 1 | g-back, s-back |
+| CB-15..CB-18 | same (unchanged since the per-view pass) | — |
