@@ -60,19 +60,31 @@ fn offset() -> i64 {
 
 fn local_day(t: i64) -> i64 { (t + offset()).div_euclid(86400) }
 
-/// "just now", "5 minutes ago", "yesterday", "3 weeks ago" (Swift's `.relative(presentation: .named)`).
+/// "now", "5 minutes ago", "yesterday", "last week", "3 weeks ago" (Swift's `.relative(presentation: .named)`).
+/// Foundation rounds rather than truncates: 20 days is "3 weeks ago", 30 days "last month". The thresholds below were
+/// read off `Date.RelativeFormatStyle` (en_US) day by day.
 pub fn relative(t: i64, now: i64) -> String {
     let d = (now - t).max(0);
     let unit = |n: i64, w: &str| if n == 1 { format!("1 {w} ago") } else { format!("{n} {w}s ago") };
+    let days = (d + 43200) / 86400;
     match d {
-        0..60 => "now".into(),
-        60..3600 => unit(d / 60, "minute"),
-        3600..86400 => unit(d / 3600, "hour"),
-        _ if local_day(now) - local_day(t) == 1 => "yesterday".into(),
-        86400..604800 => unit(d / 86400, "day"),
-        604800..2_592_000 => unit(d / 604800, "week"),
-        2_592_000..31_536_000 => unit(d / 2_592_000, "month"),
-        _ => unit(d / 31_536_000, "year"),
+        0 => "now".into(),
+        1..60 => unit(d, "second"),
+        60..3570 => unit((d + 30) / 60, "minute"),
+        _ if d < 84600 => unit(((d + 1800) / 3600).max(1), "hour"),
+        _ if days <= 1 => "yesterday".into(),
+        _ if days < 7 => unit(days, "day"),
+        _ if days < 30 => match (days + 1) / 7 { 1 => "last week".into(), w => unit(w, "week") },
+        _ => {
+            // Whole calendar months from t to three days from now.
+            let ((y1, m1, d1), (y2, m2, d2)) = (civil_from_days(local_day(t)), civil_from_days(local_day(now) + 3));
+            let months = ((y2 - y1) * 12 + m2 - m1 - (d2 < d1) as i64).max(1);
+            match months {
+                1 => "last month".into(),
+                2..12 => unit(months, "month"),
+                _ => match ((days + 35) / 365).max(1) { 1 => "last year".into(), y => unit(y, "year") },
+            }
+        }
     }
 }
 
@@ -120,7 +132,22 @@ mod tests {
         assert_eq!(parse("nope"), None);
         let t = parse("2026-11-20T09:15:00Z").unwrap();
         assert_eq!(civil_from_days(t.div_euclid(86400)), (2026, 11, 20));
-        assert_eq!(relative(t, t + 30), "now");
+        // Swift's Date.RelativeFormatStyle(.named), en_US.
+        assert_eq!(relative(t, t), "now");
+        assert_eq!(relative(t, t + 30), "30 seconds ago");
+        let day = 86400;
+        assert_eq!(relative(t, t + day * 3 / 2 - 3600), "yesterday");
+        assert_eq!(relative(t, t + 6 * day), "6 days ago");
+        assert_eq!(relative(t, t + 7 * day), "last week");
+        assert_eq!(relative(t, t + 12 * day), "last week");
+        assert_eq!(relative(t, t + 13 * day), "2 weeks ago");
+        assert_eq!(relative(t, t + 20 * day), "3 weeks ago");
+        assert_eq!(relative(t, t + 29 * day), "4 weeks ago");
+        assert_eq!(relative(t, t + 30 * day), "last month");
+        assert_eq!(relative(t, t + 45 * day), "last month");
+        assert_eq!(relative(t, t + 75 * day), "2 months ago");
+        assert_eq!(relative(t, t + 400 * day), "last year");
+        assert_eq!(relative(t, t + 800 * day), "2 years ago");
         assert_eq!(relative(t, t + 7200), "2 hours ago");
         assert_eq!(relative(t, t + 60), "1 minute ago");
         assert_eq!(day_marker(None, t), "Earlier");
