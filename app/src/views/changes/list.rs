@@ -66,6 +66,14 @@ impl ChangesView {
 
     pub(crate) fn render_list(&mut self, m: &Entity<WorktreeModel>, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let items = Rc::new(self.items(m.read(cx)));
+        // CH-14: "Working Tree Clean" centred in the column under "Changes 0", as Swift's ContentUnavailableView.
+        if let [header, Item::Clean(branch)] = items.as_slice() {
+            return div().id("changes-list").key_context("ChangesList").track_focus(&self.focus).flex_1().min_h_0().px_1().pt_1().flex().flex_col()
+                .child(self.render_item(0, header, cx))
+                .child(div().flex_1().child(ui::empty_state("circle-check", "Working Tree Clean",
+                    branch.as_ref().map(|b| format!("Nothing to commit on {b}.")).unwrap_or_default())))
+                .into_any_element();
+        }
         let n = items.len();
         let list = uniform_list("changes-files", n, cx.processor(move |v, range: std::ops::Range<usize>, _, cx| {
             range.map(|i| v.render_item(i, &items[i], cx)).collect::<Vec<_>>()
@@ -81,7 +89,10 @@ impl ChangesView {
     fn render_item(&self, i: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
         let sel = self.selected().map(|m| m.read(cx).state.selected_file_ids.clone()).unwrap_or_default();
         match item {
-            Item::Header { title, count, action } => ui::section_header(*title, None).h(px(ROW)).child(div().flex_none().text_color(theme::text_faint()).child(count.to_string()))
+            // Not ui::section_header: its title grows, which splits the row's slack between it and the spacer.
+            Item::Header { title, count, action } => div().flex().items_center().h(px(ROW)).px_2().gap_2().text_size(px(12.5)).text_color(theme::text_muted())
+                .child(div().flex_none().child(*title))
+                .child(div().flex_none().text_color(theme::text_faint()).child(count.to_string()))
                 .child(div().flex_1())
                 .when_some(*action, |d, (label, stage)| d.child(ui::link_button(SharedString::from(format!("hdr-{label}")), label).text_size(px(11.))
                     .on_click(cx.listener(move |v, _, _, cx| {
