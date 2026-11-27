@@ -1010,9 +1010,11 @@ impl DiffView {
                         Some(p) => {
                             d = d.child(div().text_color(theme::text()).text_size(px(17.)).child(format_bytes(p.size)))
                                 .child(div().font_family(theme::CODE_FONT).text_size(px(11.)).text_color(theme::text_muted()).child(p.oid[..12].to_string()));
-                            if let Some(i) = image(im) { d = d.child(i) } else if is_image(self.file.path()) {
-                                d = d.child(div().text_size(px(11.)).text_color(theme::text_faint()).child("Not downloaded"))
-                            }
+                            // LF-04: an object that's missing or doesn't decode (CGImageSource failed in Swift) says so.
+                            let missing = || div().id("lfs-missing").text_size(px(11.)).text_color(theme::text_faint()).child("Not downloaded")
+                                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Pull, or run git lfs fetch, to get this version").build(w, cx))
+                                .into_any_element();
+                            if let Some(i) = image(im) { d = d.child(gpui_kit::StyledImage::with_fallback(i, missing)) } else if is_image(self.file.path()) { d = d.child(missing()) }
                         }
                         None => d = d.child(div().text_color(theme::text_muted()).child("No file")),
                     }

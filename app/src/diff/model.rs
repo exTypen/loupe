@@ -451,7 +451,15 @@ pub fn format_bytes(n: u64) -> String {
     let mut v = n as f64;
     let mut u = 0;
     while v >= 1000. && u < units.len() - 1 { v /= 1000.; u += 1 }
-    if u == 0 { format!("{n} bytes") } else { format!("{v:.1} {}", units[u]) }
+    // ByteCountFormatter's .file style: whole KB, one decimal for MB, two above.
+    match u {
+        0 if n == 0 => "Zero KB".into(),
+        0 if n == 1 => "1 byte".into(),
+        0 => format!("{n} bytes"),
+        1 => format!("{v:.0} KB"),
+        2 => format!("{v:.1} MB"),
+        _ => format!("{v:.2} {}", units[u]),
+    }
 }
 
 /// Last-three-files cache of the derived passes (intra-line, syntax), by file uid. Switching Changes / History /
@@ -621,7 +629,9 @@ mod tests {
         assert_eq!(placeholder(&file()), None);
         assert_eq!(placeholder(&FileDiff::parse_patch(None, Some("b".into()), "Binary files a and b differ")), Some(Placeholder::Binary));
         assert!(is_image("x/Y.PNG") && !is_image("x.rs"));
-        assert_eq!(format_bytes(1234), "1.2 KB");
+        assert_eq!(format_bytes(1234), "1 KB");
+        assert_eq!(format_bytes(65_536), "66 KB");
+        assert_eq!(format_bytes(1_234_567), "1.2 MB");
     }
 
     #[test]
