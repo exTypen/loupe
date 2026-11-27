@@ -289,8 +289,9 @@ fn menus(undo: &str) -> Vec<Menu> {
         Menu::new("View").items([
             a("Toggle Sidebar", ToggleSidebar), MenuItem::separator(),
             a("Changes", ChangesTab), a("History", HistoryTab), a("Pull Requests", PullsTab), MenuItem::separator(),
-            a("Go to Worktree…", GoToWorktree), MenuItem::separator(),
-            a("Enter Full Screen", ToggleFullScreen),
+            // No "Enter Full Screen" here: AppKit adds its own to a menu named View (as in Swift), so ours was a
+            // second copy. ⌃⌘F stays bound to ToggleFullScreen.
+            a("Go to Worktree…", GoToWorktree),
         ]),
         Menu::new("Review").items([
             a("Next File", NextFile), a("Previous File", PreviousFile), a("Mark Viewed & Next", MarkViewed),

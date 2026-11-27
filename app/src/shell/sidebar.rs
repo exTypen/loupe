@@ -146,7 +146,8 @@ impl Shell {
             // Collapsed: still show whether anything in this repo has uncommitted work.
             .when(!expanded && changes > 0, |d| d.child(ui::badge(changes.to_string())))
             .child(div().id("add-wt").flex().items_center().justify_center().size(px(20.)).rounded(px(5.))
-                .opacity(0.).group_hover("repo", |s| s.opacity(1.)).hover(|s| s.bg(theme::hover()))
+                // Always shown, as in Swift (App.swift:322-324); hover only brightens it.
+                .text_color(theme::text_muted()).hover(|s| s.bg(theme::hover()).text_color(theme::text()))
                 .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("New Worktree in {tip}…")).build(w, cx))
                 .on_click({ let (ws, r) = (ws.clone(), r3.clone()); move |_, w, cx| { cx.stop_propagation(); worktrees::open_add_worktree(&ws, r.clone(), String::new(), w, cx) } })
                 .child(ui::icon("plus").size(px(12.))))
