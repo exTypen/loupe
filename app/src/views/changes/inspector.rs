@@ -46,16 +46,18 @@ impl Panel {
     }
 }
 
-/// "3 d", "2 mo": the blame gutter's age.
+/// "3 days ago", "2 mo. ago": the blame gutter's age, as Swift's RelativeDateTimeFormatter with `.abbreviated` units.
 pub(crate) fn age(secs: i64, now: i64) -> String {
     let d = (now - secs).max(0);
-    match d {
-        d if d < 3600 => format!("{} min", d / 60),
-        d if d < 86400 => format!("{} h", d / 3600),
-        d if d < 86400 * 30 => format!("{} d", d / 86400),
-        d if d < 86400 * 365 => format!("{} mo", d / (86400 * 30)),
-        d => format!("{} y", d / (86400 * 365)),
-    }
+    let n = match d {
+        0..=59 => return format!("{d} sec. ago"),
+        60..=3599 => return format!("{} min. ago", d / 60),
+        3600..=86399 => return format!("{} hr. ago", d / 3600),
+        86400..=604799 => { let n = d / 86400; return format!("{n} day{} ago", if n == 1 { "" } else { "s" }) }
+        604800..=2419199 => return format!("{} wk. ago", d / 604800),
+        _ => (month_index(now) - month_index(secs)).max(1),
+    };
+    if n < 12 { format!("{n} mo. ago") } else { format!("{} yr. ago", n / 12) }
 }
 
 /// "2 months ago", "yesterday": Swift's `.relative(presentation: .named)`. Months and years count calendar months
@@ -271,8 +273,9 @@ mod tests {
 
     #[test]
     fn ages_read_short() {
-        assert_eq!(age(0, 3 * 86400), "3 d");
-        assert_eq!(age(0, 120), "2 min");
+        assert_eq!(age(0, 3 * 86400), "3 days ago");
+        assert_eq!(age(0, 120), "2 min. ago");
+        assert_eq!(age(1_790_748_060, 1_795_773_600), "2 mo. ago");
         assert_eq!(relative(0, 86400), "yesterday");
         assert_eq!(relative(0, 3 * 3600), "3 hours ago");
         // 2026-09-30 / 2026-08-25 → 2026-11-27: calendar months, as Swift's named relative date.
