@@ -109,6 +109,8 @@ impl ChecksModel {
     /// refresh starts by itself once it is.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Option<Shared<Task<()>>> {
         if let Some(t) = &self.refreshing { return Some(t.clone()) }
+        // A PR opened by number before its JSON arrived (PC-17) has no head yet: `commits//status` is a 404.
+        if self.checks.sha.is_empty() { return None }
         let Some((client, repo)) = self.source(cx) else {
             if !self.waiting { self.waiting = true; cx.notify() }
             return None;
