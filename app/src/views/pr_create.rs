@@ -373,7 +373,17 @@ impl Render for PullCreateSheet {
 
         div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| if e.keystroke.key == "escape" { v.close(cx) }))
+            // A click on a button or a label drops focus to the window, and Esc (Cancel, PC-20) went nowhere: take it
+            // back. Inputs focus themselves after this.
+            .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|v, _, w, cx| if !v.focus.contains_focused(w, cx) { w.focus(&v.focus, cx) }))
+            // Esc cancels from anywhere in the sheet, as Swift's cancelAction did (PC-20): the fields, the checkbox
+            // and the buttons swallowed it before it bubbled here. An open base menu (focus in its list, below the
+            // trigger) still closes first.
+            .capture_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, w, cx| {
+                if e.keystroke.key != "escape" { return }
+                let menu_open = v.bases.as_ref().is_some_and(|b| { let f = b.focus_handle(cx); f.contains_focused(w, cx) && !f.is_focused(w) });
+                if !menu_open { v.close(cx); cx.stop_propagation() }
+            }))
             .child(ui::card().w(px(560.)).min_h(px(520.)).max_h(max_h).bg(theme::sidebar()).text_size(theme::UI_SIZE)
                 .child(ui::card_header(div().font_weight(FontWeight::SEMIBOLD).child("New Pull Request"), div()))
                 .child(if self.loading {
