@@ -109,6 +109,8 @@ impl ChecksModel {
     /// refresh starts by itself once it is.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Option<Shared<Task<()>>> {
         if let Some(t) = &self.refreshing { return Some(t.clone()) }
+        // A PR opened by number before its JSON arrived (PC-17) has no head yet: `commits//status` is a 404.
+        if self.checks.sha.is_empty() { return None }
         let Some((client, repo)) = self.source(cx) else {
             if !self.waiting { self.waiting = true; cx.notify() }
             return None;
@@ -299,6 +301,9 @@ impl ChecksOverlay {
     }
 }
 
+/// The shell's title bar height (shell/mod.rs `TitleBar::h`).
+const TOOLBAR: f32 = 42.;
+
 impl Render for ChecksOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused {
@@ -307,13 +312,15 @@ impl Render for ChecksOverlay {
         }
         let size = window.viewport_size();
         let w = (size.width - px(64.)).min(px(1500.));
-        let h = size.height - px(64.);
+        // Swift's overlay lived in the content view, under the toolbar, which stays usable (CI-02): the tabs and the
+        // worktree switch still work while it shows.
+        let h = size.height - px(TOOLBAR) - px(64.);
         let body: AnyElement = match &self.detail {
             Some(d) => d.clone().into_any_element(),
             None => div().size_full().flex().flex_col().child(self.header(cx)).child(ui::divider()).child(div().flex_1().min_h_0().child(self.list(cx))).into_any_element(),
         };
         let me = cx.entity();
-        div().id("ci-overlay").occlude().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().id("ci-overlay").occlude().absolute().top(px(TOOLBAR)).left_0().right_0().bottom_0().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             // Esc: back to the list first, then close. ⌘[ only goes back; the overlay holds focus, so the PR detail
             // behind it never sees it (§14: both bound ⌘[ in the Swift app).
@@ -789,6 +796,8 @@ fn updated_label(d: Duration) -> String {
 fn ago_named(secs: i64) -> String {
     let unit = |n: i64, u: &str| format!("{n} {u}{} ago", if n == 1 { "" } else { "s" });
     match secs.max(0) {
+        // RelativeDateTimeFormatter's .named style says "now" for zero ("şimdi" in Swift's shots).
+        0 => "now".into(),
         s if s < 60 => unit(s, "second"),
         s if s < 3600 => unit(s / 60, "minute"),
         s if s < 86_400 => unit(s / 3600, "hour"),
@@ -845,6 +854,7 @@ mod tests {
 
     #[test]
     fn relative_times() {
+        assert_eq!(ago_named(0), "now");
         assert_eq!(ago_named(1), "1 second ago");
         assert_eq!(ago_named(150), "2 minutes ago");
         assert_eq!(ago_named(90_000), "yesterday");

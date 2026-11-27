@@ -343,7 +343,9 @@ impl Render for Shell {
         } else {
             content.into_any_element()
         };
-        let _ = window;
+        // An overlay that closed took the focus with it: with nothing focused, the toolbar's dispatched actions
+        // (settings, fetch, pull, push) reach no listener. Give it back to the window.
+        if window.focused(cx).is_none() { self.focus.focus(window, cx) }
         div().id("shell").track_focus(&self.focus).key_context("Loupe").relative().flex().flex_col().size_full()
             .bg(theme::sidebar()).text_color(theme::text()).font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
             .capture_key_down(cx.listener(|s, e, _, cx| s.alert_keys(e, cx)))

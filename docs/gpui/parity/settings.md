@@ -42,3 +42,22 @@ lists are cached once per launch for each harness, because a CLI takes up to 20 
 
 Final pass (merged app, shell's final pass): UP-01..04 unchanged — LoupeFlows has no Sparkle feed, so its app menu has
 no "Check for Updates…" (menu dump), and the GPUI build has none either; both intentional as above.
+
+## Final pass (merged app, branch gpui-z-forge)
+
+Both apps on the merged build, shots in `/tmp/flows-z-forge/shots/` (`g-*` GPUI, `s-*` Swift).
+
+| ID | Final result | Shots |
+|---|---|---|
+| ST-01 | ⌘, opens one Settings window (a second ⌘, brings it forward), lands on Spaces in both. **fixed (shared)**: after a sheet or overlay in the main window closed, the toolbar gear did nothing (no focus, so `OpenSettings` reached no listener); the shell now takes the focus back | `g-st09.png`, `s-st09.png` |
+| ST-02..06 | same rows; "Found on this Mac" lists only Claude Code in GPUI because LOUPE_FLOWS_AI points it at the stub (Swift scans the real paths: environment, not a bug) | `g-st03.png`, `s-st03.png` |
+| ST-07 | Updates card (intentional, unchanged) | `g-st03.png` |
+| ST-08 | unchanged (not re-driven) | — |
+| ST-09..13, ST-16 | Spaces tab: Default ✓, alice account, three repositories, same footer | `g-st09.png`, `s-st09.png` |
+| ST-14 | Forgejo + bad token: "Forgejo 401: user does not exist", sheet stays open | `g-st14.png`, `g-st14-bad.png`, `s-st14.png` |
+| ST-15, ST-17 | unchanged (no gh login under the fixture HOME) | — |
+| ST-18 | same groups, titles and glyphs | `g-st18.png`, `s-st18.png` |
+| ST-19 | ⌘K on Refresh: Go to Worktree → None, both rows get a restore arrow, in both | `g-st19.png`, `s-st19.png` |
+| ST-20 | restore on Refresh gives back ⌘R in both. **fixed**: the restore arrow sat before the recorder; Swift puts it after | `g-st20.png`, `g-st20b.png`, `s-st20b.png` |
+
+Idle CPU with Settings open: `0.0 0:00.81` twice, 10 s apart.

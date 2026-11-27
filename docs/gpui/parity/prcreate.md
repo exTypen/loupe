@@ -39,3 +39,35 @@ reloads only on a base change, and closing it drops its tasks.
 
 - Done by the views integrator: the sidebar menu item (SH-20), the Changes banner (PC-01..04) and the Pulls '+' (PC-05).
 - Done (i-core): `loupe_forge::Client::is_gitea` / `server_name` label Gitea servers "Gitea" (PC-19).
+
+## Final pass (merged app, branch gpui-z-forge)
+
+Both apps on the merged build, mock on :8836, shots in `/tmp/flows-z-forge/shots/` (`g-*` GPUI, `s-*` Swift). Every
+entry point is now wired in the merged app, so the `LOUPE_FLOWS_CREATE_PULL` hook was not needed.
+
+| ID | Final result | Shots |
+|---|---|---|
+| PC-01 | same as above: GPUI banner "1 commit on spike/sqlite-fts that isn't on main" above Changes, under it the submodule banner; Swift still shows none (§14) | `g-pc01.png`, `s-pc01-spike.png` |
+| PC-02 | banner button opens the sheet | `g-pc07.png` |
+| PC-03 | × hides it and writes `<path>\tfeature/fresh` to `prBannerDismissed`; opening the sheet from the menu brings it back | `g-pc03.png`, `g-pc07-fresh.png` |
+| PC-04 | after the in-sheet push and create the spike banner is gone (open PR #39) | `g-pc17.png` |
+| PC-05 | **fixed**: the list button read as a bare "+"; Swift shows a bordered "+ Create Pull Request…". Now the same label (shared: `views/pulls.rs`). Shown on fresh, not on main | `s-pc05-fresh.png`, `g-pc05-fresh.png` |
+| PC-06 | menu item opens the sheet without changing the selection (spike, fresh, scratch) | `g-pc06-menu.png`, `g-scr-menu.png`, `s-pc06-menu.png` |
+| PC-07 | spike: Branch + "pushed first", Into main, title = subject, template body, 1 commit, "Push and Create" in both | `g-pc07.png`, `s-pc07.png` |
+| PC-08 | picker lists the remote branches; picking feat/webhooks reloads; Esc with the menu open closes the menu only | `g-pc08.png`, `g-pc08-wh.png`, `g-pc08-esc.png` |
+| PC-09 | one commit: subject; fresh (2 commits): "Fresh"; scratch: "Scratch" | `g-pc07-fresh.png` |
+| PC-10 | template body in both | `g-pc07.png`, `s-pc07.png` |
+| PC-11 | sparkles present (stub harness); not run (prior row stands) | `g-pc07.png` |
+| PC-12 | Draft on a Forgejo server sent title "WIP: Fresh" (forge.log) | `g-pc19.png` (PR #40 "WIP: Fresh") |
+| PC-13 | "1 commit"/"2 commits", sha7 + subject | `g-pc07.png`, `g-pc07-fresh.png` |
+| PC-14 | "pushed first" for spike and fresh, absent for scratch | `g-scratch-sheet.png` |
+| PC-15 | labels follow needsPush ("Push and Create" / "Create Pull Request") | `g-pc19.png` |
+| PC-16 | spike pushed with the space credentials, then created | forge.log, `g-pc17.png` |
+| PC-17 | POST body as Swift; sheet closes, spike selected, Pull Requests tab, PR #39 open. **fixed**: the PR opened by number asked `commits//status` (empty sha) before its JSON arrived; the checks model now waits for a head (`views/ci.rs`) | `g-pc17.png`, `s-pr39.png` |
+| PC-18 | 409 fault on create: red "A pull request for this branch already exists." | `g-pc18.png` |
+| PC-19 | 500 fault: "Forgejo 500: database is locked" | `g-pc19.png` |
+| PC-20 | **fixed**: Esc did nothing once focus sat in the Title field or after a click on Draft/a button (the input and checkbox took Esc before the sheet's bubble handler). Esc is now captured for the whole sheet, except while the base menu is open (that Esc closes the menu, the next one the sheet). Separately, after any sheet or overlay closed nothing had focus, so the toolbar's gear/Fetch/Pull/Push dispatched into nothing (shared: `shell/mod.rs` gives the window its focus back) | `g-pc20-l.png`, `g-pc08-esc2.png` |
+| SH-08 | sheet hosted over the window with a backdrop | `g-pc07.png` |
+| SH-20 | see PC-06 | `g-pc06-menu.png` |
+
+Idle CPU with the sheet open and after closing it: `0.0`, CPU time unchanged over 10 s.
