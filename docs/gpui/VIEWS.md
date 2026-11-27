@@ -155,5 +155,5 @@ Shared hooks a view must not re-implement: the toast (`AppEvent::Toast`), the er
 - The worktree context menu's "Remove Worktree…" and "Prune": `remove_worktree` exists, but nothing calls it yet.
 - The "Undo <label>" Edit menu title (`WorktreeModel::undo_title`) and Redo.
 - Space swipe, and drag and drop of repo headers.
-- Bug (seen on gpui c274848 too): a real click on the toolbar's Overview segment doesn't switch (Changes and History);
-  the same `DiffControls` callback called directly (the stress driver's view switch) does.
+- (Resolved) the toolbar Overview click: it was the harness (window off-screen), and a click from an inactive window
+  works too (parity/shell.md, z-verify).

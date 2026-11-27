@@ -70,7 +70,7 @@ Status: same | fixed-swift-bug (§14 item) | intentional (why) | missing (why).
 | PD-30 | After a merge: back, fetch base, History on `<remote>/<base>` with the merge selected | Leaves the PR, fetches `main`, emits `ShowBranch`; History shows origin/main with the merge selected (`g-merged.png`) | same |
 | PD-31 | Merge rejected: "Forgejo 405: …" alert, stays on the PR | Same (g-pd31.png) | same |
 | PD-32 | `cat-file -e`, then fetch `refs/pull/N/head` and the base | `pull::fetch_head`, one at a time per repository (git common dir), retried once; the view's mutex + retry wrapper is now redundant | same |
-| PD-33 | Alert titled "Forgejo" (also on GitHub), OK clears | Titled by the server (`client.server_name()`), OK clears (g-pd31.png) | fixed-swift-bug (§14 PR: "the detail alert is titled Forgejo for GitHub accounts too") |
+| PD-33 | Alert titled "Forgejo" (also on GitHub), OK clears | Titled by the server (`client.server_name()`), OK or Return clears; centred on the window (g-pd31.png, z-verify `ga1`/`ga2`) | fixed-swift-bug (§14 PR: "the detail alert is titled Forgejo for GitHub accounts too") |
 
 ## Conversation and review
 
@@ -136,7 +136,7 @@ above was re-read against the merged code; the ones below were driven by real cl
 | PR-02, PR-03 | infra: "Connect git.example.invalid" + Open Settings… (`s-pr03`, `g-pr03`) | same |
 | PD-01, PD-04, PD-07 | Header, badges, Overview/Files/Conversation, Compact/Full only on Files (`s-pd01`, `g-pd01`) | same |
 | PD-02, PD-03 | Same two items; GPUI now has Swift's compass and link icons (`s-pd02c`, `g-pd02c`) | fixed |
-| PD-09 | Overview tiles, "6 commits behind main", Database section match (`s-pd09`, `g-pd09`). The Files tile's composition bar overflows its card (code view's `ChangeOverview`, not this area) | same (note for code) |
+| PD-09 | Overview tiles, "6 commits behind main", Database section match (`s-pd09`, `g-pd09`). The Files tile's composition bar overflowed its card; fixed in 6835e7e, verified in z-verify below | same |
 | PD-13 | **Fixed (shared):** the tree sorted `charge.go` before `charge_test.go`; Finder (`localizedStandardCompare`) puts punctuation before letters in ICU order, so Swift shows `charge_test.go` first. `loupe_core::file_tree::standard_compare` now follows ICU's punctuation order and Finder's lowercase-first tie-break (test `orders_names_like_finder`) | fixed |
 | PD-14 | Same folder menu items (`s-pd14c`, `g-pd14c`) | same |
 | PD-17 | `v` marks viewed and moves on once the diff has focus, in both (`s-pd17`, `g-pd17`); neither takes `v` before the detail is focused | same |
@@ -156,5 +156,18 @@ above was re-read against the merged code; the ones below were driven by real cl
 Idle CPU (merged app): a PR open, `ps -o %cpu=,time=` 0.0 / 0:01.39 twice, 10 s apart; on the list 0.0 / 0:01.52 →
 0.0 / 0:01.54 (the 60 s open-list poll and the once-a-minute "Updated" label).
 
-Left as is: the PR detail's own alert centres on the detail pane, not the window; three copies of a relative-date
+The PR detail's own alert centred on the detail pane; since 6835e7e it centres on the window (z-verify below); three copies of a relative-date
 formatter exist (`pulls/time.rs`, `history/sheets.rs`, `changes/inspector.rs`), only the pulls one was changed.
+
+## Verification against Swift (z-verify, after 6835e7e)
+
+Both apps side by side on the flows mock (port 8851, `/tmp/flows-z-verify`), real clicks and System Events keys.
+Shots in `/tmp/flows-z-verify/shots/` (`g*` GPUI, `s*` Swift).
+
+| ID | Swift | GPUI | result |
+|---|---|---|---|
+| PD-09 | #26 Overview: the Files tile's bar fits its card, legend on three lines (`s11.png`) | the bar fits its card, legend on three lines (`g11.png`) | same |
+| PD-33, RV-10 | 500 fault on `comments`: alert "Forgejo / Forgejo 500: mock fault" centred on the window; Return dismisses, Esc does nothing (single OK button) (`sa1`, `sa2`, `sa3`/`sa4`) | the same alert centred on the window (`a1.png`, `ga1.png`); Return didn't dismiss it (`a2.png`) | **fixed**: Return dismisses it (`ga2.png`), Esc too (harmless extra); the typed comment stays (fixed-swift-bug, as before) |
+| PD-29 | Merge › Merge on #36: NSAlert "Merge #36 into main?" Cancel / Merge, horizontally centred and in the window's upper third (`sm1full.png`); Esc cancels (`sm2full.png`) | the same question and buttons centred on the window (`gm2.png`); Return and Esc did nothing | **fixed**: Esc cancels (`gm3.png`), Return merges and shows main's History with the merge (`gm4.png`). Still different: GPUI centres it vertically, NSAlert sits higher |
+| PD-15 | #26 card.png: "Binary File" placeholder, header "+0 −0"; the header floats mid-pane above it (Swift layout quirk) (`sp2.png`) | header at the top "+0 −0", the same placeholder (`gp1.png`) | same (GPUI keeps the header at the top) |
+| DV-32 / DV-33 (in a PR) | after ⌘1 / ⌘3 by keys: ⌘F opens find, ⌥↓ moves to the next file, plain ↓ does nothing (`sk6`, `sc4`, `sc8`) | the same (`gk6`, `gc7`, `r5.png`) | same |

@@ -146,9 +146,6 @@ Runs:
 
 ## Found on the way (not performance)
 
-- GPUI: after ⌘2 (History), ⌘1/⌘3 do nothing until something in the window is clicked. It looks like keyboard focus
-  is lost when the Changes view is replaced, so the shell's tab actions don't reach a focused element. Changes → ⌘3
-  works. The measurements here click the toolbar segments instead. This is for the shell's owner (`shell/keys`).
 - `measure-switch.sh`'s final "open PR" click missed once in GPUI: the Pull Requests segment click after a Changes
   click 5 s earlier didn't switch. It didn't reproduce on its own, and `measure-pr.sh` checks the state with a
   screenshot.

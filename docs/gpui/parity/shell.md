@@ -102,8 +102,8 @@ settles, and its old page is dropped by one 450 ms timer. Nothing polls.
 - The "Can't Undo" dialog (Revert Commit / Cancel, or OK) is implemented in `shell/mod.rs` (`undo_or_refusal`,
   `revert_refused`) and its revert is now recorded for ⌘Z (§14 History #6), but no refused undo was produced on the
   mock in this pass.
-- A row's tooltip can show over its own open context menu (still in the final pass: gpui-component's context menu
-  occludes the row, but a tooltip timer started by the hover before the right-click still fires).
+- A row's tooltip can show over its own open context menu (gpui-component's context menu occludes the row, but a
+  tooltip timer started by the hover before the right-click still fires): intentional, framework behaviour.
 
 ## Final pass (merged app, branch gpui-z-shell)
 
@@ -152,7 +152,7 @@ Fixed in this pass:
 | SH-15 | same (code; not re-dragged) |
 | SH-16 | same items and order (`g-sh16.png`, `s-sh16.png`) |
 | SH-17, SH-18, SH-20 | same items incl. Create Pull Request… and Remove Worktree… (`g-sh17.png`, `s-sh17.png`) |
-| SH-19 | same tooltips. Still different: a tooltip can show over its own open context menu (`g-sh26menu.png`), see gaps |
+| SH-19 | same tooltips. A tooltip can show over its own open context menu (`g-sh26menu.png`): intentional (gpui-component framework behaviour) |
 | SH-21 | same |
 | SH-22 | same: dot click back to Default, its selection restored (`g-sh22.png`) |
 | SH-23 | intentional (commit on release), not driven (no trackpad gestures from cliclick) |
@@ -193,3 +193,15 @@ Fixed in this pass:
 | MS-10 | intentional (AppKit-only hooks) |
 | MS-15, MS-16 | same (see changes.md) |
 | FT-01..09, UP-01..04 | see changes.md and settings.md |
+
+## Verification against Swift (z-verify): toolbar Overview from an inactive window
+
+Reported: a real click on the toolbar's Overview button only works when the window is already active. Checked with the
+other app frontmost and its window moved off the toolbar (port 8851, `/tmp/flows-z-verify/shots/`):
+- GPUI (Changes, Compact, LoupeFlows frontmost): one click on Overview activated the window and switched to the
+  Overview (`o1_before.png`, `o1.png`).
+- Swift (PR #26, GPUI frontmost): one click on its Overview toolbar item only activated the window; the view stayed on
+  Files (`o2_before.png`, `o2.png`). NSToolbar items don't take the first mouse.
+
+So GPUI already works from an inactive window and Swift doesn't: nothing to fix (GPUI is ahead). A failure seen in
+earlier runs matches lost window focus (the window shown inactive), not the button.

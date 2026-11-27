@@ -97,7 +97,7 @@ dropped when its key moves or another worktree is selected.
 | DV-09 | CRLF | renderer | same (renderer) |
 | DV-10 | Intra-line | renderer; seen on main.go and app.yaml | same (renderer) |
 | DV-11 | Syntax | `adapt::highlighter` in the code theme | same (renderer) |
-| DV-12 | Binary File | renderer "Binary File" | same (renderer) |
+| DV-12 | Binary File | renderer: a large file symbol over a muted bold "Binary File" title, header "+0 −0" (z-verify: billing inter.woff2 in Full, `gbin.png` vs `s5.png`) | same (renderer) |
 | DV-13 | Non-LFS image → Binary File | same | same |
 | DV-14 | Rename header old → new; blank table in Changes | header old → new; "No Content Changes" instead of the blank table | fixed-swift-bug (§14 Diff: blank Changes pane) |
 | DV-15 | Large diffs open at once | virtual renderer | same (renderer) |
@@ -105,7 +105,7 @@ dropped when its key moves or another worktree is selected.
 | DV-17 | Scroll anchoring | renderer `set_file` | same (renderer) |
 | DV-18 | Compact/Full | see CH-10 | same |
 | DV-19 | Change ruler in Full | `set_change_ruler(true)` on the Full tab and a picked commit in Full | same |
-| DV-20 | No split mode | Changes forces `Layout::Unified` | same |
+| DV-20 | No split mode | Changes forces `Layout::Unified`; History, PR and the Full browser offer Unified / Split | intentional (GPUI addition) |
 | DV-21 | n / p | renderer keys | same (renderer) |
 | DV-22 | v does nothing in Changes | no `on_mark_viewed` in Changes | same |
 | DV-23 | ⌥↓ / ⌥↑ | see CH-16 | same |
@@ -148,7 +148,7 @@ dropped when its key moves or another worktree is selected.
 | SM-06 | "A submodule isn't initialized" banner, Not Now, Initialize | same; shots `swift-billing.png`, `gpui-billing.png` | same |
 | SM-07 | Plain text diff outside Changes | not Changes' | same (n/a) |
 | FT-01 | Folders first, natural order, chain compaction | core `file_tree` (unit test `filters_and_folds`) | same |
-| FT-02 | Row look, 10 pt indent with guides | same | same |
+| FT-02 | Row look, 10 pt indent with guides; LFS lock icon with "Locked by <owner> (Git LFS)" | same rows; the Full tree shows only the lock (outline Lucide lock where Swift has `lock.fill`), its tooltip "Locked by bob (Git LFS)" (z-verify `g2c.png`). Swift's NSOutlineView row tooltip (the path) wins over the lock's `.help`, so Swift never shows the owner there (`s2t.png`) | same (GPUI shows the tooltip Swift's code asks for) |
 | FT-03 | Click folds a folder | same | same |
 | FT-04 | Tree menu: Expand/Collapse, Expand All, Collapse All | same in the Full tree | same |
 | FT-05 | Single select, ⌘A swallowed | same in the Full tree | same |
@@ -185,12 +185,14 @@ the rest were re-read against the merged code (no view in between changed them).
 | LF-05, LF-06, LF-08 | lock badges, Lock new.png, Unlock refused by git-lfs "Cannot unlock file with uncommitted changes" in the Git alert (`gpui-locked.png`, `gpui-state.png`) | same |
 | SM-01, SM-02, SM-04, SM-06 | acme-lib pane, Stage Pointer / Unstage, Initialize (`*-sub.png`, `*-stageptr.png`, `swift-init.png`) | same |
 
-Still different, not fixed here:
+Intentional:
 - Full mode's file header (the code browser's `DiffView`) offers Unified / Split; Swift has no split mode anywhere (DV-20).
   The control is the renderer's (`diff/view.rs`), shown in History and Pull Requests too, and `diffLayout` is persisted
-  by the app, so it reads as an app-wide GPUI addition; Compact Changes stays unified.
+  by the app: a GPUI addition. Compact Changes stays unified.
 - A row tooltip that was pending when a context menu opens draws over the menu's first item until the pointer moves into
-  the menu (gpui's tooltip only hides on a mouse-down outside its element). Framework behaviour, every list.
+  the menu (gpui's tooltip only hides on a mouse-down outside its element): gpui-component framework behaviour, every list.
+
+Still different, not fixed here:
 - LF-04 thumbnails have no "W × H" tooltip (the renderer gets a path, not the decoded size).
 
 Idle CPU with the merged app on app-billing: Compact `0.0 0:01.83` twice 10 s apart; Full `0.0 0:01.94` then
@@ -209,8 +211,8 @@ Idle CPU with the merged app on app-billing: Compact `0.0 0:01.83` twice 10 s ap
 Driven in both apps on the flows mock (`/tmp/flows-z-shell/shots/`, see shell.md's final pass for the setup).
 - FT-01, FT-02, FT-08, MS-15: same order, compaction, icons and status icons in Changes Compact on app-billing
   (`g-ft01.png`, `s-ft01.png`). Full mode: fixed (shared, views/code.rs) — the tree rows didn't span the pane, so
-  status icons followed the name; now trailing as in Swift (`g-full.png`, `s-full.png`). GPUI also writes the LFS lock
-  owner after the lock ("bob", "carol"); Swift shows the lock only (left to the code owner).
+  status icons followed the name; now trailing as in Swift (`g-full.png`, `s-full.png`). The LFS lock owner GPUI wrote
+  after the lock is gone since 6835e7e: only the lock, the owner in its tooltip (z-verify below).
 - FT-03: clicking "db" folded it in both (`g-ft03.png`, `s-ft03.png`).
 - FT-04: Full-tree menu on "assets": Collapse / Expand All / Collapse All in both (`g-ft04.png`, `s-ft04.png`).
 - FT-05, FT-06: same (PR #26/#32 Files tree with done/total per folder and "N of M files viewed", `g-pr26.png`, `s-pr26.png`).
@@ -228,12 +230,27 @@ Screenshots in `/tmp/flows-z-diff/shots/` (`g-*` GPUI, `s-*` Swift).
 | DV-03 | **fixed** outside Changes: the renderer's header (History, PR, browser) now starts with the file-type icon, as Swift's | g-hfull, s-hfull2, g-rrs |
 | DV-07..DV-15, DV-17, DV-24..DV-28, DV-43, DV-45 | same (renderer unchanged except fonts since the per-view pass) | — |
 | DV-16 / DV-18 / DV-19 | same: History Full on a5fe4f99 store.ts opens at the change, ruler mark, Diff/Before/After | g-hfull, s-hfull2 |
-| DV-20 | **still different**: History, PR and the Full browser offer Unified / Split (diff renderer d3e140c, persisted as `diffLayout`); Swift has none. Changes forces Unified. Now hidden for files without changes | g-hist, s-hist |
+| DV-20 | intentional (GPUI addition): History, PR and the Full browser offer Unified / Split (diff renderer d3e140c, persisted as `diffLayout`); Swift has none. Changes forces Unified. Hidden for files without changes | g-hist, s-hist |
 | DV-21..DV-23 | same (unchanged) | — |
 | DV-29 / DV-30 | same: ⌘-click and the word menu in Full | g-cmdclick, g-ctx-crop |
 | DV-31 | same (a third down per spec; the Swift copy put a freshly opened tab's line at the top) | g-cmdclick, s-cmdclick |
-| DV-32 / DV-33 | **fixed**: ⌘F did nothing in a PR (and History) until the diff had focus; History and the PR now open find wherever focus is in them, like Changes. ⌘G steps ("2 of 2"). History still needs focus inside it after a tab switch (nothing is focused then) | g-find, s-find, g-findg, g-hfind-crop |
+| DV-32 / DV-33 | **fixed**: ⌘F did nothing in a PR (and History) until the diff had focus; History and the PR now open find wherever focus is in them, like Changes. ⌘G steps ("2 of 2"). Since 6835e7e a tab switch focuses the shown view, so no click is needed (z-verify below, Full-mode Changes fixed there) | g-find, s-find, g-findg, g-hfind-crop |
 | DV-34..DV-36 | same as recorded in pulls.md RV-12/13: inline editor "services/billing/invoice.go · Line 112", ⌘↩ adds "You · Pending", Delete removes it | g-cm3, g-cm4, g-cm5-crop |
 | DV-37 / DV-38 | same: blame gutter "ee032e0 Alice Mock · 10 mo", "Not committed" (relative age is English where Swift follows the locale, as CI-13) | g-blame, s-blame |
 | DV-39..DV-42 | settings owner (fonts now wired into every DiffView by the merge) | — |
 | DV-44 | same (Preview checkbox on .md in History) | g-hist, s-hist |
+
+## Verification against Swift (z-verify, after 6835e7e)
+
+Both apps side by side on the flows mock (port 8851, `/tmp/flows-z-verify`), real clicks and System Events keys.
+Shots in `/tmp/flows-z-verify/shots/` (`g*` GPUI, `s*` Swift).
+
+| ID | Swift | GPUI | result |
+|---|---|---|---|
+| FT-02 | billing Full: hero.psd and banner.png show only a lock; hovering it shows the row's path tooltip (`s1.png`, `s2t.png`) | only a lock, tooltip "Locked by bob (Git LFS)" on the lock, path on the name (`g1.png`, `g2c.png`, `g3c.png`) | same (see FT-02 row) |
+| DV-12, CH-42 | inter.woff2 in Full: header "+0 −0", doc.zipper over a large grey bold "Binary File" (`s5.png`) | same header; the title was white semibold 20 pt, now muted bold 22 pt (`gbin.png`) | **fixed** (title style) |
+| DV-32 / DV-33 | keys only (⌘2, ↓↓, ⌘F, Esc, ⌘1, ↓, ⌘F, Esc, ⌘3, ↓ / ⌥↓, ⌘F): ⌘1–⌘3 and ⌘F work everywhere; ↓ moves nothing in History, Changes or the PR after a keys-only switch; ⌥↓ moves the PR's file (`sk1`–`sk6`, `sc1`–`sc8`) | ⌘1–⌘3 and ⌘F work in all three (`gk1`–`gk6`, `gc1`–`gc8`, `r5.png`); ↓ also moves History's commit and Compact Changes' file; ⌥↓ moves the PR's file | **fixed**: in Full mode Changes' focus handle wasn't drawn (only the Compact list tracked it), so after ⌘1 into Full mode every key, ⌘3 included, went nowhere until a click (`gk3`–`gk6` before, after the fix `gk3`/`gk4`/`gk6`). Full-mode ↓ moves nothing in either app |
+
+Harness note: twice a key sequence stopped reaching GPUI with its window shown inactive (grey traffic lights) though
+`loupe` was frontmost; a click on the window brought it back and it didn't reproduce with focus logging, so treat a
+dead-keys shot with grey traffic lights as lost window focus (another app or the user), not a focus bug.
