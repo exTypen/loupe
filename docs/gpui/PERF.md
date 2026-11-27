@@ -163,3 +163,13 @@ the status refresh's merged check already counts the branch's commits not on the
 - after: first round 13 / 12 / 12, then 12–13, the same as the steady rounds. Whole run (launch + 3 rounds): 300 → 286.
 - Swift on the same fixture: 6 / 12 / 11, 285 in all (it loads the 6–7 selected-file diffs at launch, so its first
   round has none; GPUI loads them on the first visit).
+
+## Re-run at 8bf456f (in progress, raw)
+
+Folder `/private/tmp/flows-z-perf2`, mock forge on 8852, release build of 8bf456f.
+- (a) GPUI 0.144 / 0.164 s (run 1 missed the click). Swift 0.204 / 0.269 / 0.190 s.
+- (b) GPUI 116.0 / 116.7 fps, p95 8.9 / 8.9 ms. Swift 107.3 / 106.7 / 106.0 fps, p95 16.8 / 16.9 / 16.8 ms.
+- (e) RSS GPUI 193 / 193 MB, Swift 227 / 228 / 230 MB. Footprint GPUI 231 / 232 MB, Swift 156 / 154 / 156 MB.
+- (d) 10 switches: git 0 in all. CPU GPUI 0.12 / 0.15 / 0.15 s, Swift 1.29 ×3 s.
+- (c) open PR: GPUI 0.02 / 0.02 / 0.03 s, Swift 0.05 / 0.04 / 0.05 s, git 0.
+- (d′) GPUI 13/14/13, 14/14/14, 14/14/14. Swift 6/13/13 ×3.
