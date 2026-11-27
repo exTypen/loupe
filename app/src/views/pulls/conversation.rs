@@ -275,6 +275,12 @@ fn participants(entries: &[Entry], pr: &PullRequest) -> Vec<String> {
     s.into_iter().collect()
 }
 
+/// The rail the avatars sit on: drawn per row (rows touch), so the scroll view's children stay the entries the
+/// sidebar jumps to.
+fn rail() -> gpui_kit::Div {
+    div().absolute().top_0().bottom_0().left(px(20. + RAIL / 2. - 1.)).w(px(2.)).bg(theme::border())
+}
+
 pub fn render(d: &mut PullDetail, window: &mut Window, cx: &mut Context<PullDetail>) -> AnyElement {
     let me = cx.entity_id();
     let es = entries(d, me);
@@ -284,13 +290,13 @@ pub fn render(d: &mut PullDetail, window: &mut Window, cx: &mut Context<PullDeta
     let mut at: HashMap<String, usize> = HashMap::new();
     for (i, e) in es.iter().enumerate() {
         if i == 0 || !time::same_day(es[i - 1].date, e.date) {
-            children.push(div().w_full().max_w(px(MAX_WIDTH)).px_5().py_2p5().child(div().flex().ml(px(RAIL / 2. - 20.))
+            children.push(div().w_full().max_w(px(MAX_WIDTH)).px_5().py_2p5().relative().child(rail()).child(div().flex().ml(px(RAIL / 2. - 20.))
                 .child(div().px_2().rounded_full().bg(theme::canvas()).border_1().border_color(theme::border())
                     .text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text_muted()).child(time::day_marker(e.date, now))))
                 .into_any_element());
         }
         at.insert(e.id.clone(), children.len());
-        children.push(div().w_full().max_w(px(MAX_WIDTH)).px_5().child(row(e, d, now, cx)).into_any_element());
+        children.push(div().w_full().max_w(px(MAX_WIDTH)).px_5().relative().child(rail()).child(row(e, d, now, cx)).into_any_element());
     }
     children.push(div().h(px(16.)).into_any_element());
     // It opens at the newest, and a posted comment shows: scroll to the end (applied in this frame's prepaint,

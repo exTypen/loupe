@@ -13,12 +13,24 @@ pub struct TreeRow {
     pub file_path: Option<String>,
 }
 
+/// Where Finder (`localizedStandardCompare`, ICU) puts a character: ASCII punctuation in ICU's order, then digits,
+/// then letters case-insensitively. Byte order would put "charge.go" before "charge_test.go"; Finder doesn't.
+fn collation_key(c: char) -> (u8, char) {
+    const PUNCT: &str = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+    match PUNCT.find(c) {
+        Some(i) => (0, char::from(i as u8)),
+        None if c.is_ascii_digit() => (1, c),
+        None => (2, c.to_lowercase().next().unwrap_or(c)),
+    }
+}
+
 /// Finder's order for names: case-insensitive, runs of digits by their value ("f2" before "f10").
 pub fn standard_compare(a: &str, b: &str) -> Ordering {
     let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
     loop {
         match (x.peek().copied(), y.peek().copied()) {
-            (None, None) => return a.cmp(b), // equal ignoring case: a stable tie-break
+            // Equal ignoring case: lowercase first, as Finder does.
+            (None, None) => return b.chars().map(|c| c.is_lowercase()).cmp(a.chars().map(|c| c.is_lowercase())).then(a.cmp(b)),
             (None, _) => return Ordering::Less,
             (_, None) => return Ordering::Greater,
             (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
@@ -33,7 +45,7 @@ pub fn standard_compare(a: &str, b: &str) -> Ordering {
                 if o != Ordering::Equal { return o }
             }
             (Some(c), Some(d)) => {
-                let o = c.to_lowercase().cmp(d.to_lowercase());
+                let o = collation_key(c).cmp(&collation_key(d));
                 if o != Ordering::Equal { return o }
                 x.next();
                 y.next();
@@ -141,6 +153,11 @@ mod tests {
     fn orders_names_like_finder() {
         assert_eq!(standard_compare("f2.rs", "f10.rs"), Ordering::Less);
         assert_eq!(standard_compare("Banana", "apple"), Ordering::Greater);
+        // Expected values from Swift's localizedStandardCompare.
+        assert_eq!(standard_compare("charge_test.go", "charge.go"), Ordering::Less);
+        assert_eq!(standard_compare("a-b", "a.b"), Ordering::Less);
+        assert_eq!(standard_compare("ab", "a_b"), Ordering::Greater);
+        assert_eq!(standard_compare("Ab", "ab"), Ordering::Greater);
         assert_eq!(tree_order("z/a", "a"), Ordering::Less); // directories first
     }
 }

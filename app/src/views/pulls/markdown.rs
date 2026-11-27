@@ -269,9 +269,12 @@ pub fn render(text: &str, document: bool) -> AnyElement {
             Block::Code(lang, s) => code_block(lang, s),
             Block::Table(rows) => {
                 let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-                div().flex().flex_col().w_full().rounded(px(4.)).border_1().border_color(theme::border()).overflow_hidden()
-                    .children(rows.iter().enumerate().map(|(i, r)| div().flex().w_full().when(i > 0, |d| d.border_t_1().border_color(theme::border()))
-                        .children((0..width).map(|k| div().flex_1().min_w_0().px_2().py_1()
+                // Columns as wide as their content, like Swift's Grid. Laid out column by column so a column shares one
+                // width; cells don't wrap, so every row has the same height in each column.
+                div().flex().max_w_full().self_start().rounded(px(4.)).border_1().border_color(theme::border()).overflow_hidden()
+                    .children((0..width).map(|k| div().flex().flex_col().when(k > 0, |d| d.border_l_1().border_color(theme::border()))
+                        .children(rows.iter().enumerate().map(|(i, r)| div().px_2().py_1().whitespace_nowrap()
+                            .when(i > 0, |d| d.border_t_1().border_color(theme::border()))
                             .when(i == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
                             .child(styled(r.get(k).map_or("", String::as_str)))))))
                     .into_any_element()

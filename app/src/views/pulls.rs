@@ -160,6 +160,14 @@ impl PullsView {
         let list = self.list(&c.path);
         list.restore_cache(&c.remote); // instant list from the last session; the fetch replaces it
         let load = list.should_load_on_show();
+        // Back on a worktree whose open PR was dropped (another worktree showed meanwhile): it comes back on that PR,
+        // as in Swift, rather than a list whose selection blocks every load.
+        if let Some(n) = list.selected && self.selected_detail().is_none() {
+            match self.list(&c.path).pulls.iter().find(|p| p.number == n).cloned() {
+                Some(pr) => return self.open(pr, window, cx),
+                None => self.list(&c.path).selected = None,
+            }
+        }
         if let Some(d) = self.selected_detail() {
             d.update(cx, |d, cx| { d.show(cx); d.focus(window, cx) });
             return;
