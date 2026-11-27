@@ -301,6 +301,9 @@ impl ChecksOverlay {
     }
 }
 
+/// The shell's title bar height (shell/mod.rs `TitleBar::h`).
+const TOOLBAR: f32 = 42.;
+
 impl Render for ChecksOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused {
@@ -309,13 +312,15 @@ impl Render for ChecksOverlay {
         }
         let size = window.viewport_size();
         let w = (size.width - px(64.)).min(px(1500.));
-        let h = size.height - px(64.);
+        // Swift's overlay lived in the content view, under the toolbar, which stays usable (CI-02): the tabs and the
+        // worktree switch still work while it shows.
+        let h = size.height - px(TOOLBAR) - px(64.);
         let body: AnyElement = match &self.detail {
             Some(d) => d.clone().into_any_element(),
             None => div().size_full().flex().flex_col().child(self.header(cx)).child(ui::divider()).child(div().flex_1().min_h_0().child(self.list(cx))).into_any_element(),
         };
         let me = cx.entity();
-        div().id("ci-overlay").occlude().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().id("ci-overlay").occlude().absolute().top(px(TOOLBAR)).left_0().right_0().bottom_0().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             // Esc: back to the list first, then close. ⌘[ only goes back; the overlay holds focus, so the PR detail
             // behind it never sees it (§14: both bound ⌘[ in the Swift app).
