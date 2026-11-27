@@ -39,3 +39,22 @@ lists are cached once per launch for each harness, because a CLI takes up to 20 
 | UP-02 | Loupe › Check for Updates… opens Sparkle's UI. | Settings has a disabled "Check for Updates…" (`gpui-st03-general.png`). No menu item. | intentional: no updater (see UP-01) |
 | UP-03 | Toggle "Automatically check for updates" (in Sparkle's defaults). | Not shown: nothing would read it. | intentional: no updater. This also removes §14 Updates.swift:25-26 (stale toggles) |
 | UP-04 | Toggle "Automatically download and install updates", disabled while checking is off. | Not shown. | intentional: no updater |
+
+## Final pass (merged app, branch gpui-z-forge)
+
+Both apps on the merged build, shots in `/tmp/flows-z-forge/shots/` (`g-*` GPUI, `s-*` Swift).
+
+| ID | Final result | Shots |
+|---|---|---|
+| ST-01 | ⌘, opens one Settings window (a second ⌘, brings it forward), lands on Spaces in both. **fixed (shared)**: after a sheet or overlay in the main window closed, the toolbar gear did nothing (no focus, so `OpenSettings` reached no listener); the shell now takes the focus back | `g-st09.png`, `s-st09.png` |
+| ST-02..06 | same rows; "Found on this Mac" lists only Claude Code in GPUI because LOUPE_FLOWS_AI points it at the stub (Swift scans the real paths: environment, not a bug) | `g-st03.png`, `s-st03.png` |
+| ST-07 | Updates card (intentional, unchanged) | `g-st03.png` |
+| ST-08 | unchanged (not re-driven) | — |
+| ST-09..13, ST-16 | Spaces tab: Default ✓, alice account, three repositories, same footer | `g-st09.png`, `s-st09.png` |
+| ST-14 | Forgejo + bad token: "Forgejo 401: user does not exist", sheet stays open | `g-st14.png`, `g-st14-bad.png`, `s-st14.png` |
+| ST-15, ST-17 | unchanged (no gh login under the fixture HOME) | — |
+| ST-18 | same groups, titles and glyphs | `g-st18.png`, `s-st18.png` |
+| ST-19 | ⌘K on Refresh: Go to Worktree → None, both rows get a restore arrow, in both | `g-st19.png`, `s-st19.png` |
+| ST-20 | restore on Refresh gives back ⌘R in both. **fixed**: the restore arrow sat before the recorder; Swift puts it after | `g-st20.png`, `g-st20b.png`, `s-st20b.png` |
+
+Idle CPU with Settings open: `0.0 0:00.81` twice, 10 s apart.

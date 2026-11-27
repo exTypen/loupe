@@ -54,3 +54,39 @@ by their views and their forge `Cancel` is fired on drop, so leaving cancels req
 | CI-37 | GitHub check-run summary (Markdown) and annotations | Ported (summary via `TextView::markdown`, annotations fetched off-thread); the mock has no GitHub mode | same (not exercisable on the mock) |
 | CI-38 | "External Status" / "Job Not Loaded" empty page with "Open Details" | Same titles, texts and button (g-external.png vs s-external.png, g-external-codecov.png) | same |
 | CI-39 | GitHub log 302 to blob host, Authorization dropped cross-host | `loupe_forge` client follows redirects with `RedirectAuthHeaders::SameHost` (Authorization dropped cross-host); the mock has no GitHub mode | same (unit-tested only) |
+
+## Final pass (merged app, branch gpui-z-forge)
+
+Both apps on the merged build, mock on :8836 (Forgejo 17.2.0+gitea-1.22.0), shots in `/tmp/flows-z-forge/shots/`
+(`g-*` GPUI, `s-*` Swift). The overlay is now opened only through the PR header badge, in both apps.
+
+| ID | Final result | Shots |
+|---|---|---|
+| SH-07 | overlay hosted by `ci::install`; **fixed**: it covered the toolbar (centred in the whole window). Swift's lives in the content view under the toolbar, so the tabs stay usable; it now starts under the 42 pt title bar and is the content height − 64 | `g-ci26.png`, `s-ci26.png` |
+| CI-01 | #26 "⊗2 ◌1 ✓5 checks", #39 "✓ 4 checks", #30 "◌ Checks" in both | `g-pr26.png`, `s-pr26.png`, `g-30.png` |
+| CI-02 | badge click opens the card | `g-ci26.png`, `s-ci26.png` |
+| CI-03 | badge updates with each PR load; **fixed**: a PR opened by number right after Create refreshed with an empty sha (`GET …/commits//status` 404 in forge.log); refresh now waits for the head | `g-pc17.png` |
+| CI-04 | Re-run Job / Re-run All / Cancel shown, no Re-run Failed, in both | `g-ci18-test.png`, `s-ci18-test.png` |
+| CI-05..08 | #26: identical sections, counts (2/1/5), captions and classes | `g-ci26.png`, `s-ci26.png` |
+| CI-09 | backdrop click closes in both; Esc after clicking the header goes back to the list in both; Esc with focus in the log view does nothing in either | `g-ci09-back2.png`, `s-ci09-back2.png`, `g-ci09-bd.png`, `s-ci09-bd.png` |
+| CI-10 | "2 failing · 1 queued", "5 of 8 successful · e86169cc" in both | `g-ci26.png` |
+| CI-11 | no notice on the mock (unchanged row) | — |
+| CI-12 | "lint" filters to one row in both. "LINT" matches nothing in Swift on a Turkish-locale Mac (`I` lowercases to `ı`), one row in GPUI: fixed-swift-bug (new finding, not in §14) | `g-ci12.png`, `s-ci12.png`, `s-ci12b.png` |
+| CI-13 | same rows; **fixed**: GPUI said "0 seconds ago" where Swift's named relative time says "now" ("şimdi") | `g-ci09-back2.png`, `s-ci02.png` |
+| CI-14 | #30: "No checks" header + "No Checks" empty state (recorded fix) | `g-ci14.png` |
+| CI-15/16 | 30 s settled cadence: 0.03 s CPU in 10 s with the overlay open | — |
+| CI-17/18 | row opens the detail; header, actions, description | `g-ci18-test.png`, `s-ci18-test.png` |
+| CI-19/20 | Job “test” · docker · duration; 5 steps with icons | same |
+| CI-21/25 | same log, colours and problem list (5); lone CR difference is the recorded fix | same |
+| CI-26 | "▸ Set up job" unfolds to "Job test on docker" in both | `g-ci26-fold.png`, `s-ci26-fold.png` |
+| CI-27 | click a problem: group unfolds, line highlighted, in both | `g-ci27.png`, `s-ci27.png` |
+| CI-28/29 | unchanged (unit-tested) | — |
+| CI-30/31 | Copy Log / Open in Forgejo present in both | `g-ci18-test.png` |
+| CI-32 | Re-run Job → attempt 2 running, page rebuilt, live tail; Re-run All → attempt 4 | `g-ci32-after.png`, `g-ci35-cancel.png` |
+| CI-23/24 | tail grows every 2 s and stops when the job ends | `g-ci23-tail.png` |
+| CI-33/34 | as above | — |
+| CI-35/36 | Cancel on a run that had just finished: "Forgejo 409: run is not running" in red; buttons switch to Re-run after the next poll | `g-ci35-cancel.png`, `g-ci36-later.png` |
+| CI-37/39 | GitHub-only, unit-tested (unchanged) | — |
+| CI-38 | security/snyk: "External Status" + "Open Details" in both | `g-ci38.png`, `s-ci-test-a4.png` |
+
+Idle CPU with the overlay open on #30 (settled): `0.0 0:03.88` → `0.0 0:03.91` over 10 s.
