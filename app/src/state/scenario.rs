@@ -169,7 +169,7 @@ impl Run {
         self.wait(cx, "worktrees", 60., move |a, _| repos.iter().all(|r| a.worktrees.contains_key(r))).await;
         self.pause(cx, 3.).await;
         // As big as the screen (Swift: setFrame(visibleFrame)): a narrow toolbar clips its controls.
-        // ponytail: gpui can't move a window, so only the size follows the visible frame; the origin stays.
+        // The window opened at the visible frame (shell::open_main_window); this only follows a screen that changed.
         self.with_window(cx, |w, cx| if let Some(d) = w.display(cx) { w.resize(d.visible_bounds().size) });
         cx.background_executor().timer(Duration::from_millis(200)).await; // the new frame arrives asynchronously
         let size = self.with_window(cx, |w, _| w.bounds().size);
