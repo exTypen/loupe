@@ -672,7 +672,7 @@ impl HistoryView {
         let me = cx.entity().downgrade();
         let (q, detail) = stash::drop_question(c.selector.as_deref().unwrap_or("stash"));
         Dialog::confirm(&self.app, q, detail, "Drop Stash",
-            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.stash_op(c, StashOp::Drop, w, cx)).ok(); }, window, cx);
+            move |w, cx| { let c = c.clone(); me.update(cx, |v, cx| v.stash_op(c, StashOp::Drop, w, cx)).ok(); }, &self.focus, window, cx);
     }
 
     fn new_worktree(&mut self, c: &Commit, cx: &mut Context<Self>) {
@@ -697,7 +697,7 @@ impl HistoryView {
         let Some(m) = self.selected_model() else { return };
         if m.read(cx).is_busy() { return }
         let t = m.update(cx, |m, cx| m.undo_offering_revert(cx));
-        let (app, me) = (self.app.clone(), cx.entity().downgrade());
+        let (app, me, back) = (self.app.clone(), cx.entity().downgrade(), self.focus.clone());
         cx.spawn_in(window, async move |_, cx| {
             let Some(refusal) = t.await else { return };
             cx.update(|w, cx| {
@@ -708,7 +708,7 @@ impl HistoryView {
                     })))],
                     None => vec![("OK".into(), Role::Default, None)],
                 };
-                Dialog::present(&app, "Can't Undo", refusal.message, buttons, w, cx);
+                Dialog::present(&app, "Can't Undo", refusal.message, buttons, &back, w, cx);
             }).ok();
         }).detach();
     }

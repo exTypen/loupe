@@ -157,7 +157,7 @@ impl HistoryView {
         Dialog::confirm(&self.app, title, message, button, move |w, cx| {
             let (label, range, plan) = (label.clone(), range.clone(), plan.clone());
             me.update(cx, |v, cx| v.submit(&label, range, plan, true, true, w, cx)).ok();
-        }, window, cx);
+        }, &self.focus, window, cx);
     }
 
     /// RB-11: one rewrite at a time; recorded for undo when it finishes here, sent to Changes when it stops.
