@@ -448,9 +448,6 @@ impl Settings {
                 let recording = self.recording == Some(a);
                 let custom = sc.is_custom(a);
                 card = card.child(row(a.title(), div().flex().items_center().gap_1p5()
-                    .when(custom, |d| d.child(ui::icon_button(SharedString::from(format!("restore-{}", a.id())), "undo-2")
-                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Restore {}", a.standard().map(|s| s.display()).unwrap_or("no shortcut".into()))).build(w, cx))
-                        .on_click(cx.listener(move |s, _, _, cx| { s.assign(a, a.standard(), cx); cx.notify() }))))
                     .child(div().id(SharedString::from(format!("rec-{}", a.id()))).min_w(px(110.)).h(px(26.)).px_2().flex().items_center().justify_center()
                         .rounded(px(6.)).border_1().cursor_pointer().font_family(theme::CODE_FONT).text_size(px(12.))
                         .map(|d| if recording { d.border_color(theme::blue()).text_color(theme::blue()) }
@@ -461,7 +458,11 @@ impl Settings {
                             s.focus.focus(w, cx);
                             cx.notify();
                         }))
-                        .child(if recording { "Type shortcut…".to_string() } else { s.map(|s| s.display()).unwrap_or("None".into()) }))));
+                        .child(if recording { "Type shortcut…".to_string() } else { s.map(|s| s.display()).unwrap_or("None".into()) }))
+                    // After the recorder, as in Swift (ST-20).
+                    .when(custom, |d| d.child(ui::icon_button(SharedString::from(format!("restore-{}", a.id())), "undo-2")
+                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Restore {}", a.standard().map(|s| s.display()).unwrap_or("no shortcut".into()))).build(w, cx))
+                        .on_click(cx.listener(move |s, _, _, cx| { s.assign(a, a.standard(), cx); cx.notify() }))))));
             }
             out = out.child(card);
         }
