@@ -19,7 +19,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
     component::{
-        Disableable as _, Sizable as _,
+        Disableable as _, Icon, Sizable as _,
         button::{Button, ButtonVariants as _},
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
         menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
@@ -306,6 +306,11 @@ impl PullDetail {
         } else if self.files.selected.is_none() {
             self.files.selected = self.diffs.iter().map(|f| f.path()).find(|p| !self.files.is_viewed(p))
                 .or(self.diffs.first().map(|f| f.path())).map(str::to_string);
+        }
+        // Swift's selectedPath didSet: a file selected in Full mode opens as a tab, the first one included.
+        if self.full_mode(cx) && let Some(p) = self.selected() && !self.nav.tabs.contains(&p) {
+            self.nav.tabs.push(p.clone());
+            self.nav.selected = Some(p);
         }
         self.apply_default_collapse();
         self.load_error = None;
@@ -712,8 +717,8 @@ impl PullDetail {
         let number = Button::new("pr-number").ghost().small().label(format!("#{} ⌄", pr.number)).tooltip("Open in Browser or Copy Link")
             .dropdown_menu(move |menu, _, _| {
                 let (a, b) = (u1.clone(), u2.clone());
-                menu.item(PopupMenuItem::new("Open in Browser").on_click(move |_, _, cx| cx.open_url(&a)))
-                    .item(PopupMenuItem::new("Copy Link").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(b.clone()))))
+                menu.item(PopupMenuItem::new("Open in Browser").icon(Icon::empty().path("icons/compass.svg")).on_click(move |_, _, cx| cx.open_url(&a)))
+                    .item(PopupMenuItem::new("Copy Link").icon(Icon::empty().path("icons/link.svg")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(b.clone()))))
             });
         let w_merge = w.clone();
         let blocked = pr.mergeable == Some(false);
