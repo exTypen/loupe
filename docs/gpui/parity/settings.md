@@ -39,3 +39,6 @@ lists are cached once per launch for each harness, because a CLI takes up to 20 
 | UP-02 | Loupe › Check for Updates… opens Sparkle's UI. | Settings has a disabled "Check for Updates…" (`gpui-st03-general.png`). No menu item. | intentional: no updater (see UP-01) |
 | UP-03 | Toggle "Automatically check for updates" (in Sparkle's defaults). | Not shown: nothing would read it. | intentional: no updater. This also removes §14 Updates.swift:25-26 (stale toggles) |
 | UP-04 | Toggle "Automatically download and install updates", disabled while checking is off. | Not shown. | intentional: no updater |
+
+Final pass (merged app, shell's final pass): UP-01..04 unchanged — LoupeFlows has no Sparkle feed, so its app menu has
+no "Check for Updates…" (menu dump), and the GPUI build has none either; both intentional as above.
