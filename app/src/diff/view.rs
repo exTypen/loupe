@@ -995,7 +995,8 @@ impl DiffView {
         let center = |title: &str, sub: Option<&str>| div().flex_1().flex().flex_col().items_center().justify_center().gap(px(6.))
             .child(div().text_color(theme::text_muted()).text_size(px(15.)).child(title.to_string()))
             .when_some(sub.map(str::to_string), |d, s| d.child(div().text_color(theme::text_faint()).text_size(px(12.)).child(s)));
-        let image = |p: &Option<PathBuf>| p.clone().map(|p| img(p).max_w(px(360.)).max_h(px(360.)).rounded(px(6.)));
+        // Scaled to fit 360×360 like Swift's resizable aspect-fit Image: a 200 px wide PNG shows 360 pt wide.
+        let image = |p: &Option<PathBuf>| p.clone().map(|p| img(p).w(px(360.)).max_h(px(360.)).rounded(px(6.)));
         match p {
             Placeholder::NoContent => center("No Content Changes", Some("Mode change or rename only.")).into_any_element(),
             Placeholder::Binary if self.images.0.is_none() && self.images.1.is_none() => center("Binary File", None).into_any_element(),
