@@ -152,6 +152,8 @@ pub struct HistoryView {
     last_busy: Option<String>,
     /// Drag and drop: the row under the pointer, the zone and whether ⌥ makes it a fixup.
     drop_target: Option<(String, Zone, bool)>,
+    /// The row whose context menu is open: its tooltip would cover the menu's first items (a native menu hides it).
+    menu_row: Option<String>,
     avatars: Avatars,
     /// ShowCommit for a commit not loaded yet: selected when a load brings it.
     pending_select: Option<String>,
@@ -178,7 +180,7 @@ impl HistoryView {
         ];
         let mut v = HistoryView {
             app, model: None, logs: HashMap::new(), search, diff: None, whole: HashMap::new(), whole_load: None, whole_key: None, shown: false,
-            last_busy: None, drop_target: None, avatars: Avatars::load(), pending_select: None, file_panel: panel::FilePanel::new(),
+            last_busy: None, drop_target: None, menu_row: None, avatars: Avatars::load(), pending_select: None, file_panel: panel::FilePanel::new(),
             overview: loupe_forge::settings::shared().bool("commitOverview"), ov: None, focus: cx.focus_handle(), _subs: subs,
         };
         v.sync(window, cx);
@@ -942,7 +944,8 @@ impl HistoryView {
             .rounded(theme::RADIUS_ROW).cursor_pointer()
             .when(selected, |d| d.bg(theme::selected()))
             .when(!selected, |d| d.hover(|s| s.bg(theme::hover())))
-            .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+            .when(self.menu_row.as_deref() != Some(c.sha.as_str()), |d| d.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)))
+            .on_hover({ let t = this.clone(); move |hovered, _, cx| if !hovered { t.update(cx, |v, cx| if v.menu_row.take().is_some() { cx.notify() }) } })
             .on_click(move |_, w, cx| t1.update(cx, |v, cx| { v.focus.focus(w, cx); v.select(Some(sha.clone()), w, cx) }))
             .when_some(graph, |d, g| d.child(graph::cell(g, l.graph_width)))
             .child(div().pt(px(8.)).flex_none().child(self.avatar(&c.author, &c.email, 26.)))
@@ -1002,6 +1005,7 @@ impl HistoryView {
 
     /// The commit context menu (HI-16), with the rebase section on the current branch (RB-02).
     fn commit_menu(&mut self, menu: PopupMenu, c: &Commit, _: &mut Window, cx: &mut Context<Self>) -> PopupMenu {
+        if self.menu_row.as_deref() != Some(c.sha.as_str()) { self.menu_row = Some(c.sha.clone()); cx.notify() }
         let me = cx.entity();
         let item = |label: &str, f: Act| {
             let me = me.clone();
