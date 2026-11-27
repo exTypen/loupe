@@ -1,12 +1,11 @@
 # Loupe
 
-A native macOS git client built for reviewing code: your own uncommitted changes, large pull requests on
+A fast macOS git client built for reviewing code: your own uncommitted changes, large pull requests on
 GitHub, Forgejo and Gitea, and many worktrees across many repositories, organised into spaces.
 
 **[Download Loupe for macOS](https://github.com/exTypen/loupe/releases/latest)**: free and open source, signed and
 notarized, for macOS 15 or later.
 
-![Reviewing a pull request in Loupe](docs/pr.png)
 
 ## Highlights
 
@@ -16,13 +15,11 @@ GitHub, Forgejo or Gitea accounts, so the same server can have a different login
 push and pull request checkout over HTTPS use that space's token instead of whatever the system credential
 helper holds.
 
-![Two spaces, each with its own repositories and accounts](docs/spaces.png)
 
 **Forgejo and Gitea, treated like GitHub.** Open, review and merge pull requests on all three: viewed files that
 become unviewed again when a new push changes them, inline comments, drafts that survive restarts, Approve and
 Request Changes. CI jobs, steps and live logs show in the app on every forge, with Re-run and Cancel.
 
-![CI checks for a pull request](docs/checks.png)
 
 **Built for many worktrees.** Every repository lists all its worktrees with their branch, ahead/behind counts
 and uncommitted changes. ⌘K jumps between them, and a pull request checks out into its own worktree in one
@@ -31,14 +28,14 @@ click.
 **The whole git workflow.** Drag commits in History to reorder or squash them, resolve conflicts in a three-way
 merge editor, undo what Loupe did with ⌘Z, and work with Git LFS and submodules.
 
-**Fast, and native.** A SwiftUI app with an AppKit diff renderer. A 150,000-line file opens in under a second
-and scrolls smoothly.
+**Fast.** Written in Rust on [GPUI](https://www.gpui.rs), the GPU-rendered UI framework from Zed. A 150,000-line
+file opens in about 0.16 s and scrolls at the display's rate, and Loupe does no work while nothing changes.
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the numbers against the earlier Swift app.
 
 **AI commit messages from the tool you already have.** ✨ in the commit box writes the message with Claude Code,
 Codex, Gemini CLI, GitHub Copilot CLI, Cursor CLI, opencode, Qwen Code, Amp or Factory Droid, whichever is
 installed, on your own subscription and in the tool's read-only mode. Pick the tool, the model and a style.
 
-![A commit message written from the staged change](docs/changes.png)
 
 Every git operation runs through the `git` command line, so hooks, commit signing and credential helpers behave
 exactly as they do in your terminal.
@@ -82,11 +79,9 @@ exactly as they do in your terminal.
   its own repository, update it to the recorded commit or stage the new pointer. A banner offers to initialize
   submodules that were never checked out.
 
-![Resolving a cherry-pick conflict](docs/conflicts.png)
 
 **History**
 
-![All branches with the commit graph](docs/history.png)
 
 - The current branch, all branches, any single branch, or your stashes, with a commit graph and each commit's
   full diff. Search by message or author.
@@ -100,7 +95,6 @@ exactly as they do in your terminal.
 - Blame as a gutter in the diff, and file history beside it. Blame can step back to before a commit; file
   history follows renames.
 
-![Blame](docs/blame.png)
 - Start a new worktree from any commit.
 
 **Pull requests**
@@ -119,15 +113,9 @@ exactly as they do in your terminal.
   show their summary and annotations.
 
 **Performance**
-- The diff is a virtualized `NSTableView` whose rows draw themselves; the parser handles 200,000 diff lines in
-  about 40 ms.
+- The diff is a virtualized, GPU-drawn list; the parser handles 200,000 diff lines in a few milliseconds.
 - GitHub's API refuses diffs over 300 files or 20,000 lines. Loupe fetches the pull request and computes the
   same diff locally instead.
-
-**Updates**
-- Loupe updates itself with Sparkle: it checks the GitHub release feed once a day, and "Check for Updates…" sits
-  under About in the app menu. Settings › General turns automatic checks and automatic download-and-install on or
-  off. Every update is EdDSA-signed and verified before it replaces the app.
 
 ## Install
 
@@ -138,7 +126,8 @@ Loupe needs macOS 15 or later, and git (the Xcode Command Line Tools or Homebrew
 
 ## Building from source
 
-Building needs Xcode 16 or later (Swift 6 toolchain).
+Building needs Rust (the version pinned in `rust-toolchain.toml` installs itself through rustup) and the Xcode
+Command Line Tools.
 
 ```sh
 git clone https://github.com/exTypen/loupe.git
@@ -191,10 +180,10 @@ The ⌘ shortcuts below are the defaults; change any of them in Settings › Sho
 ## Development
 
 ```sh
-swift build
-swift test                                         # parsers, staging, blame and the graph against real repositories
-LOUPE_GH_LIVE=1 swift test --filter GitHubLive     # GitHub client against api.github.com (uses `gh auth token`)
-LOUPE_AI_LIVE=1 swift test --filter CommitAILive   # a commit message from the local `claude` CLI
+cargo run -p loupe                 # debug build
+cargo test --workspace             # parsers, staging, blame, the graph, forge clients, lenses
+cargo test --workspace -- --ignored   # live tests against api.github.com and the local AI CLIs
+scripts/flows/up.sh /tmp/flows     # a mock forge and fixture repositories to try flows on (see its README)
 ```
 
 `scripts/release.sh` builds a signed, notarized and stapled DMG. Its header lists the one-time setup: a
@@ -202,12 +191,12 @@ Developer ID Application certificate and stored notary credentials.
 
 ## Not built yet
 
-Interactive rebase, stacked pull requests, GitLab and Bitbucket, threaded replies to review comments,
-re-running CI jobs, live GitHub Actions logs, and syncing viewed files with GitHub.
+Stacked pull requests, GitLab and Bitbucket, threaded replies to review comments, syncing viewed files with
+GitHub, and updating itself (download new releases from the releases page for now).
 
 ## License
 
 [MIT](LICENSE).
 
 File-type icons come from [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)
-(MIT) and are embedded by `scripts/gen-file-icons.py`.
+(MIT) and are embedded by `crates/code/gen-file-icons.py`.

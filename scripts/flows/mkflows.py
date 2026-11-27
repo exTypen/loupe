@@ -11,7 +11,7 @@ SHAs. Re-running wipes and rebuilds <out>/home, <out>/repos, <out>/forge and <ou
     <out>/forge/lfs/<oid>      LFS objects the forge serves
     <out>/forge/state.json     pull requests, reviews, comments, CI profiles, users
     <out>/repos/...            the local clones and worktrees the apps open; every remote is http://127.0.0.1:<port>
-    <out>/scenario.json        LOUPE_STRESS scenario (StressDriver.swift) with no steps, plus a "fixture" map
+    <out>/scenario.json        LOUPE_STRESS scenario (app/src/state/scenario.rs) with no steps, plus a "fixture" map
 """
 import re as _re
 import argparse, hashlib, json, os, random, shutil, struct, subprocess, sys, time, zlib
@@ -1552,7 +1552,7 @@ subprocess.run(["sh", os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 EXTRA = {n: os.path.join(REPOS, "extra", n) for n in ("merge-plain", "merge-diff3", "rebase", "cherry", "revert", "resolved", "outside", "special")}
 # A fake Claude Code: a fenced merge for a conflict prompt, a commit message / PR text otherwise, nothing at all when
 # <out>/ai-empty exists. Every call goes to <out>/ai-calls.log. /opt/homebrew/bin/claude is found before it, so the GPUI
-# app takes it through LOUPE_FLOWS_AI=<this path> (loupe_forge::ai, scenario runs only); the Swift app can't be pointed.
+# app takes it through LOUPE_FLOWS_AI=<this path> (loupe_forge::ai, scenario runs only)
 AI = os.path.join(HOME, ".local", "bin", "claude")
 os.makedirs(os.path.dirname(AI), exist_ok=True)
 with open(AI, "w") as f:

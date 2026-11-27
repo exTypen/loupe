@@ -25,11 +25,11 @@ fi
 cat <<MSG
 
 scenario: $OUT/scenario.json
-Environment for an app (the Swift copy via run-swift.sh, or the GPUI app):
+Environment for the app:
   export LOUPE_STRESS=$OUT/scenario.json
   export HOME=$OUT/home
   export GIT_CONFIG_NOSYSTEM=1
-  export LOUPE_FLOWS_AI=$AI   # GPUI only: the stub Claude (scenario runs)
-Settings: GPUI dev.extypen.loupe.flows-gpui.$(basename "$OUT" | LC_ALL=C tr -c 'A-Za-z0-9-\n' '-'), Swift copy dev.extypen.loupe.flows.<same> (both wiped at launch).
+  export LOUPE_FLOWS_AI=$AI   # the stub Claude (scenario runs only)
+Settings: dev.extypen.loupe.flows-gpui.$(basename "$OUT" | LC_ALL=C tr -c 'A-Za-z0-9-\n' '-') (wiped at launch).
 Account: $URL, user alice, token flows-token (from scenario.json).
 MSG
