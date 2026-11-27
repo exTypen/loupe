@@ -643,7 +643,7 @@ impl MergeEditor {
                 .when(role == Role::Ours, |d| d.child(
                     tip(div().id("base-toggle").flex().items_center().h(px(18.)).px_1p5().rounded(px(5.)).cursor_pointer().text_size(px(11.))
                         .border_1().border_color(theme::border_strong())
-                        .map(|d| if show_base { d.bg(theme::selected()).text_color(theme::text()) } else { d.text_color(theme::text_muted()) })
+                        .map(|d| if show_base { d.bg(theme::blue()).border_color(theme::blue()).text_color(gpui_kit::white()) } else { d.text_color(theme::text_muted()) })
                         .child("Base"), Some("Show the common ancestor between the two sides".into()))
                         .on_click(cx.listener(|v, _, _, cx| { v.show_base = !v.show_base; cx.notify() })))))
             .child(div().id(SharedString::from(format!("pane-{role:?}"))).relative().flex_1().min_h_0().overflow_hidden().bg(theme::card())
