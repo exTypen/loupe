@@ -171,3 +171,65 @@ Shots in `/tmp/flows-z-verify/shots/` (`g*` GPUI, `s*` Swift).
 | PD-29 | Merge › Merge on #36: NSAlert "Merge #36 into main?" Cancel / Merge, horizontally centred and in the window's upper third (`sm1full.png`); Esc cancels (`sm2full.png`) | the same question and buttons centred on the window (`gm2.png`); Return and Esc did nothing | **fixed**: Esc cancels (`gm3.png`), Return merges and shows main's History with the merge (`gm4.png`). Still different: GPUI centres it vertically, NSAlert sits higher |
 | PD-15 | #26 card.png: "Binary File" placeholder, header "+0 −0"; the header floats mid-pane above it (Swift layout quirk) (`sp2.png`) | header at the top "+0 −0", the same placeholder (`gp1.png`) | same (GPUI keeps the header at the top) |
 | DV-32 / DV-33 (in a PR) | after ⌘1 / ⌘3 by keys: ⌘F opens find, ⌥↓ moves to the next file, plain ↓ does nothing (`sk6`, `sc4`, `sc8`) | the same (`gk6`, `gc7`, `r5.png`) | same |
+
+## Final pass, the remaining 44 IDs (merged app, z-pulls2)
+
+Branch `gpui-z-pulls2` on `gpui` (5ef3c06). Both apps side by side on the flows mock (`FLOWS_PORT=8862`,
+`/tmp/flows-z-pulls2`, forge started with `--verbose --more-open 60 --more-closed 80` so paging is reachable; the verbose
+log now names each request's client, so `LoupeFlows/100 CFNetwork` and `Loupe` requests can be compared line by line).
+Real clicks and System Events keys. Screenshots are in `/tmp/flows-z-pulls2/shots/` (`g-*` GPUI, `s-*` Swift LoupeFlows).
+With the table above, every PR, PD, RV and FG ID now has a final-pass result.
+
+| ID | What both apps did | result |
+|---|---|---|
+| PR-04 | Selecting a worktree never opened before (lib/ct) showed its list in the first captured frame in both: remote detection finishes before a frame can be grabbed, so the spinner isn't observable on the mock (`g-pr04`, `s-pr04`). Same condition in code (`remote_detected && tokens_loaded`) | same |
+| PR-05 | Relaunched with every `/pulls?` request failing (500): both showed the cached `pulls-127.0.0.1_8862-acme-app.json` list at once (`g-pr05a`, `s-pr05a`); GPUI adds "Couldn't refresh" (PR-18). Both request `page=1&limit=50` then page 2 for the 77 open PRs, and rewrite the cache only when the list changed | same |
+| PR-10 | "Opened by me" with a no-match filter: "No Pull Requests by You" in both (`g-pr10a`, `s-pr10a`); without the filter the same alice PRs incl. #37 by "Alice" (`g-pr10b`, `s-pr10b`); `pullsMine = 1` in both apps' defaults | same |
+| PR-12 | Closed, scrolled to the end: both asked `state=closed` pages 2 and 3, and stopped after the short third page (101 closed) (`g-pr12`, `s-pr12`). Still different, cosmetic: Swift's List pins the "All" section header while scrolling; GPUI's headers are rows and scroll away | same |
+| PR-13 | `/_mock/pr` retitled #36 "… (polled)"; with no input both picked it up on the next 60 s poll (forge log: one page 1+2 pair per app per minute) and showed the new title (`g-pr13`, `s-pr13`) | same |
+| PR-15 | Bringing either app to the front reloads the list (page 1+2 in the forge log before the ⌘R pair) | same |
+| PR-16 | Swift "Updated 0 saniye sonra" (it formats in the system locale, Turkish here, even with `-AppleLanguages (en)`), GPUI "Updated just now", per minute | intentional (as above) |
+| PR-17 | A filter matching nothing: "No Pull Requests" in both (`g-pr17`, `s-pr17`) | same |
+| PR-19 | On `fresh` (2 ahead, no PR) both show "+ Create Pull Request…" (`g-pr19b`, `s-pr19`); none on main or on a branch with an open PR. **Fixed:** the list kept the scroll offset of the worktree shown before (`g-pr19`: fresh opened mid-list); the list is now keyed by worktree and starts at the top as Swift's rebuilt view does (`g-pr19b`). **Fixed:** the filter text carried over to another worktree (lib/ct showed "No Pull Requests" under "Invoice search"); it now starts empty on another worktree or tab, as Swift's `@State` does (`g-pr11b`, `s-pr04`) | fixed |
+| PR-20 | Clicking #26, #36 and #22 opened each detail in place of the list, Files first, in both | same |
+| PD-05 | Opening #26: the same requests from both (version, pulls/26, reviews `limit=50`, issue comments, commits `verification=false&files=false`, status, actions runs, one review-comments call per review, `26.diff` with `Accept: text/plain`), first unviewed file selected (`g-pd05`, `s-pd05`) | same |
+| PD-06 | GET pulls/26 faulted (503 "offline"): both raised the alert. After OK, Swift raised it again on the next poll (`s-fg05d`); GPUI didn't and keeps the ⚠ mark next to Check Out (`g-fg05d`) | fixed-swift-bug (§14) |
+| PD-08 | The checks badge opens the same overlay (2 failing · 1 queued, 5 of 8 successful, same sections and rows); Esc closes it (`g-pd08`, `s-pd08`) | same |
+| PD-10 | **Fixed:** GPUI's tree pane was a fixed 300 px every time; Swift's ResizableSplit starts at 414 (90% of 460) and saves the drag under `prTreeWidth`. Now the same: 414 by default (`g-pd10`), a drag saved 339, dragging back 416 | fixed |
+| PD-11 | "pay": the same filtered files, folders forced open, counters of the filtered files, progress still "of 52" (`g-pd11`, `s-pd11`) | same |
+| PD-12 | "1 of 52 files viewed" and the bar after marking card.png (`g-pd16`, `s-pd16`) | same |
+| PD-15 | card.png: "Binary File", header +0 −0 (`g-pd18`, `s-pd18`). **Fixed:** a Markdown file had no "Preview" checkbox in GPUI's PR pane; it now renders the file at the head under its header (+3 −0, Preview, Viewed), in Compact and Full, from the shared `markdownPreview` key (`g-md1`, `s-md1`, `g-md3`) | fixed |
+| PD-16 | Viewed on card.png: both wrote `viewed:127.0.0.1:8862/acme/app#26 = {"assets/payments/card.png" = 14695981039346656037}`; the row dims, folder 1/2 | same |
+| PD-18 | ⌥↓ ⌥↓ ⌥↑ on the filtered list lands on card.png in both; ⌥↑ ×3 stops at Payment.java | same |
+| PD-19 | ⌥⌘F on Conversation, then Files: Swift's toolbar says Full but the pane stays Compact (`s-pd19b`, the §14 PLAUSIBLE sync gap, now seen); GPUI is in Full (`g-pd19b`). ⌥⌘F on Files: both switch with the selected file as a tab (`g-pd19`, `s-pd19`) | fixed-swift-bug (§14) |
+| PD-21 | Full, MainActivity.java (unchanged): new tab after the current one, "Unchanged", back/forward and outline (`g-pd21`, `s-pd21`). Swift then lost the selection to Payment.java on the next detail load (activation): `PullModel.swift:261` checks the selection against the changed files only. GPUI keeps it. New §14 item | fixed-swift-bug (new §14 item) |
+| PD-23 | Clicking dave's `db/schema.sql line 45` in Conversation: Files, schema.sql, line 45 selected, both comments under it (`g-pd23`, `s-pd23`) | same |
+| PD-24 | ⌘W in Full on Files closed Session.java and selected its neighbour MainActivity.java in both; the window stayed | same |
+| PD-25 | ⌘-click on `return` in a whole file: "No definition found in this repository · 206 references to return" with the same rows (`g-pd25`, `s-pd25`). **Fixed:** GPUI navigated only in Full; Swift also does in Compact with Before/After (its `fullFile`). And GPUI's Compact diff menu offered Go to Definition / Find References that did nothing; Swift has only Add Comment… and Copy there, now GPUI too (`g-rv14m`, `s-rv14m`) | fixed |
+| PD-26 | Session.java outline: the same nine items "name kind · line" (`g-ol`, `s-ol`); saveAccount jumps to line 40, Back returns to line 1 (`g-pd26c`, `g-pd26d`, `s-pd26c`, `s-pd26d`) | same |
+| PD-27 | Diff side After (set in Changes), PR in Compact: the whole file with no tab bar in both. **Fixed:** GPUI's header lacked back/forward and the outline there (`g-pd27`); now as Swift (`g-pd27c`, `s-pd27c`) | fixed |
+| PD-31 | Merge › Squash on #36 with POST …/merge faulted 409: "Squash #36 into main?" then the alert "Forgejo / Forgejo 409: head out of date"; both stay on #36 (`g-pd31c`, `g-pd31d`, `s-pd31c-alert`, `s-pd31d-alert`) | same |
+| PD-32 | A new commit pushed to #22's head (not in the local repo): opening it, each app ran one `git-upload-pack` fetch into `refs/remotes/origin/pr/22`, then had the commit; nothing is fetched when the head is already local (opening #26/#36 fetched nothing) | same |
+| PD-33 | The 503 and 409 alerts are titled "Forgejo" with OK; Return dismisses them in both | same |
+| RV-02 | #26: opened card first, then the 9 commits dated before the PR ("alice added 9 commits", 23 October), then the 2 November items; the 40-minute later comment is its own card (`g-rv03`, `s-rv03`, `g-rv02`, `s-rv02`) | same |
+| RV-03 | bob's description card: What / Why / How to test, the code block, the table and task list (`g-rv03`, `s-rv03`) | same |
+| RV-05 | Inline blocks: icon, path, "line N", ↗, last 4 hunk lines, avatar and body; clicking reveals in Files (PD-23). **Fixed:** GPUI's hunk lines weren't syntax highlighted; now in the file's language as in Swift (`g-rv07`, `s-rv07`) | fixed |
+| RV-07 | Clicking dave in Reviewers scrolls to his "requested changes" card in both (`g-rv07`, `s-rv07`) | same |
+| RV-08 | The same five participant avatars | same |
+| RV-11 | schema.sql line 45: dave's and alice's comments in blue boxes under the line (`g-pd23`, `s-pd23`) | same |
+| RV-14 | A draft on search_index.py line 6 ("You · Pending", Review (1), bubble 1): both write `drafts:127.0.0.1:8862/acme/app#22` (JSON data); after another worktree and back, the draft and "Review (1)" are there and the first unviewed file is selected (`g-rv14d`, `g-rv14e`, `s-rv14d`, `s-rv14f`) | same |
+| FG-01 | Every API request from both: `/api/v1`, `Authorization: token`, `Accept: application/json`; the diff `text/plain` (verbose forge log) | same |
+| FG-04 | No backoff: both kept polling every 60 s through repeated 503s. GitHub's rate-limit text isn't reachable on the Forgejo mock | same |
+| FG-05 | Faults on the list and the detail: the list keeps its data (GPUI adds "Couldn't refresh"), the detail alerts once in GPUI and on every poll in Swift (PR-05, PD-06) | fixed-swift-bug (§14) |
+| FG-06 | Pages of 50 everywhere: open 50 + 27, closed 50 + 50 + 1, reviews and commits `limit=50`. The capped-server fix stays (`open_list_pages_past_a_server_capped_below_fifty`) | same (+ the fixed-swift-bug above) |
+| FG-07 | GitHub only, not reachable on the Forgejo mock; `DiffSource::fetch` unchanged | same (code) |
+| FG-08 | GitHub only; the forge tests `github_maps_merged_at` and `api_roots_and_review_bodies` pass | same (tests) |
+| FG-09 | The PR fetches ran (PD-32), but the mock serves git without a credential challenge, so the helper isn't exercised; both pass the account's `GIT_CONFIG_COUNT=2` helper (`crates/forge/src/account.rs`) | same (code) |
+| FG-10 | One list load per refresh in both (activation and ⌘R each give one page 1+2 pair, never overlapping); one detail load per poll | same |
+
+Fixes in this pass (commits on `gpui-z-pulls2`): list scroll per worktree; PR tree width 414 / `prTreeWidth`; whole-file
+navigation and header controls in Compact Before/After, none in the Compact diff; review-comment hunks highlighted; the
+Markdown preview in a PR; the list filter reset per worktree and tab. New §14 item: Full mode's unchanged-file selection
+reset on every detail load (PullModel.swift:261).
+
+The mock was mutated (two pushes to `feature/search-index`); reset with `up.sh /tmp/flows-z-pulls2 --reset` before reuse.
