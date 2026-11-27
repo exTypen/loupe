@@ -109,7 +109,7 @@ pub fn tab_bar(nav: &CodeNav, changed: impl Fn(&str) -> Option<Hsla>, on: OnTabE
                 .map(|d| if active { d.bg(theme::canvas()).text_color(theme::text()).border_t_2().border_color(theme::accent()) }
                          else { d.text_color(theme::text_muted()).hover(|s| s.bg(theme::hover())) })
                 .on_click(move |_, w, cx| o1(TabEvent::Select(p1.clone()), w, cx))
-                .child(ui::icon("file").size(px(13.)))
+                .child(ui::file_icon(path).size(px(13.)))
                 .child(div().truncate().max_w(px(220.)).child(name.to_string()))
                 .when(twin && !parent.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(theme::text_faint()).child(parent.to_string())))
                 .when_some(changed(path), |d, c| d.child(ui::dot(c).size(px(6.))))
@@ -215,7 +215,7 @@ pub fn results_panel(results: &NavResults, on: OnTabEvent) -> AnyElement {
                 let loc = CodeLocation { path: h.path.clone(), line: h.line };
                 div().id(i).flex().items_center().gap_2().px_3().h(px(24.)).cursor_pointer().hover(|s| s.bg(theme::hover()))
                     .on_click(move |_, w, cx| o(TabEvent::Open(loc.clone()), w, cx))
-                    .child(ui::icon("file").size(px(12.)))
+                    .child(ui::file_icon(&h.path).size(px(12.)))
                     .child(div().w(px(260.)).flex_none().text_ellipsis_start().whitespace_nowrap().overflow_hidden()
                         .font_family(theme::CODE_FONT).text_size(px(11.)).text_color(theme::text_muted()).child(format!("{}:{}", h.path, h.line)))
                     .child(div().flex_1().min_w_0().truncate().font_family(theme::CODE_FONT).text_size(px(12.)).text_color(theme::text()).child(h.text))
