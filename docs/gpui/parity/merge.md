@@ -57,3 +57,20 @@ Screenshots are in `/tmp/flows-merge/shots/` (`s-*` Swift, `g-*` GPUI).
 Performance: with the editor open on `merge-plain`, `ps -o %cpu=,time=` read `0.0 0:00.34` twice, 10 s apart. Nothing
 polls: the only timer is the 350 ms write debounce; reloads come from the worktree's status version, and the load and
 AI tasks are dropped with the view.
+
+## Final pass (merged app, branch gpui-z-history)
+
+Same mock as the History final pass (port 8834, `/tmp/flows-z-history/shots/`). Real clicks and keys.
+
+| ID | Final pass (merged app) |
+|---|---|
+| MG-01, MG-02, MG-03 | same: cherry-pick of 5e64fe0 onto app main stopped; banner "Cherry-picking 5e64fe0 billing: add ComputeToken" in both; Abort Cherry-pick cleaned it up; after resolving, Continue made the commit (`g-hi17-abort.png`, `s-hi17b.png`) |
+| MG-04 | **fixed**: the panes were plain text; Swift highlights all four (`s-mg04.png`). They now use the code theme's tokens (loupe_code tokenizer, as the diff does), also after a take (`g-mg05-hl.png`, `g-mg09-take.png`) |
+| MG-05 | **fixed**: a side with no lines in a conflict showed nothing in its pane; it now draws Swift's 2 pt bar where the conflict sits (Your Branch pane of invoice.go, `g-mg05-hl.png`) |
+| MG-07, MG-08 | same: "Conflict 1 of 1 · 1 left" → "all resolved" |
+| MG-09 | same: Use Cherry-picked resolved it and wrote the file at once; ⌥⌘→ took theirs on `crlf.txt` |
+| MG-13 | same: Mark Resolved → `M  services/billing/invoice.go` staged |
+| MG-25 | same: crlf.txt after ⌥⌘→ is `a\r\nB theirs\r\nc\r\n` |
+| other MG | unchanged since the per-view pass |
+
+Idle CPU with the editor open on `merge-plain`: `0.0 0:00.29` twice, 10 s apart.
