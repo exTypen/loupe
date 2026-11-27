@@ -824,7 +824,7 @@ impl MergeEditor {
 
     fn reset_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.path.rsplit('/').next().unwrap_or(&self.path).to_string();
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .child(ui::card().w(px(380.)).p_4().gap_3().bg(theme::raised())
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).child(format!("Bring back the conflicts in {name}?")))
                 .child(div().text_size(px(12.)).text_color(theme::text_muted()).child("Your edits to the result are lost."))
@@ -887,7 +887,7 @@ impl Render for MergeEditor {
         };
         let busy = self.model.read(cx).state.busy.clone();
         // Below the title bar (42 pt), which stays usable; the editor covers the sidebar and Changes.
-        div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").absolute().top(px(42.)).left_0().right_0().bottom_0()
+        div().id("merge-editor").track_focus(&self.focus).key_context("MergeEditor").occlude().absolute().top(px(42.)).left_0().right_0().bottom_0()
             .border_t_1().border_color(theme::border()).flex().flex_col().bg(theme::canvas())
             .font_family(theme::UI_FONT).text_size(theme::UI_SIZE)
             // Return takes the suggestion (its prominent button), before the result editor would insert a newline.

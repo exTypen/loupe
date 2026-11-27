@@ -72,7 +72,7 @@ impl Render for Dialog {
             };
             b.on_click(move |_, w, cx| me.update(cx, |v, cx| v.press(i, w, cx)))
         }).collect::<Vec<_>>();
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(move |v, e: &gpui_kit::KeyDownEvent, w, cx| match e.keystroke.key.as_str() {
                 "escape" => v.press(esc, w, cx),

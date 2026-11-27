@@ -371,7 +371,7 @@ impl Render for PullCreateSheet {
                 .when(!can, |b| b.opacity(0.45).cursor_default())
                 .on_click(cx.listener(|v, _, _, cx| v.create(cx))));
 
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             // A click on a button or a label drops focus to the window, and Esc (Cancel, PC-20) went nowhere: take it
             // back. Inputs focus themselves after this.

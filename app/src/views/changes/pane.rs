@@ -317,7 +317,7 @@ impl ChangesView {
         };
         let focus = self.confirm_focus.clone();
         if !focus.is_focused(window) { window.focus(&focus, cx) }
-        Some(div().id("confirm").absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        Some(div().id("confirm").absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&focus)
             .child(ui::card().w(px(420.)).p_4().gap_3().bg(theme::raised())
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))

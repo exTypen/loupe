@@ -464,7 +464,7 @@ impl Shell {
             Some(m) => m.update(cx, |m, cx| m.clear_error(cx)),
             None => app.update(cx, |a, cx| { a.error = None; cx.notify() }),
         };
-        Some(div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        Some(div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .child(ui::card().w(px(420.)).p_4().gap_3().bg(theme::raised())
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().id("alert-text").max_h(px(300.)).overflow_y_scroll().text_size(px(12.)).text_color(theme::text_muted()).child(text))

@@ -374,7 +374,7 @@ impl Shell {
             }
         };
         let is_rename = matches!(modal, Modal::RenameSpace { .. });
-        Some(div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        Some(div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .capture_key_down(cx.listener(move |s, e: &gpui_kit::KeyDownEvent, _, cx| match e.keystroke.key.as_str() {
                 "escape" => { s.modal = None; cx.notify(); cx.stop_propagation() }
                 "enter" if is_rename => {

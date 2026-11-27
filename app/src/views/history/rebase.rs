@@ -235,7 +235,7 @@ impl RewordSheet {
 impl Render for RewordSheet {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ok = !self.text.read(cx).value().trim().is_empty();
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| if e.keystroke.key == "escape" { v.app.update(cx, |a, cx| a.dismiss(cx)) }))
             .child(ui::card().w(px(560.)).p_4().gap_3().bg(theme::raised())
@@ -344,7 +344,7 @@ impl Render for Planner {
                 .when_some(editor, |d, e| d.child(div().id(SharedString::from(format!("plan-msg-{i}"))).h(px(64.)).p_1().rounded(px(4.)).bg(theme::canvas()).border_1().border_color(theme::border())
                     .font_family(theme::CODE_FONT).tooltip(move |w, cx| Tooltip::new(tip).build(w, cx)).child(Textarea::new(&e).appearance(false).h_full())))
         }).collect::<Vec<_>>();
-        div().absolute().inset_0().flex().items_center().justify_center().bg(theme::backdrop())
+        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(theme::backdrop())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|v, e: &gpui_kit::KeyDownEvent, _, cx| if e.keystroke.key == "escape" { v.app.update(cx, |a, cx| a.dismiss(cx)) }))
             .child(ui::card().w(px(700.)).h(px(520.)).bg(theme::raised())
