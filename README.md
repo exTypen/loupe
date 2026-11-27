@@ -6,6 +6,7 @@ GitHub, Forgejo and Gitea, and many worktrees across many repositories, organise
 **[Download Loupe for macOS](https://github.com/exTypen/loupe/releases/latest)**: free and open source, signed and
 notarized, for macOS 15 or later.
 
+![Reviewing a pull request in Loupe](docs/pr.png)
 
 ## Highlights
 
@@ -19,6 +20,8 @@ helper holds.
 **Forgejo and Gitea, treated like GitHub.** Open, review and merge pull requests on all three: viewed files that
 become unviewed again when a new push changes them, inline comments, drafts that survive restarts, Approve and
 Request Changes. CI jobs, steps and live logs show in the app on every forge, with Re-run and Cancel.
+
+![CI checks for a pull request](docs/checks.png)
 
 
 **Built for many worktrees.** Every repository lists all its worktrees with their branch, ahead/behind counts
@@ -35,6 +38,8 @@ See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the numbers against the earli
 **AI commit messages from the tool you already have.** ✨ in the commit box writes the message with Claude Code,
 Codex, Gemini CLI, GitHub Copilot CLI, Cursor CLI, opencode, Qwen Code, Amp or Factory Droid, whichever is
 installed, on your own subscription and in the tool's read-only mode. Pick the tool, the model and a style.
+
+![Local changes, staged and unstaged](docs/changes.png)
 
 
 Every git operation runs through the `git` command line, so hooks, commit signing and credential helpers behave
@@ -80,7 +85,11 @@ exactly as they do in your terminal.
   submodules that were never checked out.
 
 
+![Resolving a merge conflict](docs/conflicts.png)
+
 **History**
+
+![History with each commit's diff](docs/history.png)
 
 
 - The current branch, all branches, any single branch, or your stashes, with a commit graph and each commit's
