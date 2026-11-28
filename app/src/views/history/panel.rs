@@ -95,7 +95,7 @@ impl HistoryView {
             let got = cx.background_executor().spawn(async move {
                 match what {
                     0 => core_history::blame(&path, Some(&sha), &dir, Some(&x)).map(|(lines, commits)| {
-                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                        let now = crate::views::pulls::time::now();
                         Got::Blame(Arc::new(Blame {
                             shas: lines.into_iter().map(|l| l.sha).collect(),
                             commits: commits.into_iter().map(|(k, c)| (k, diff::BlameCommit { author: c.author, age: super::sheets::relative(c.date, now) })).collect(),
@@ -228,7 +228,7 @@ impl HistoryView {
         if p.panel != Panel::History || f.core.new_path.is_none() || self.log(cx).and_then(|l| l.selected_commit()).is_some_and(|c| c.selector.is_some()) { return diff }
         let me = cx.entity();
         let name = std::path::Path::new(f.path()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let now = crate::views::pulls::time::now();
         let picked_sha = p.picked.as_ref().map(|x| x.0.sha.clone());
         let list = match &p.entries {
             None => div().flex_1().flex().items_center().justify_center().child(gpui_kit::component::spinner::Spinner::new()).into_any_element(),

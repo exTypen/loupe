@@ -61,22 +61,30 @@ pub struct Prefs {
 /// thread.
 pub fn shared() -> MutexGuard<'static, Prefs> {
     static P: OnceLock<Mutex<Prefs>> = OnceLock::new();
-    let domain = SHARED_DOMAIN.get_or_init(|| DOMAIN.into());
-    P.get_or_init(|| Mutex::new(Prefs { shared: true, ..Prefs::load_domain(domain) })).lock().unwrap()
+    P.get_or_init(|| {
+        let p = match shared_target() { Target::Domain(d) => Prefs::load_domain(d), Target::File(f) => Prefs::open_file(f.clone()) };
+        Mutex::new(Prefs { shared: true, ..p })
+    }).lock().unwrap()
 }
 
-static SHARED_DOMAIN: OnceLock<String> = OnceLock::new();
+static SHARED_TARGET: OnceLock<Target> = OnceLock::new();
+
+fn shared_target() -> &'static Target { SHARED_TARGET.get_or_init(|| Target::Domain(DOMAIN.into())) }
 
 /// Points `shared()` at another domain (test and scenario runs), wiping it first. Call before anything reads
 /// settings; false when `shared()` already picked its domain.
 pub fn use_fresh_domain(domain: &str) -> bool {
-    if SHARED_DOMAIN.set(domain.into()).is_err() { return false }
+    if SHARED_TARGET.set(Target::Domain(domain.into())).is_err() { return false }
     let _ = Command::new("/usr/bin/defaults").args(["delete", domain]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     true
 }
 
-/// The domain `shared()` reads and writes.
-pub fn shared_domain() -> &'static str { SHARED_DOMAIN.get_or_init(|| DOMAIN.into()) }
+/// Points `shared()` at a plain plist file instead of any defaults domain (in-process tests and benches): nothing
+/// goes through cfprefsd. Same rules as [`use_fresh_domain`]; the file isn't wiped.
+pub fn use_file(path: impl Into<PathBuf>) -> bool { SHARED_TARGET.set(Target::File(path.into())).is_ok() }
+
+/// The domain `shared()` reads and writes ("" when it is a file: [`use_file`]).
+pub fn shared_domain() -> &'static str { match shared_target() { Target::Domain(d) => d, Target::File(_) => "" } }
 
 fn schedule_save() {
     static PENDING: AtomicBool = AtomicBool::new(false);

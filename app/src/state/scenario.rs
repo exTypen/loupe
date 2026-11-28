@@ -83,6 +83,13 @@ pub fn from_env() -> Option<Scenario> {
         eprintln!("LOUPE_STRESS refused: settings were read before the scenario picked its domain");
         std::process::exit(2)
     }
+    prepare(&s);
+    Some(s)
+}
+
+/// The settings a scenario run starts from: its repos in the default space (`big` selected), Changes, Compact, Diff.
+/// In-process tests call it after `settings::use_file`.
+pub fn prepare(s: &Scenario) {
     let mut p = settings::shared();
     let selection = s.big.clone().or_else(|| s.repos.first().cloned());
     let spaces = vec![Space { id: DEFAULT_SPACE.into(), name: "Default".into(), repos: s.repos.clone(), selection }];
@@ -91,7 +98,6 @@ pub fn from_env() -> Option<Scenario> {
     p.set_bool("prFullMode", false);
     p.set_string("diffSide", "diff");
     p.set_bool("lfsMissingBannerDismissed", true);
-    Some(s)
 }
 
 /// Starts the scenario's run once the main window is open; nothing without LOUPE_STRESS.

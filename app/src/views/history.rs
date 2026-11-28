@@ -936,7 +936,7 @@ impl HistoryView {
         let graph = l.graph.get(ix).cloned().filter(|_| l.graph_width > 0);
         let movable = l.rewritable_view() && l.movable.contains(&c.sha) && c.parents.len() < 2;
         let target = self.drop_target.as_ref().filter(|t| t.0 == c.sha && cx.has_active_drag()).cloned();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let now = crate::views::pulls::time::now();
         let tip = format!("{}\n{} <{}>\n{}", c.subject, c.author, c.email, sheets::abbreviated(c.date));
         let (t1, t2, sha) = (this.clone(), this.clone(), c.sha.clone());
         let menu_commit = c.clone();

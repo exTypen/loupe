@@ -93,7 +93,7 @@ fn month_index(t: i64) -> i64 {
     y * 12 + m - 1
 }
 
-pub(crate) fn now() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
+pub(crate) use crate::views::pulls::time::now;
 
 impl ChangesView {
     /// Blame follows the diff (keyed by its uid, so an edit re-blames); History loads once per file.

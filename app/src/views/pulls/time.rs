@@ -1,6 +1,7 @@
 //! The few date pieces the PR views show (Swift's Date formatting): ISO 8601 parsing, "3 hours ago", the timeline's
 //! day markers. Local time comes from the system's UTC offset, read once.
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Seconds since 1970 of "2026-11-20T09:15:00Z", "…+02:00" or "….123Z"; None when it isn't one.
@@ -44,7 +45,18 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + (m <= 2) as i64, m, d)
 }
 
-pub fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
+/// Seconds since 1970, or the time [`freeze`] set: every "3 hours ago" and date the app shows reads it.
+pub fn now() -> i64 {
+    match FROZEN.load(Ordering::Relaxed) {
+        0 => SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64),
+        t => t,
+    }
+}
+
+static FROZEN: AtomicI64 = AtomicI64::new(0);
+
+/// Stops the clock at `t` (in-process tests: screenshots of relative times read the same on every run).
+pub fn freeze(t: i64) { FROZEN.store(t, Ordering::Relaxed) }
 
 /// The system's offset from UTC in seconds (`date +%z`), once per launch.
 fn offset() -> i64 {

@@ -12,7 +12,7 @@
 //! page drops them, and the `Cancel` they share with the forge client stops a request in flight. Nothing animates.
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use futures::FutureExt as _;
 use futures::future::Shared;
@@ -702,7 +702,7 @@ impl Render for CheckDetail {
 
 // MARK: - Helpers
 
-fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
+use crate::views::pulls::time::now;
 
 /// A stable id per row: the context, numbered when several statuses share it (a GitHub status and a check run with
 /// one name, matrix jobs), so each opens its own page (§14: the Swift id was the bare context).

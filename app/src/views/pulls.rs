@@ -14,7 +14,7 @@ mod detail;
 mod ext;
 mod markdown;
 mod overview;
-mod time;
+pub mod time;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
