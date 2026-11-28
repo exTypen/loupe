@@ -195,10 +195,14 @@ The ⌘ shortcuts below are the defaults; change any of them in Settings › Sho
 
 ```sh
 cargo run -p loupe                 # debug build
-cargo test --workspace             # parsers, staging, blame, the graph, forge clients, lenses
+cargo test --workspace             # unit tests, plus the headless end-to-end tests with screenshot baselines
 cargo test --workspace -- --ignored   # live tests against api.github.com and the local AI CLIs
 scripts/flows/up.sh /tmp/flows     # a mock forge and fixture repositories to try flows on (see its README)
+scripts/bench.sh compare 0.10.2    # performance regression benches against a release's baseline
 ```
+
+The end-to-end tests and the benches run in-process and headless: no window opens. [docs/TESTING.md](docs/TESTING.md)
+explains both.
 
 `scripts/release.sh` builds a signed, notarized and stapled DMG. Its header lists the one-time setup: a
 Developer ID Application certificate and stored notary credentials.
