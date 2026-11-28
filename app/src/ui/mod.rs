@@ -3,6 +3,7 @@
 pub mod palette;
 pub mod tabs;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     App, Div, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Svg, Window, div, prelude::FluentBuilder as _,
@@ -219,6 +220,7 @@ pub fn segmented(id: impl Into<SharedString>, labels: &[&str], selected: usize,
                 .on_mouse_down(gpui_kit::MouseButton::Left, |_, w, _| w.prevent_default())
                 .on_click(move |_, w, cx| f(i, w, cx))
                 .child(l.to_string())
+                .test_support()
         }))
 }
 

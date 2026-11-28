@@ -2,6 +2,7 @@
 //! with a local counterpart are hidden; a branch checked out in another worktree selects that worktree.
 use std::collections::HashMap;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     AppContext as _, Context, DismissEvent, Entity, EventEmitter, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
@@ -83,6 +84,7 @@ impl BranchPicker {
             .when(is_current, |d| d.child(ui::icon("check").size(px(12.)).text_color(theme::blue())))
             .when_some(elsewhere, |d, w| d.child(div().text_size(px(11.)).text_color(theme::text_faint()).child(w)))
             .when(!is_current && !self.working, |d| d.on_click(cx.listener(move |p, _, _, cx| p.switch_to(name.clone(), remote, cx))))
+            .test_support()
     }
 }
 

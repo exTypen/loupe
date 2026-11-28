@@ -8,6 +8,7 @@ pub mod worktrees;
 
 use std::time::Duration;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathPromptOptions, Render, SharedString,
@@ -244,7 +245,7 @@ impl Shell {
             .child(div().flex().items_center().size_full().pr_2()
                 // Left: the sidebar toggle, then fetch / pull / push beside the branch they act on.
                 .child(div().flex().flex_1().items_center().gap_1().min_w_0()
-                    .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| s.toggle_sidebar(cx))))
+                    .child(title_button("toggle-sidebar", "panel-left").on_click(cx.listener(|s, _, _, cx| s.toggle_sidebar(cx))).test_support())
                     // Nothing selected: the window's own title, as Swift shows it (SH-04).
                     .when(wt.is_none(), |d| d.child(div().pl_2().font_weight(FontWeight::SEMIBOLD).child("Loupe")))
                     .when_some(wt.clone(), |d, wt| d
@@ -356,6 +357,7 @@ fn branch_button(wt: &Worktree, live: (Option<String>, String)) -> impl IntoElem
             .child(div().truncate().text_size(px(13.)).line_height(px(16.)).font_weight(FontWeight::SEMIBOLD).child(title))
             .child(ui::icon("chevron-down").size(px(11.)).text_color(theme::text_faint())))
         .child(div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(theme::text_faint()).child(tilde(&wt.path)))
+        .test_support()
 }
 
 pub(crate) fn open_in(bundle: &str, path: &str) {
@@ -366,6 +368,10 @@ const SIDEBAR_WIDTH: f32 = 260.;
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(260);
 
 impl Shell {
+    pub fn sidebar_open(&self) -> bool { self.sidebar_open }
+    /// Whether the sidebar is sliding open or shut right now.
+    pub fn sidebar_sliding(&self) -> bool { self.sidebar_slide.is_some() }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
         self.next_slide += 1;

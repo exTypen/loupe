@@ -13,6 +13,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -694,7 +695,7 @@ impl MergeEditor {
                 .child(button("merge-tool", "Merge Tool".into(), Some(tool.as_ref().map_or("Set merge.tool (or merge.guitool) in your git config to a GUI merge tool to use it here".into(), |t| format!("Open the file in {} (git mergetool)", t.0))), tool.is_some() && !busy)
                     .on_click(cx.listener(|v, _, w, cx| v.merge_tool(w, cx))))
                 .child(button_primary("mark-resolved", "Mark Resolved".into(), Some(if markers_left { "Resolve every conflict first: the result still has conflict markers".into() } else { "Stage the result (git add)".into() }), !markers_left && !busy)
-                    .on_click(cx.listener(|v, _, _, cx| v.resolve(None, cx)))))
+                    .on_click(cx.listener(|v, _, _, cx| v.resolve(None, cx))).test_support()))
             .child(tip(ui::icon_button("merge-close", "x").size(px(24.)), Some("Close (Esc)".into())).on_click(cx.listener(|v, _, _, cx| v.close(cx))))
     }
 

@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     AnyElement, Context, EntityId, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
@@ -314,13 +315,13 @@ pub fn render(d: &mut PullDetail, window: &mut Window, cx: &mut Context<PullDeta
             .children(children))
         .child(ui::divider())
         .child(div().w_full().flex().justify_center().child(div().w_full().max_w(px(MAX_WIDTH)).px_5().py_3().flex().flex_col().gap_2()
-            .child(div().min_h(px(64.)).max_h(px(220.)).px_2p5().py_2().rounded(px(8.)).bg(theme::card()).border_1().border_color(theme::border_strong())
-                .child(Textarea::new(&d.composer.input).appearance(false).h(px(56.))))
+            .child(div().id("comment-box").min_h(px(64.)).max_h(px(220.)).px_2p5().py_2().rounded(px(8.)).bg(theme::card()).border_1().border_color(theme::border_strong())
+                .child(Textarea::new(&d.composer.input).appearance(false).h(px(56.))).test_support())
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().text_size(px(11.5)).text_color(theme::text_faint()).child("Markdown · ⌘↩ to send"))
                 .when(sending, |d| d.child(ui::icon("loader").text_color(theme::text_faint())))
                 .child(ui::pill_primary("comment-send", "Comment", theme::blue()).when(!can_send, |d| d.opacity(0.4))
-                    .when(can_send, |d| d.on_click(cx.listener(|d, _, _, cx| d.post_comment(cx))))))));
+                    .when(can_send, |d| d.on_click(cx.listener(|d, _, _, cx| d.post_comment(cx)))).test_support()))));
     // Past a readable line length the room goes to what a reviewer checks beside the thread (960 + 290).
     let wide = window.viewport_size().width - px(260.) >= px(MAX_WIDTH + 290.);
     if !wide { return div().flex().size_full().child(timeline).into_any_element() }

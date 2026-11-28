@@ -107,7 +107,7 @@ impl ChangesView {
         let field = || div().px_2().rounded(theme::RADIUS_ROW).bg(theme::raised()).border_1().border_color(theme::border());
         div().relative().flex().flex_col().gap_2().p_2p5().flex_none().bg(theme::card())
             .child(div().flex().items_center().gap_1p5()
-                .child(field().flex_1().h(px(28.)).flex().items_center().child(Input::new(&self.summary).appearance(false)))
+                .child(field().flex_1().h(px(28.)).flex().items_center().child(Input::new(&self.summary).id("commit-summary").appearance(false)))
                 // CM-08
                 .when_some(tool, |d, t| d.child(if generating {
                     div().w(px(20.)).flex().justify_center().child(ui::icon("loader").text_color(theme::text_faint())).into_any_element()

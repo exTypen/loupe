@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::{ScrollableMask, Scrollbar};
@@ -870,7 +871,7 @@ impl DiffView {
                 let cb = cb.clone();
                 let (label, red) = match a { HunkAction::Stage => ("Stage Hunk", false), HunkAction::Unstage => ("Unstage Hunk", false), HunkAction::Discard => ("Discard", true) };
                 row = row.child(pill(("hunk", ix * 4 + a as usize), label, false).when(red, |p| p.text_color(theme::red()))
-                    .on_click(move |_, window, cx| cb(a, lines.clone(), window, cx)));
+                    .on_click(move |_, window, cx| cb(a, lines.clone(), window, cx)).test_support());
             }
         }
         row.into_any_element()
