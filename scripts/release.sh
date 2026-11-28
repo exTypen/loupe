@@ -61,5 +61,11 @@ SPARKLE_BIN="${SPARKLE_BIN:-$(ls -d build/cache/sparkle-*/bin | tail -1)}"
 XML
   echo "Wrote build/appcast.xml (version $VERSION, build $BUILD)"
 }
+# This release's performance baseline (about a minute, headless: nothing opens on screen), what the next release is
+# compared against with `scripts/bench.sh compare $VERSION`. Never fails the release; LOUPE_SKIP_BENCH=1 skips it.
+if [ -z "$LOUPE_SKIP_BENCH" ]; then
+  scripts/bench.sh record "$VERSION" && echo "Commit bench/baselines/$VERSION.json with the release." \
+    || echo "warning: scripts/bench.sh record $VERSION failed; record the baseline by hand." >&2
+fi
 echo "Publish with:"
 echo "  gh release create v$VERSION $DMG build/appcast.xml --title \"Loupe $VERSION\" --notes-file <notes.md>"
