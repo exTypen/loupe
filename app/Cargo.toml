@@ -30,3 +30,11 @@ libc = "0.2"
 tempfile = "3"
 # Headless windows for interaction tests (#[gpui_kit::test], gpui_kit::test::TestWindowExt): see tests/headless.rs.
 gpui-kit = { workspace = true, features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Headless end-to-end tests with real Metal pixels and screenshot baselines (tests/e2e/main.rs): one process, its own
+# main, so the tests share the mock forge and run one after another.
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+harness = false

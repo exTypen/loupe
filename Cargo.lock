@@ -4053,6 +4053,7 @@ version = "0.10.2"
 dependencies = [
  "futures",
  "gpui-kit",
+ "image",
  "libc",
  "loupe-code",
  "loupe-core",
