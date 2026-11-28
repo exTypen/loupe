@@ -2655,6 +2655,7 @@ dependencies = [
  "backtrace",
  "bitflags 2.13.2",
  "chrono",
+ "criterion",
  "derive_more",
  "embed-resource",
  "etagere",
@@ -2670,6 +2671,7 @@ dependencies = [
  "gpui-pre-shared-string",
  "gpui-pre-sum-tree",
  "gpui-pre-util",
+ "hdrhistogram",
  "heapless",
  "icu_segmenter",
  "image",
@@ -3245,6 +3247,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "735eaa21a6a5ffb2e84362faaeb90c05ba8e19797ca30428478cb6ea3a4921bc"
 dependencies = [
  "foldhash",
+]
+
+[[package]]
+name = "hdrhistogram"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
+dependencies = [
+ "byteorder",
+ "num-traits",
 ]
 
 [[package]]
@@ -4063,6 +4075,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "loupe-bench"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "gpui-kit",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "libc",
+ "loupe",
+ "loupe-core",
+ "loupe-forge",
 ]
 
 [[package]]

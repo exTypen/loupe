@@ -1,0 +1,38 @@
+{
+  "label": "0.10.2",
+  "commit": "2177806",
+  "machine": "Apple M5 Pro",
+  "benches": {
+    "diff_open_150k": {
+      "measurement": "foreground-instructions",
+      "instructions": 261904180,
+      "wall_ns": 13248000,
+      "peak_phys_footprint": 267748096
+    },
+    "diff_scroll_150k": {
+      "measurement": "foreground-instructions",
+      "instructions": 53428856,
+      "wall_ns": 3791000
+    },
+    "tab_switch": {
+      "measurement": "foreground-instructions",
+      "instructions": 6312803,
+      "wall_ns": 374386
+    },
+    "history_open_20k": {
+      "measurement": "instructions",
+      "instructions": 1445834975,
+      "wall_ns": 132556000
+    },
+    "changes_open_5k": {
+      "measurement": "instructions",
+      "instructions": 1075337460,
+      "wall_ns": 242863000
+    },
+    "merge_editor_large": {
+      "measurement": "instructions",
+      "instructions": 1920561725,
+      "wall_ns": 117960000
+    }
+  }
+}

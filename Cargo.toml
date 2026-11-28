@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["app", "crates/core", "crates/code", "crates/forge"]
+members = ["app", "crates/core", "crates/code", "crates/forge", "bench"]
 
 [workspace.package]
 edition = "2024"
@@ -20,3 +20,10 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.loupe-core]
 opt-level = 2
+
+# Benches (scripts/bench.sh): release code without the release profile's link time.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+incremental = true

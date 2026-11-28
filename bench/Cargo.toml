@@ -1,0 +1,23 @@
+[package]
+name = "loupe-bench"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "Performance regression benches for Loupe (#[gpui::bench] + BenchAppContext); run through scripts/bench.sh."
+
+# Kept apart from the app so `test-support` stays out of this graph: `cargo bench -p loupe-bench` builds gpui-pre
+# with bench-support only. gpui and gpui_platform are the exact versions gpui-kit uses (the bench macro names them).
+[dev-dependencies]
+loupe = { path = "../app" }
+loupe-core.workspace = true
+loupe-forge.workspace = true
+gpui-kit.workspace = true
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["bench-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["bench-support"] }
+criterion = "0.8"
+libc = "0.2"
+
+[[bench]]
+name = "loupe"
+harness = false
+test = false
