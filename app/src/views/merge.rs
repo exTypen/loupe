@@ -199,6 +199,9 @@ pub struct MergeEditor {
 }
 
 impl MergeEditor {
+    /// The file and its stages are read and the panes are made (benches wait for it).
+    pub fn is_loaded(&self) -> bool { self.loaded.is_some() }
+
     pub fn new(app: Entity<AppModel>, model: Entity<WorktreeModel>, path: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let worktree = model.read(cx).path_str();
         let status_version = model.read(cx).state.status_version;
